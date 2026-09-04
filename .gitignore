@@ -24,3 +24,5 @@ __pycache__/
 /artifacts/
 /workspaces/
 /task_families/
+/.Xil/
+/.benchmarks/
