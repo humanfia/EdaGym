@@ -1,0 +1,26 @@
+/temp/
+/.edagym/
+/.edagym-state/
+/.pytest_cache/
+/.mypy_cache/
+/.ruff_cache/
+/.coverage
+/htmlcov/
+/build/
+/dist/
+/*.egg-info/
+__pycache__/
+*.py[cod]
+
+# Local credentials and private runtime configuration.
+/.env
+/.env.*
+/auth.json
+/credentials/
+/secrets/
+
+# Raw runs and proprietary EDA output must stay outside version control.
+/runs/
+/artifacts/
+/workspaces/
+/task_families/
