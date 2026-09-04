@@ -21,6 +21,7 @@ from edagym.policy.repository import (
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_MISSING_SCANNER = "/nonexistent/edagym-gitleaks"
 
 
 def _git(repository: Path, *arguments: str, input_bytes: bytes | None = None) -> bytes:
@@ -68,7 +69,11 @@ def test_commit_audit_enforces_exact_ignore_and_index_boundaries(
     monkeypatch.setenv("GIT_INDEX_FILE", os.fspath(alternate_index))
     _git(repository, "read-tree", "--empty")
 
-    report = audit_repository(repository, AuditMode.COMMIT)
+    report = audit_repository(
+        repository,
+        AuditMode.COMMIT,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
 
     rule_ids = {finding.rule_id for finding in report.findings}
     assert report.status is AuditStatus.INCOMPLETE
@@ -162,7 +167,11 @@ def test_release_audit_scans_unreachable_objects_without_secret_excerpts(
     _git(repository, "add", "large.bin")
     _git(repository, "commit", "--quiet", "-m", "Add large object pointer")
 
-    report = audit_repository(repository, AuditMode.RELEASE)
+    report = audit_repository(
+        repository,
+        AuditMode.RELEASE,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
 
     coverage = {item.scope: item.status for item in report.coverage}
     assert report.status is AuditStatus.INCOMPLETE
@@ -199,7 +208,11 @@ def test_release_audit_is_incomplete_without_required_external_scanner(
 ) -> None:
     repository = _repository(tmp_path / "repository")
 
-    report = audit_repository(repository, AuditMode.RELEASE, policy=RepositoryPolicy())
+    report = audit_repository(
+        repository,
+        AuditMode.RELEASE,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
 
     assert report.status is AuditStatus.INCOMPLETE
     assert report.exit_code is AuditExitCode.INCOMPLETE
