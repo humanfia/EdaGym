@@ -29,6 +29,7 @@ from edagym.executors.capabilities import (
     ProviderAvailability,
     ProviderUnavailableReason,
 )
+from edagym.executors.deployment import ExecutorDeploymentRegistry
 from edagym.flow_tasks.catalog import FlowTaskCatalog, join_flow_candidate_attestations
 from edagym.policy.private_roots import (
     PrivateRootAuditReport,
@@ -96,6 +97,7 @@ from edagym.release_evidence import (
 from edagym.release_evidence import (
     evidence_status as _status_for_counts,
 )
+from edagym.release_executors import VerifiedExecutorQualification
 from edagym.release_private_roots import project_release_private_root_audit
 from edagym.release_sessions import (
     ParticipantModeSuiteEvidence,
@@ -606,6 +608,8 @@ def build_release_report(
     participant_environments: tuple[EnvironmentSpec, ...] = (),
     participant_sessions: tuple[SessionSpec, ...] = (),
     participant_artifact_stores: Mapping[Digest, ContentAddressedStore] | None = None,
+    executor_deployment_registry: ExecutorDeploymentRegistry | None = None,
+    executor_qualification: VerifiedExecutorQualification | None = None,
 ) -> ReleaseReport:
     """Project immutable source facts into one digest-bound readiness report."""
 
@@ -713,6 +717,8 @@ def build_release_report(
         flow_artifact_stores=flow_artifact_stores,
         campaign_artifact_stores=campaign_stores,
         participant_artifact_stores=participant_stores,
+        executor_deployment_registry=executor_deployment_registry,
+        executor_qualification=executor_qualification,
     )
     durable_executor = _durable_executor_evidence(local_containment)
     statuses = (

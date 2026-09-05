@@ -228,6 +228,33 @@ same runner; it does not keep a second campaign ledger.
 `StandaloneProviderBudget` is limited to bounded provider probes that precede a
 campaign and is bound separately in the credential-isolation attestation.
 
+`edagym campaign run` and `edagym campaign resume` execute a frozen proposal
+from one canonical request document. The request names the proposal, the
+harness instruction, the restricted authoring provider with its three trusted
+digests, the materialized flow catalog root, the backend and executor
+deployment registries, the container engine and the rootless-image tool
+recipes, host asset paths, the artifact store root with an optional key file,
+the state root, and the exact environment and session documents. The frozen
+provider configuration is the only credential profile. Preparation resolves
+every campaign task to its provider-qualified release, participant files, and
+evaluator runtimes before any credential or journal is touched; a family
+without an in-process evaluator runtime is refused as unavailable.
+
+Each pending trial is then admitted by the host boundary: a rootless executor
+created from the deployment registry, the synthetic-secret preflight that
+issues the trial's canary attestation, and the metered Responses sender the
+broker opens only against that attestation, the credential source, and the
+runner's budget binding. `CampaignTrialDispatcher` performs the dispatch. Run
+requires an event-free campaign journal; resume reopens the same journal,
+admits only trials without a terminal outcome, and lets the dispatcher adopt
+durable work reservations and run journals, so an interrupted trial continues
+instead of being dispatched twice. A cap reached before dispatch ends every
+unfinished trial with that typed stop reason; any other failure is a typed
+refusal naming the trial. Trial receipts are rebuilt from the campaign and run
+journals rather than stored again, and the campaign report exists only when no
+trial is pending. One exclusive lock per state root refuses a concurrent
+operation instead of queueing it.
+
 ## Extension rules
 
 A new backend is admitted only with an executable fixture and typed evidence.

@@ -88,6 +88,18 @@ runtime-surface, CAS-content, or tool-execution proof remains `unavailable`;
 task-author qualification runs cannot substitute for paid participant
 evidence. ATIF and report projections are rebuilt from the same run journals.
 
+Participant-session evidence is its own gate. It joins one human, one agent,
+and one hybrid session run record to its task specification, instance,
+release, environment, session, and exact private artifact store, then derives
+ATIF, Harbor, NeMo, course, and leaderboard coverage from those journals. An
+empty inventory is `unavailable`; a partial bundle is rejected.
+
+The private-root audit is a further gate. Every required private root role,
+including the executor deployment registry and the executor qualification
+store, must be registered from a live source that release already verified; a
+role that no verified source registered stays missing and keeps the report
+`incomplete`.
+
 The repository entry preserves every named audit surface and requires complete
 release-mode coverage. It owns the exact object format, commit, tree, index,
 worktree, ref set, reflog inventory, LFS inventory, and scanned object scope.
@@ -117,7 +129,8 @@ The decision has three values:
 
 The model validates every count and partition and derives one status for each
 release gate: authoring, backend coverage, flow qualification, paid campaigns,
-repository audit, durable local execution, and command evidence. Its
+participant sessions, repository audit, private roots, durable local
+execution, and command evidence. Its
 domain-separated digest changes whenever an evidence identity, result, or
 availability fact changes. Missing canonical inventory cannot become a
 vacuous success.
@@ -135,7 +148,30 @@ environments; plus one policy-bound CAS for retained command output. It does
 not import a private pack registry, resolve a private provider implicitly, or
 promote caller-supplied command receipts into release evidence. The repository
 release audit, canonical command runner, and local containment probe run in the
-same process as the projection. The command emits the canonical report when
+same process as the projection. Paid participant evidence is supplied per run: `--campaign-store-root
+RUN_ID=PATH` with an optional `--campaign-artifact-key-file RUN_ID=PATH`
+reopens the exact private store of each smoke run record, so the CAS-content
+proofs above are computed instead of reported `unavailable`. Human, agent, and
+hybrid sessions arrive as `--participant-run`, `--participant-task`,
+`--participant-task-instance`, `--participant-release`,
+`--participant-environment`, and `--participant-session` documents together
+with `--participant-store-root RUN_ID=PATH` and an optional
+`--participant-artifact-key-file RUN_ID=PATH`. Every store binding must name a
+supplied run record whose bound environment owns the store policy; a store
+without its run record, or a run record without its store, is rejected.
+
+Executor evidence is `--executor-deployment PATH`, the owner-only executor
+deployment registry, and `--executor-qualification PATH`, a
+`VmExecutorQualificationSource` document carrying the committed disposable-VM
+receipt, its CAS commitment, the exact environment, and one invocation plan
+per lifecycle scenario. The receipt is replayed with
+`verify_vm_executor_qualification` against the store opened from
+`--executor-qualification-store-root PATH` and an optional
+`--executor-qualification-key-file PATH`. The private-root audit registers the
+executor deployment registry only from that live registry descriptor and the
+executor qualification store only from a store that replayed the committed
+receipt; omitting either input leaves its role missing rather than passing.
+The command emits the canonical report when
 all source inventories are structurally complete, then returns status `0` for
 `ready`, `1` for `blocked`, or `3` for `incomplete`.
 

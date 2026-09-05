@@ -9,6 +9,7 @@ import stat
 import sys
 import time
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from io import TextIOBase
 from pathlib import Path
 from typing import Any, Never, cast
@@ -37,7 +38,12 @@ from edagym.cli_support.campaigns import (
     CampaignCliCommand,
     execute_campaign_command,
 )
-from edagym.cli_support.documents import load_model, open_artifact_store
+from edagym.cli_support.documents import (
+    load_model,
+    open_artifact_store,
+    open_run_artifact_stores,
+    parse_keyed_paths,
+)
 from edagym.cli_support.errors import CliFailure
 from edagym.cli_support.flows import (
     evaluate_flow_candidate,
@@ -98,12 +104,18 @@ from edagym.release_commands import (
     execute_release_commands,
     release_command_requires_installation,
 )
+from edagym.release_executors import (
+    VerifiedExecutorQualification,
+    VmExecutorQualificationSource,
+    verify_executor_qualification_source,
+)
 from edagym.release_reporting import (
     ReleaseDecision,
     ReleaseReport,
     build_release_report,
 )
 from edagym.resolution import ResolutionError, resolve_run
+from edagym.run.artifacts import ArtifactStoreError, ContentAddressedStore
 from edagym.run.journal import JournalError, RunJournal
 from edagym.run.model import RunRecord
 from edagym.serialization import DocumentKind
@@ -123,6 +135,7 @@ _SUCCESS = 0
 _UNSATISFIED = 1
 _INVALID_INVOCATION = 2
 _INCOMPLETE = 3
+_RUN_KEYED_PATH = "RUN_ID=PATH"
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> Never:
         self.print_usage(sys.stderr)
@@ -292,6 +305,40 @@ def _add_release_report_command(
     report.add_argument("--campaign-task-instance", action="append", default=[], type=Path)
     report.add_argument("--campaign-session", action="append", default=[], type=Path)
     report.add_argument("--campaign-environment", action="append", default=[], type=Path)
+    report.add_argument(
+        "--campaign-store-root",
+        action="append",
+        default=[],
+        metavar=_RUN_KEYED_PATH,
+    )
+    report.add_argument(
+        "--campaign-artifact-key-file",
+        action="append",
+        default=[],
+        metavar=_RUN_KEYED_PATH,
+    )
+    report.add_argument("--participant-run", action="append", default=[], type=Path)
+    report.add_argument("--participant-task", action="append", default=[], type=Path)
+    report.add_argument("--participant-task-instance", action="append", default=[], type=Path)
+    report.add_argument("--participant-release", action="append", default=[], type=Path)
+    report.add_argument("--participant-environment", action="append", default=[], type=Path)
+    report.add_argument("--participant-session", action="append", default=[], type=Path)
+    report.add_argument(
+        "--participant-store-root",
+        action="append",
+        default=[],
+        metavar=_RUN_KEYED_PATH,
+    )
+    report.add_argument(
+        "--participant-artifact-key-file",
+        action="append",
+        default=[],
+        metavar=_RUN_KEYED_PATH,
+    )
+    report.add_argument("--executor-deployment", type=Path)
+    report.add_argument("--executor-qualification", type=Path)
+    report.add_argument("--executor-qualification-store-root", type=Path)
+    report.add_argument("--executor-qualification-key-file", type=Path)
     report.add_argument("--command-environment", required=True, type=Path)
     report.add_argument("--command-store-root", required=True, type=Path)
     report.add_argument("--command-artifact-key-file", type=Path)
@@ -1212,6 +1259,44 @@ def _release_report(arguments: argparse.Namespace) -> int:
         _load_json_model(path, EnvironmentSpec, "invalid-campaign-environment")
         for path in arguments.campaign_environment
     )
+    campaign_stores = _run_keyed_stores(
+        campaign_runs,
+        campaign_environments,
+        store_roots=arguments.campaign_store_root,
+        key_files=arguments.campaign_artifact_key_file,
+        code="invalid-campaign-store",
+    )
+    participant_runs = tuple(
+        _load_json_model(path, RunRecord, "invalid-participant-run")
+        for path in arguments.participant_run
+    )
+    participant_tasks = tuple(
+        _load_json_model(path, TaskSpec, "invalid-participant-task")
+        for path in arguments.participant_task
+    )
+    participant_instances = tuple(
+        _load_json_model(path, TaskInstance, "invalid-participant-task-instance")
+        for path in arguments.participant_task_instance
+    )
+    participant_releases = tuple(
+        _load_json_model(path, ReleaseManifest, "invalid-participant-release")
+        for path in arguments.participant_release
+    )
+    participant_environments = tuple(
+        _load_json_model(path, EnvironmentSpec, "invalid-participant-environment")
+        for path in arguments.participant_environment
+    )
+    participant_sessions = tuple(
+        _load_json_model(path, SessionSpec, "invalid-participant-session")
+        for path in arguments.participant_session
+    )
+    participant_stores = _run_keyed_stores(
+        participant_runs,
+        participant_environments,
+        store_roots=arguments.participant_store_root,
+        key_files=arguments.participant_artifact_key_file,
+        code="invalid-participant-store",
+    )
     command_environment = load_model(
         arguments.command_environment,
         "environment",
@@ -1240,40 +1325,62 @@ def _release_report(arguments: argparse.Namespace) -> int:
         )
     except (OSError, RuntimeError, ValueError):
         raise CliFailure("release-command-execution-failed", status=_INCOMPLETE) from None
-    try:
-        report = build_release_report(
-            public_task_catalog=PUBLIC_TASK_CATALOG,
-            sail_catalog_attestation=materialized_sail_catalog.attestation,
-            sail_task_documents=sail_documents,
-            sail_qualification_responses=sail_qualifications,
-            backend_catalog=BACKEND_CATALOG,
-            backend_sources=backend_sources,
-            flow_catalog=flow_catalog,
-            flow_catalog_attestation=materialized_flow_catalog.attestation,
-            flow_task_documents=flow_documents,
-            flow_environments=flow_environments,
-            flow_qualification_responses=flow_qualifications,
-            flow_run_records=records,
-            flow_artifact_stores=flow_artifact_stores,
-            campaign_records=campaign_records,
-            campaign_reports=campaigns,
-            model_discovery_snapshots=model_discoveries,
-            route_canary_evidence=route_canaries,
-            campaign_run_records=campaign_runs,
-            campaign_trial_results=campaign_trial_results,
-            campaign_task_instances=campaign_task_instances,
-            campaign_sessions=campaign_sessions,
-            campaign_environments=campaign_environments,
-            repository_audit=repository,
-            local_containment=probe_local_containment(),
-            command_receipts=commands,
-            repository_root=arguments.repository,
-            sail_catalog_root=arguments.sail_catalog_root,
-            flow_catalog_root=arguments.flow_catalog_root,
-            authoring_provider_registration=authoring_provider_registration,
-        )
-    except (ValueError, ValidationError):
-        raise CliFailure("invalid-release-evidence", status=_UNSATISFIED) from None
+    with ExitStack() as resources:
+        executor_registry = None
+        if arguments.executor_deployment is not None:
+            try:
+                executor_registry = resources.enter_context(
+                    load_executor_deployment_registry(
+                        arguments.executor_deployment.absolute()
+                    )
+                )
+            except (OSError, RuntimeError, ValueError):
+                raise CliFailure("invalid-executor-deployment", status=_UNSATISFIED) from None
+        executor_qualification = _executor_qualification(arguments)
+        try:
+            report = build_release_report(
+                public_task_catalog=PUBLIC_TASK_CATALOG,
+                sail_catalog_attestation=materialized_sail_catalog.attestation,
+                sail_task_documents=sail_documents,
+                sail_qualification_responses=sail_qualifications,
+                backend_catalog=BACKEND_CATALOG,
+                backend_sources=backend_sources,
+                flow_catalog=flow_catalog,
+                flow_catalog_attestation=materialized_flow_catalog.attestation,
+                flow_task_documents=flow_documents,
+                flow_environments=flow_environments,
+                flow_qualification_responses=flow_qualifications,
+                flow_run_records=records,
+                flow_artifact_stores=flow_artifact_stores,
+                campaign_records=campaign_records,
+                campaign_reports=campaigns,
+                model_discovery_snapshots=model_discoveries,
+                route_canary_evidence=route_canaries,
+                campaign_run_records=campaign_runs,
+                campaign_trial_results=campaign_trial_results,
+                campaign_task_instances=campaign_task_instances,
+                campaign_sessions=campaign_sessions,
+                campaign_environments=campaign_environments,
+                repository_audit=repository,
+                local_containment=probe_local_containment(),
+                command_receipts=commands,
+                repository_root=arguments.repository,
+                sail_catalog_root=arguments.sail_catalog_root,
+                flow_catalog_root=arguments.flow_catalog_root,
+                authoring_provider_registration=authoring_provider_registration,
+                campaign_artifact_stores=campaign_stores,
+                participant_run_records=participant_runs,
+                participant_task_specs=participant_tasks,
+                participant_task_instances=participant_instances,
+                participant_releases=participant_releases,
+                participant_environments=participant_environments,
+                participant_sessions=participant_sessions,
+                participant_artifact_stores=participant_stores,
+                executor_deployment_registry=executor_registry,
+                executor_qualification=executor_qualification,
+            )
+        except (ValueError, ValidationError):
+            raise CliFailure("invalid-release-evidence", status=_UNSATISFIED) from None
     _emit(report)
     return {
         ReleaseDecision.READY: _SUCCESS,
@@ -1376,21 +1483,52 @@ def _load_json_model[T: BaseModel](path: Path, model: type[T], code: str) -> T:
 
 
 def _parse_asset_paths(values: Sequence[str]) -> dict[str, Path]:
-    assets: dict[str, Path] = {}
-    for value in values:
-        asset_id, separator, raw_path = value.partition("=")
-        path = Path(raw_path)
-        if (
-            separator != "="
-            or not asset_id
-            or not raw_path
-            or "\x00" in value
-            or not path.is_absolute()
-            or asset_id in assets
-        ):
-            raise CliFailure("invalid-flow-asset-binding", status=_INVALID_INVOCATION)
-        assets[asset_id] = path
-    return assets
+    return parse_keyed_paths(
+        values,
+        code="invalid-flow-asset-binding",
+        status=_INVALID_INVOCATION,
+    )
+
+
+def _run_keyed_stores(
+    run_records: tuple[RunRecord, ...],
+    environments: tuple[EnvironmentSpec, ...],
+    *,
+    store_roots: Sequence[str],
+    key_files: Sequence[str],
+    code: str,
+) -> dict[str, ContentAddressedStore]:
+    return open_run_artifact_stores(
+        run_records,
+        environments,
+        parse_keyed_paths(store_roots, code=code, status=_INVALID_INVOCATION),
+        parse_keyed_paths(key_files, code=code, status=_INVALID_INVOCATION),
+        code=code,
+    )
+
+
+def _executor_qualification(
+    arguments: argparse.Namespace,
+) -> VerifiedExecutorQualification | None:
+    """Replay the committed VM executor qualification; an absent source stays unregistered."""
+
+    source_path = arguments.executor_qualification
+    store_root = arguments.executor_qualification_store_root
+    key_file = arguments.executor_qualification_key_file
+    if source_path is None and store_root is None and key_file is None:
+        return None
+    if source_path is None or store_root is None:
+        raise CliFailure("executor-qualification-store-required", status=_INVALID_INVOCATION)
+    source = _load_json_model(
+        source_path,
+        VmExecutorQualificationSource,
+        "invalid-executor-qualification",
+    )
+    store = open_artifact_store(store_root, source.environment, key_file)
+    try:
+        return verify_executor_qualification_source(source, store)
+    except (ArtifactStoreError, OSError, TypeError, ValueError):
+        raise CliFailure("invalid-executor-qualification", status=_UNSATISFIED) from None
 
 
 def _ensure_private_directory(path: Path) -> None:

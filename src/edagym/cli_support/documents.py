@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationError
@@ -14,7 +15,9 @@ from edagym.run.artifacts import (
     EncryptionKey,
     encryption_key_from_file_descriptor,
 )
+from edagym.run.model import RunRecord
 from edagym.serialization import DocumentKind, load_yaml_document
+from edagym.specs.common import Digest
 from edagym.specs.environment import EnvironmentSpec, ManagedEncryption
 
 _UNSATISFIED = 1
@@ -78,3 +81,56 @@ def _read_private_key(path: Path, key_id: str) -> EncryptionKey:
             raise CliFailure("artifact-key-insecure", status=_UNSATISFIED) from None
     finally:
         os.close(descriptor)
+
+
+def parse_keyed_paths(values: Sequence[str], *, code: str, status: int) -> dict[str, Path]:
+    """Parse unique ``KEY=ABSOLUTE_PATH`` bindings without exposing the offending value."""
+
+    paths: dict[str, Path] = {}
+    for value in values:
+        key, separator, raw_path = value.partition("=")
+        path = Path(raw_path)
+        if (
+            separator != "="
+            or not key
+            or not raw_path
+            or "\x00" in value
+            or not path.is_absolute()
+            or key in paths
+        ):
+            raise CliFailure(code, status=status)
+        paths[key] = path
+    return paths
+
+
+def open_run_artifact_stores(
+    run_records: Sequence[RunRecord],
+    environments: Sequence[EnvironmentSpec],
+    store_roots: Mapping[str, Path],
+    key_files: Mapping[str, Path],
+    *,
+    code: str,
+) -> dict[Digest, ContentAddressedStore]:
+    """Open exactly one policy-bound store per run, keyed by the run identity."""
+
+    records = {record.header.run_id: record for record in run_records}
+    environment_by_digest = {item.digest: item for item in environments}
+    if (
+        len(records) != len(run_records)
+        or set(store_roots) != set(records)
+        or not set(key_files) <= set(records)
+    ):
+        raise CliFailure(code, status=_UNSATISFIED)
+    stores: dict[Digest, ContentAddressedStore] = {}
+    for run_id, record in records.items():
+        environment = environment_by_digest.get(
+            record.header.binding.environment.environment_spec_digest
+        )
+        if environment is None:
+            raise CliFailure(code, status=_UNSATISFIED)
+        stores[run_id] = open_artifact_store(
+            store_roots[run_id],
+            environment,
+            key_files.get(run_id),
+        )
+    return stores

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from edagym.authoring.materialization import verify_materialized_catalog
 from edagym.authoring.provider import SealedCatalogAttestation
+from edagym.executors.deployment import ExecutorDeploymentRegistry
 from edagym.policy.private_roots import (
     PrivateRootAuditReport,
     PrivateRootRegistration,
@@ -19,6 +20,7 @@ from edagym.policy.private_roots import (
 from edagym.policy.repository import AuditReport
 from edagym.release_backend_sources import VerifiedBackendQualificationSources
 from edagym.release_commands import VerifiedReleaseCommandReceipt
+from edagym.release_executors import VerifiedExecutorQualification
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.security.artifact_closure import artifact_store_identity_digest
 from edagym.specs.common import Digest
@@ -51,6 +53,8 @@ def project_release_private_root_audit(
     flow_artifact_stores: Mapping[Digest, ContentAddressedStore],
     campaign_artifact_stores: Mapping[Digest, ContentAddressedStore],
     participant_artifact_stores: Mapping[Digest, ContentAddressedStore],
+    executor_deployment_registry: ExecutorDeploymentRegistry | None,
+    executor_qualification: VerifiedExecutorQualification | None,
 ) -> PrivateRootAuditReport:
     """Derive registrations only from sources already replayed by release gates."""
 
@@ -82,10 +86,37 @@ def project_release_private_root_audit(
             PrivateRootRole.PARTICIPANT_SESSION_STORE,
             participant_artifact_stores.values(),
         ),
+        *executor_private_root_registrations(
+            executor_deployment_registry,
+            executor_qualification,
+        ),
     )
     return project_private_root_audit(
         audit_private_roots(repository, repository_audit, registrations)
     )
+
+
+def executor_private_root_registrations(
+    deployment_registry: ExecutorDeploymentRegistry | None,
+    qualification: VerifiedExecutorQualification | None,
+) -> tuple[PrivateRootRegistration, ...]:
+    """Register only the live executor registry and a store that replayed its receipt."""
+
+    registrations: list[PrivateRootRegistration] = []
+    if deployment_registry is not None:
+        if type(deployment_registry) is not ExecutorDeploymentRegistry:
+            raise TypeError("executor registration requires the live deployment registry")
+        registrations.append(deployment_registry.source_registration())
+    if qualification is not None:
+        if type(qualification) is not VerifiedExecutorQualification:
+            raise TypeError("executor registration requires a verified qualification replay")
+        registrations.extend(
+            _artifact_store_registrations(
+                PrivateRootRole.EXECUTOR_QUALIFICATION_STORE,
+                (qualification.store,),
+            )
+        )
+    return tuple(registrations)
 
 
 def _materialized_catalog_registration(

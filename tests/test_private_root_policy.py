@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from edagym.executors.deployment import load_executor_deployment_registry
+from edagym.executors.qualification import commit_vm_executor_qualification
 from edagym.policy.private_roots import (
     PrivateRootAuditStatus,
     PrivateRootRole,
@@ -24,6 +26,14 @@ from edagym.policy.repository import (
     RepositoryPolicy,
     audit_repository,
 )
+from edagym.release_executors import (
+    VerifiedExecutorQualification,
+    VmExecutorQualificationSource,
+    verify_executor_qualification_source,
+)
+from edagym.release_private_roots import executor_private_root_registrations
+from tests.test_executor_deployment import _document as executor_deployment_document
+from tests.test_executor_qualification import _qualification as vm_executor_qualification
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -90,9 +100,7 @@ def test_registered_private_root_rejects_exposed_mode_bits(tmp_path: Path) -> No
         os.close(descriptor)
     evidence_file.chmod(0o644)
 
-    evidence = project_private_root_audit(
-        audit_private_roots(repository, audit, (registration,))
-    )
+    evidence = project_private_root_audit(audit_private_roots(repository, audit, (registration,)))
 
     assert evidence.status is PrivateRootAuditStatus.VIOLATION
     assert sum(len(root.exposed_modes) for root in evidence.roots) == 1
@@ -130,15 +138,60 @@ def test_registration_scans_one_shot_descriptor_after_ancestor_rename(
     replacement.write_bytes(b"replacement")
     replacement.chmod(0o644)
 
-    evidence = project_private_root_audit(
-        audit_private_roots(repository, audit, (registration,))
-    )
+    evidence = project_private_root_audit(audit_private_roots(repository, audit, (registration,)))
     registered = next(
-        root
-        for root in evidence.roots
-        if PrivateRootRole.COMMAND_ARTIFACT_STORE in root.roles
+        root for root in evidence.roots if PrivateRootRole.COMMAND_ARTIFACT_STORE in root.roles
     )
     assert registered.regular_file_count == 1
     assert not registered.exposed_modes
     with pytest.raises(RuntimeError, match="one-shot"):
         audit_private_roots(repository, audit, (registration,))
+
+
+def test_executor_roles_register_only_from_live_registry_and_verified_receipt(
+    tmp_path: Path,
+) -> None:
+    repository, audit = _release_repository(tmp_path / "repository")
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    registry_path = private / "executor-deployment.json"
+    registry_path.write_bytes(executor_deployment_document())
+    registry_path.chmod(0o600)
+    receipt, environment, store, plans = vm_executor_qualification(private / "qualification")
+    commitment = commit_vm_executor_qualification(receipt, environment, plans, store)
+    source = VmExecutorQualificationSource(
+        receipt=receipt,
+        commitment=commitment,
+        environment=environment,
+        plans=tuple(plans.values()),
+    )
+
+    assert executor_private_root_registrations(None, None) == ()
+    with pytest.raises(TypeError, match="canonical replay"):
+        VerifiedExecutorQualification(object(), receipt_digest=receipt.digest, store=store)
+
+    verified = verify_executor_qualification_source(source, store)
+    assert verified.receipt_digest == receipt.digest
+    registry = load_executor_deployment_registry(registry_path)
+    try:
+        registrations = executor_private_root_registrations(registry, verified)
+        try:
+            assert {item.role for item in registrations} == {
+                PrivateRootRole.EXECUTOR_DEPLOYMENT_REGISTRY,
+                PrivateRootRole.EXECUTOR_QUALIFICATION_STORE,
+            }
+            evidence = project_private_root_audit(
+                audit_private_roots(repository, audit, registrations)
+            )
+        finally:
+            for registration in registrations:
+                registration.close()
+    finally:
+        registry.close()
+
+    assert evidence.status is PrivateRootAuditStatus.INCOMPLETE
+    assert not {
+        PrivateRootRole.EXECUTOR_DEPLOYMENT_REGISTRY,
+        PrivateRootRole.EXECUTOR_QUALIFICATION_STORE,
+    } & set(evidence.missing_roles)
+    assert all(private.as_posix() not in root.model_dump_json() for root in evidence.roots)

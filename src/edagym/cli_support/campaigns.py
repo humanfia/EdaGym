@@ -6,13 +6,24 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, RootModel, ValidationError, model_validator
+from pydantic import BaseModel, Field, RootModel, ValidationError
 
-from edagym.canonical import canonical_bytes, canonical_digest
+from edagym.canonical import canonical_bytes
+from edagym.cli_support.documents import open_artifact_store
 from edagym.providers.campaign import CampaignSpec, DateStamp, ModelSetManifest
 from edagym.providers.campaign_budget import (
     CampaignAccountingError,
     CampaignBudgetProjection,
+)
+from edagym.providers.campaign_operation import (
+    CampaignOperationRefusal,
+    CampaignOperationRefusalReason,
+    CampaignOperationRequest,
+    CampaignOperationResult,
+    FrozenCampaignProposal,
+    execute_campaign_operation,
+    open_rootless_campaign_host,
+    prepare_campaign_trials,
 )
 from edagym.providers.campaign_reporting import project_campaign_report
 from edagym.providers.campaign_runner import (
@@ -36,12 +47,13 @@ from edagym.providers.model_discovery import (
     discover_provider_models,
     freeze_model_set,
 )
+from edagym.run.artifacts import ContentAddressedStore
 from edagym.security.credentials import (
     CodexCredentialSource,
     CredentialFormatError,
     CredentialSecurityError,
 )
-from edagym.specs.common import Digest, SchemaVersion, StrictModel
+from edagym.specs.common import Digest, Identifier, SchemaVersion, StrictModel
 
 _UNSATISFIED = 1
 _INCOMPLETE = 3
@@ -62,7 +74,6 @@ class CampaignCliFailureReason(StrEnum):
     PROVIDER_CONFIG_UNAVAILABLE = "provider_config_unavailable"
     MODEL_DISCOVERY_REJECTED = "model_discovery_rejected"
     MODEL_SET_REJECTED = "model_set_rejected"
-    CAMPAIGN_RUNTIME_UNAVAILABLE = "campaign_runtime_unavailable"
     CAMPAIGN_REPORT_INCOMPLETE = "campaign_report_incomplete"
 
 
@@ -71,7 +82,8 @@ class CampaignCliFailure(StrictModel):
 
     schema_version: SchemaVersion = 1
     command: CampaignCliCommand
-    reason: CampaignCliFailureReason
+    reason: CampaignCliFailureReason | CampaignOperationRefusalReason
+    trial_id: Identifier | None = None
 
 
 class ProviderInspectRequest(StrictModel):
@@ -119,42 +131,16 @@ class CampaignFreezeRequest(
     """Discriminated owner for the two immutable freeze operations."""
 
 
-class FrozenCampaignProposal(StrictModel):
-    """Complete portable campaign identity and numeric approval envelope."""
+class CampaignRunRequest(CampaignOperationRequest):
+    """Start the frozen campaign from an event-free durable journal."""
 
-    schema_version: SchemaVersion = 1
-    header: CampaignHeader
-    budget: CampaignBudgetProjection
-
-    @model_validator(mode="after")
-    def validate_budget(self) -> FrozenCampaignProposal:
-        expected = CampaignBudgetProjection.from_campaign(
-            self.header.campaign,
-            self.header.schedule,
-        )
-        if self.budget != expected:
-            raise ValueError("campaign proposal budget is not derived from its header")
-        return self
-
-    @property
-    def digest(self) -> Digest:
-        return canonical_digest(self, domain="frozen-provider-campaign-proposal-v1")
-
-
-class CampaignRunRequest(StrictModel):
-    """Portable campaign identity; process-local runtime inputs remain controller-owned."""
-
-    schema_version: SchemaVersion = 1
     command: Literal[CampaignCliCommand.RUN] = CampaignCliCommand.RUN
-    header: CampaignHeader
 
 
-class CampaignResumeRequest(StrictModel):
-    """Portable record identity; recovery roots and grants are never serialized here."""
+class CampaignResumeRequest(CampaignOperationRequest):
+    """Continue a started campaign from its durable journal without re-dispatch."""
 
-    schema_version: SchemaVersion = 1
     command: Literal[CampaignCliCommand.RESUME] = CampaignCliCommand.RESUME
-    record: CampaignRecord
 
 
 class CampaignReportRequest(StrictModel):
@@ -177,6 +163,7 @@ CampaignCliResult = (
     | ModelDiscoveryResult
     | ModelSetFreezeResult
     | FrozenCampaignProposal
+    | CampaignOperationResult
     | CampaignReport
     | CampaignCliFailure
 )
@@ -211,10 +198,7 @@ def execute_campaign_command(
     if isinstance(request, CampaignReportRequest):
         return _report(request)
     if isinstance(request, (CampaignRunRequest, CampaignResumeRequest)):
-        return (
-            _failure(command, CampaignCliFailureReason.CAMPAIGN_RUNTIME_UNAVAILABLE),
-            _UNSATISFIED,
-        )
+        return _operate(request)
     raise AssertionError("campaign request dispatch is incomplete")
 
 
@@ -231,9 +215,7 @@ def _load_request[TRequest: BaseModel](path: Path, model: type[TRequest]) -> TRe
 
 def _inspect(request: ProviderInspectRequest) -> tuple[CampaignCliResult, int]:
     try:
-        result = CodexCredentialSource(
-            trusted_profile=request.trusted_profile
-        ).inspect_profile()
+        result = CodexCredentialSource(trusted_profile=request.trusted_profile).inspect_profile()
     except (CredentialFormatError, CredentialSecurityError):
         return (
             _failure(
@@ -318,6 +300,52 @@ def _freeze(
             _UNSATISFIED,
         )
     return result, _UNSATISFIED if isinstance(result, ModelSetUnavailable) else 0
+
+
+def _operate(
+    request: CampaignRunRequest | CampaignResumeRequest,
+) -> tuple[CampaignCliResult, int]:
+    """Open the policy-bound stores, then hand every composition to the operation owner."""
+
+    try:
+        prepared = prepare_campaign_trials(
+            request,
+            artifact_stores=_campaign_artifact_stores(request),
+        )
+        with open_rootless_campaign_host(request) as host:
+            result = execute_campaign_operation(
+                request,
+                prepared,
+                resume=request.command is CampaignCliCommand.RESUME,
+                host=host,
+            )
+    except CampaignOperationRefusal as refusal:
+        return (
+            CampaignCliFailure(
+                command=request.command,
+                reason=refusal.reason,
+                trial_id=refusal.trial_id,
+            ),
+            _UNSATISFIED,
+        )
+    return result, 0
+
+
+def _campaign_artifact_stores(
+    request: CampaignOperationRequest,
+) -> dict[Digest, ContentAddressedStore]:
+    """One policy-bound store per environment beneath the requested artifact root."""
+
+    root = Path(request.artifact_store_root)
+    key_file = None if request.artifact_key_file is None else Path(request.artifact_key_file)
+    return {
+        environment.digest: open_artifact_store(
+            root / environment.digest.removeprefix("sha256:"),
+            environment,
+            key_file,
+        )
+        for environment in request.environments
+    }
 
 
 def _report(request: CampaignReportRequest) -> tuple[CampaignCliResult, int]:
