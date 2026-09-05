@@ -44,10 +44,16 @@ jobs:
 
       - name: Verify source and generated contracts
         run: |
-          ruff check .
-          mypy --no-incremental
-          pytest
-          python -m edagym.authoring contract
+          status=0
+          ruff check . || { status=1; echo '::error title=ruff::ruff check failed'; }
+          mypy --no-incremental || { status=1; echo '::error title=mypy::mypy failed'; }
+          if ! pytest -q -rfE > pytest.log 2>&1; then
+            status=1
+            grep -E '^(FAILED|ERROR) ' pytest.log | head -n 10 | sed 's/^/::error title=pytest::/'
+          fi
+          tail -n 40 pytest.log
+          python -m edagym.authoring contract || { status=1; echo '::error title=contract::authoring contract failed'; }
+          exit "$status"
 
       - name: Audit repository history
         run: |
