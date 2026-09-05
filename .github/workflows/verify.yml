@@ -1,0 +1,56 @@
+name: Verify repository
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Select Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: "1.25.4"
+          cache: false
+
+      - name: Install verification tools
+        env:
+          GOBIN: ${{ runner.temp }}/edagym-bin
+        run: |
+          python -m pip install -e '.[dev]'
+          go install github.com/zricethezav/gitleaks/v8@v8.30.0
+          sudo install -o root -g root -m 0755 \
+            "$GOBIN/gitleaks" /usr/local/bin/edagym-gitleaks
+
+      - name: Verify source and generated contracts
+        run: |
+          ruff check .
+          mypy --no-incremental
+          pytest
+          python -m edagym.authoring contract
+
+      - name: Audit repository history
+        run: |
+          python scripts/check_repository_policy.py \
+            --mode release \
+            --gitleaks /usr/local/bin/edagym-gitleaks

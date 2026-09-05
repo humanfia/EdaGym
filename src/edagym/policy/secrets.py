@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -66,6 +66,50 @@ CONTENT_RULES: tuple[ContentRule, ...] = (
     ),
 )
 
+RESTRICTED_CONTENT_RULES: tuple[ContentRule, ...] = (
+    ContentRule(
+        "host-path",
+        re.compile(
+            rb"(?<![A-Za-z0-9_.-])/(?:data[0-9]*|eda|etc|fast|home|mnt|net|nfs|"
+            rb"opt|proj|project|root|run|scratch|tmp|tools|usr|var|work)/"
+            rb"[^\x00\s\"'<>]{1,512}"
+        ),
+    ),
+    ContentRule(
+        "network-endpoint",
+        re.compile(
+            rb"(?i)\b(?:grpc|grpcs|http|https|ssh|tcp|udp)://"
+            rb"[^\x00\s\"'<>]{1,512}"
+        ),
+    ),
+    ContentRule(
+        "network-address",
+        re.compile(
+            rb"(?i)\b(?:localhost|"
+            rb"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+            rb"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+|"
+            rb"(?:[0-9]{1,3}\.){3}[0-9]{1,3}):[0-9]{1,5}\b"
+        ),
+    ),
+    ContentRule(
+        "license-route",
+        re.compile(
+            rb"(?i)(?:\b(?:[A-Z][A-Z0-9_]*(?:_LIC|_LICENSE)[A-Z0-9_]*|"
+            rb"LICENSE(?:_[A-Z0-9]+)*)"
+            rb"[\"']?\s*[:=]\s*[\"']?[^\x00\s,\"'}]{1,512}|"
+            rb"\b[0-9]{1,5}@[A-Za-z0-9][A-Za-z0-9.-]{0,253}\b)"
+        ),
+    ),
+    ContentRule(
+        "pdk-library-identity",
+        re.compile(
+            rb"(?i)\b(?:liberty|library|pdk|standard[ _-]?cell|technology)"
+            rb"(?:[ _-]?name)?[\"']?\s*[:=]\s*[\"']?"
+            rb"[A-Za-z0-9_./+-]{2,256}"
+        ),
+    ),
+)
+
 _EXACT_SENSITIVE_NAMES = frozenset(
     {
         ".gitleaksignore",
@@ -85,11 +129,46 @@ _EXACT_SENSITIVE_NAMES = frozenset(
     }
 )
 _SENSITIVE_SUFFIXES = (".jks", ".key", ".kdbx", ".p12", ".pem", ".pfx")
-_SENSITIVE_DIRECTORY_NAMES = frozenset({".aws", ".codex", ".ssh", "credentials"})
+_SENSITIVE_DIRECTORY_NAMES = frozenset(
+    {".aws", ".claude", ".codex", ".ssh", "credentials", "secrets"}
+)
 PRIVATE_RUNTIME_ROOTS = frozenset(
-    {".edagym", ".edagym-state", "artifacts", "runs", "workspaces"}
+    {
+        ".benchmarks",
+        ".edagym",
+        ".edagym-state",
+        ".xil",
+        "artifacts",
+        "runs",
+        "task_families",
+        "workspaces",
+    }
 )
 _SCAN_OVERLAP = 8192
+
+
+class ContentRuleScanner:
+    """Incrementally classify bounded sensitive patterns without retaining matches."""
+
+    __slots__ = ("_matched", "_rules", "_tail")
+
+    def __init__(self, rules: Sequence[ContentRule]) -> None:
+        self._rules = tuple(rules)
+        self._matched: set[str] = set()
+        self._tail = b""
+
+    def update(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        window = self._tail + chunk
+        for rule in self._rules:
+            if rule.rule_id not in self._matched and rule.matches(window):
+                self._matched.add(rule.rule_id)
+        self._tail = window[-_SCAN_OVERLAP:]
+
+    @property
+    def matched_rule_ids(self) -> frozenset[str]:
+        return frozenset(self._matched)
 
 
 def sensitive_path_rule(path: str) -> str | None:
@@ -136,17 +215,10 @@ def sensitive_root_tree_entry_rule(name: str, *, is_directory: bool) -> str | No
 def matching_content_rules(chunks: Iterable[bytes]) -> frozenset[str]:
     """Scan a byte stream and return rule IDs without retaining matched material."""
 
-    matched: set[str] = set()
-    tail = b""
+    scanner = ContentRuleScanner(CONTENT_RULES)
     for chunk in chunks:
-        if not chunk:
-            continue
-        window = tail + chunk
-        for rule in CONTENT_RULES:
-            if rule.rule_id not in matched and rule.matches(window):
-                matched.add(rule.rule_id)
-        tail = window[-_SCAN_OVERLAP:]
-    return frozenset(matched)
+        scanner.update(chunk)
+    return scanner.matched_rule_ids
 
 
 def _shannon_entropy(value: bytes) -> float:

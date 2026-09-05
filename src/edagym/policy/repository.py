@@ -13,14 +13,18 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path, PurePosixPath
-from typing import IO
+from typing import IO, Annotated, Never, Self
 
+from pydantic import StringConstraints, model_validator
+
+from edagym.canonical import canonical_digest
 from edagym.policy.secrets import (
     matching_content_rules,
     sensitive_path_rule,
     sensitive_root_tree_entry_rule,
     sensitive_tree_entry_rule,
 )
+from edagym.specs.common import Digest, StrictModel
 
 _OBJECT_ID = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _LFS_POINTER = re.compile(
@@ -32,6 +36,59 @@ _IO_CHUNK_SIZE = 64 * 1024
 _METADATA_PREFIX_SIZE = 8 * 1024
 _GIT_EXECUTABLE = "/usr/bin/git"
 _GIT_LFS_EXECUTABLE = "/usr/bin/git-lfs"
+_EMPTY_CONTENT_DIGEST = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+GitObjectId = Annotated[
+    str,
+    StringConstraints(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"),
+]
+
+
+class GitObjectFormat(StrEnum):
+    SHA1 = "sha1"
+    SHA256 = "sha256"
+
+
+class RepositorySnapshot(StrictModel):
+    """Exact Git state and scan scope observed by one repository audit."""
+
+    object_format: GitObjectFormat
+    commit_id: GitObjectId
+    tree_id: GitObjectId
+    index_tree_id: GitObjectId
+    worktree_tree_id: GitObjectId | None
+    index_state_digest: Digest
+    worktree_state_digest: Digest
+    ref_set_digest: Digest
+    reflog_record_digest: Digest
+    lfs_object_inventory_digest: Digest
+    scan_scope_digest: Digest
+
+    @model_validator(mode="after")
+    def validate_object_format(self) -> Self:
+        expected_width = 40 if self.object_format is GitObjectFormat.SHA1 else 64
+        object_ids = (
+            self.commit_id,
+            self.tree_id,
+            self.index_tree_id,
+            self.worktree_tree_id,
+        )
+        if any(value is not None and len(value) != expected_width for value in object_ids):
+            raise ValueError("repository object ids must match the declared object format")
+        if self.worktree_tree_id is not None and self.worktree_tree_id != self.index_tree_id:
+            raise ValueError("a verified worktree tree must equal its index tree")
+        return self
+
+    @property
+    def is_clean(self) -> bool:
+        return (
+            self.tree_id == self.index_tree_id == self.worktree_tree_id
+            and self.worktree_state_digest == _EMPTY_CONTENT_DIGEST
+        )
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self, domain="repository-snapshot-v2")
 
 
 class AuditMode(StrEnum):
@@ -149,10 +206,15 @@ class AuditReport:
     findings: tuple[PolicyFinding, ...]
     issues: tuple[AuditIssue, ...]
     coverage: tuple[CoverageEvidence, ...]
+    snapshot: RepositorySnapshot | None
 
     @property
     def exit_code(self) -> AuditExitCode:
         return AuditExitCode[self.status.name]
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self.as_dict(), domain="repository-audit-report-v2")
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -160,6 +222,9 @@ class AuditReport:
             "findings": [item.as_dict() for item in self.findings],
             "issues": [item.as_dict() for item in self.issues],
             "mode": self.mode.value,
+            "snapshot": (
+                None if self.snapshot is None else self.snapshot.model_dump(mode="json")
+            ),
             "status": self.status.value,
         }
 
@@ -182,6 +247,76 @@ class AuditReport:
                 f"issue scope={issue.scope.value} severity={issue.severity.value} code={issue.code}"
             )
         return "\n".join(lines)
+
+
+_SNAPSHOT_BINDING_TOKEN = object()
+
+
+class RepositorySnapshotBinding:
+    """Nonserializable ownership of one descriptor-bound audited Git state."""
+
+    __slots__ = ("_descriptor", "_root", "snapshot")
+
+    def __init__(
+        self,
+        token: object,
+        descriptor: int,
+        root: Path,
+        snapshot: RepositorySnapshot,
+    ) -> None:
+        if token is not _SNAPSHOT_BINDING_TOKEN:
+            raise TypeError("repository snapshot bindings are issued by repository policy")
+        self._descriptor = descriptor
+        self._root = root
+        self.snapshot = snapshot
+
+    @property
+    def root(self) -> Path:
+        if self._descriptor < 0:
+            raise RuntimeError("repository snapshot binding is closed")
+        return self._root
+
+    def verify(self) -> None:
+        if self._descriptor < 0 or _capture_repository_state(self._root).snapshot != self.snapshot:
+            raise RuntimeError("repository snapshot changed after its audit")
+
+    def close(self) -> None:
+        if self._descriptor >= 0:
+            os.close(self._descriptor)
+            self._descriptor = -1
+
+    def __enter__(self) -> RepositorySnapshotBinding:
+        self.verify()
+        return self
+
+    def __exit__(self, *exception: object) -> None:
+        self.close()
+
+    def __reduce__(self) -> Never:
+        raise TypeError("repository snapshot bindings cannot be serialized")
+
+
+def bind_repository_snapshot(
+    repository: str | os.PathLike[str],
+    snapshot: RepositorySnapshot,
+) -> RepositorySnapshotBinding:
+    """Open a repository only when its complete live state matches an audit snapshot."""
+
+    if type(snapshot) is not RepositorySnapshot:
+        raise TypeError("repository binding requires the canonical snapshot type")
+    root, descriptor = _open_repository(Path(repository))
+    try:
+        if _capture_repository_state(root).snapshot != snapshot:
+            raise RuntimeError("repository does not match its audited snapshot")
+        return RepositorySnapshotBinding(
+            _SNAPSHOT_BINDING_TOKEN,
+            descriptor,
+            root,
+            snapshot,
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +353,26 @@ class _ObjectDescription:
     object_id: str
     object_type: str
     size: int
+
+
+@dataclass(frozen=True, slots=True)
+class _LfsFile:
+    path: Path
+    relative_path: str
+    object_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _CapturedRepositoryState:
+    snapshot: RepositorySnapshot
+    index_entries: tuple[_GitEntry, ...]
+    tracked_entries: tuple[_GitEntry, ...]
+    ref_records: bytes
+    reflog_inventory: bytes
+    lfs_object_inventory: bytes
+    object_descriptions: tuple[_ObjectDescription, ...]
+    index_clean: bool
+    worktree_clean: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,17 +420,49 @@ def audit_repository(
     coverage: dict[CoverageScope, CoverageStatus] = {}
 
     try:
-        root = _repository_root(Path(repository))
-    except _GitFailure:
+        root, root_descriptor = _open_repository(Path(repository))
+    except (_GitFailure, OSError):
         issues.add(AuditIssue("not-a-git-repository", IssueScope.REPOSITORY, IssueSeverity.ERROR))
-        return _build_report(mode, findings, issues, coverage)
+        return _build_report(mode, findings, issues, coverage, snapshot=None)
 
-    index_entries: tuple[_GitEntry, ...] = ()
     try:
-        index_entries = _index_entries(root)
-        _audit_repository_files(
-            root, index_entries, active_policy, findings, issues, coverage
+        return _audit_open_repository(
+            root,
+            mode,
+            active_policy,
+            findings,
+            issues,
+            coverage,
         )
+    finally:
+        os.close(root_descriptor)
+
+
+def _audit_open_repository(
+    root: Path,
+    mode: AuditMode,
+    policy: RepositoryPolicy,
+    findings: set[PolicyFinding],
+    issues: set[AuditIssue],
+    coverage: dict[CoverageScope, CoverageStatus],
+) -> AuditReport:
+    state: _CapturedRepositoryState | None = None
+    try:
+        state = _capture_repository_state(root)
+    except (_GitFailure, _ObjectProtocolFailure):
+        issues.add(
+            AuditIssue(
+                "repository-snapshot-unavailable",
+                IssueScope.REPOSITORY,
+                IssueSeverity.ERROR,
+            )
+        )
+
+    index_entries = () if state is None else state.index_entries
+    try:
+        if state is None:
+            raise _GitFailure("index-snapshot-unavailable")
+        _audit_repository_files(root, index_entries, policy, findings, issues, coverage)
         for entry in index_entries:
             if entry.stage != 0:
                 findings.add(
@@ -302,10 +489,11 @@ def audit_repository(
         coverage[CoverageScope.INDEX_OBJECTS] = CoverageStatus.INCOMPLETE
 
     try:
-        tracked_entries = _head_entries(root)
+        if state is None:
+            raise _GitFailure("head-snapshot-unavailable")
         _audit_entries(
             root,
-            tracked_entries,
+            state.tracked_entries,
             FindingScope.TRACKED_PATH,
             FindingScope.TRACKED_OBJECT,
             findings,
@@ -318,7 +506,13 @@ def audit_repository(
         coverage[CoverageScope.TRACKED_OBJECTS] = CoverageStatus.INCOMPLETE
 
     if mode is AuditMode.RELEASE:
-        _audit_release(root, active_policy, findings, issues, coverage)
+        if state is None or not state.index_clean:
+            issues.add(AuditIssue("release-index-dirty", IssueScope.INDEX, IssueSeverity.ERROR))
+        if state is None or not state.worktree_clean:
+            issues.add(
+                AuditIssue("release-worktree-dirty", IssueScope.REPOSITORY, IssueSeverity.ERROR)
+            )
+        _audit_release(root, policy, findings, issues, coverage, state)
     else:
         coverage[CoverageScope.GIT_REFS] = CoverageStatus.NOT_REQUIRED
         coverage[CoverageScope.GIT_REFLOGS] = CoverageStatus.NOT_REQUIRED
@@ -326,9 +520,37 @@ def audit_repository(
         coverage[CoverageScope.REPOSITORY_INTEGRITY] = CoverageStatus.NOT_REQUIRED
         coverage[CoverageScope.OBJECT_DATABASE] = CoverageStatus.NOT_REQUIRED
         coverage[CoverageScope.GIT_LFS] = CoverageStatus.NOT_REQUIRED
-        _run_external_scanner(root, active_policy, findings, issues, coverage)
+        _run_external_scanner(
+            root,
+            policy,
+            findings,
+            issues,
+            coverage,
+            state,
+        )
 
-    return _build_report(mode, findings, issues, coverage)
+    try:
+        final_state = _capture_repository_state(root)
+    except (_GitFailure, _ObjectProtocolFailure):
+        final_state = None
+    if state is None or final_state is None or final_state.snapshot != state.snapshot:
+        issues.add(
+            AuditIssue(
+                "repository-snapshot-changed",
+                IssueScope.REPOSITORY,
+                IssueSeverity.INCOMPLETE,
+            )
+        )
+        if mode is AuditMode.RELEASE:
+            coverage[CoverageScope.REPOSITORY_INTEGRITY] = CoverageStatus.INCOMPLETE
+
+    return _build_report(
+        mode,
+        findings,
+        issues,
+        coverage,
+        snapshot=None if state is None else state.snapshot,
+    )
 
 
 def _audit_repository_files(
@@ -445,15 +667,24 @@ def _audit_release(
     findings: set[PolicyFinding],
     issues: set[AuditIssue],
     coverage: dict[CoverageScope, CoverageStatus],
+    state: _CapturedRepositoryState | None,
 ) -> None:
     _audit_storage_shape(root, issues, coverage)
     _audit_git_integrity(root, issues, coverage)
-    _inspect_refs_and_reflogs(root, findings, issues, coverage)
+    _inspect_refs_and_reflogs(
+        root,
+        None if state is None else state.ref_records,
+        None if state is None else state.reflog_inventory,
+        findings,
+        issues,
+        coverage,
+    )
 
     object_scans: tuple[_ObjectScan, ...] = ()
     try:
-        descriptions = _all_objects(root)
-        object_scans = _scan_objects(root, descriptions)
+        if state is None:
+            raise _ObjectProtocolFailure
+        object_scans = _scan_objects(root, state.object_descriptions)
         _add_object_findings(object_scans, findings)
         coverage[CoverageScope.OBJECT_DATABASE] = CoverageStatus.COMPLETE
     except (_GitFailure, _ObjectProtocolFailure):
@@ -466,8 +697,15 @@ def _audit_release(
         )
         coverage[CoverageScope.OBJECT_DATABASE] = CoverageStatus.INCOMPLETE
 
-    _audit_lfs(root, object_scans, issues, findings, coverage)
-    _run_external_scanner(root, policy, findings, issues, coverage)
+    _audit_lfs(
+        root,
+        object_scans,
+        issues,
+        findings,
+        coverage,
+        None if state is None else state.lfs_object_inventory,
+    )
+    _run_external_scanner(root, policy, findings, issues, coverage, state)
 
 
 def _audit_storage_shape(
@@ -567,12 +805,15 @@ def _audit_git_integrity(
 
 def _inspect_refs_and_reflogs(
     root: Path,
+    ref_records: bytes | None,
+    expected_reflog_inventory: bytes | None,
     findings: set[PolicyFinding],
     issues: set[AuditIssue],
     coverage: dict[CoverageScope, CoverageStatus],
 ) -> None:
     try:
-        ref_records = _run_git(root, "for-each-ref", "--format=%(objectname)%00%(refname)")
+        if ref_records is None:
+            raise _ObjectProtocolFailure
         for rule_id in matching_content_rules((ref_records,)):
             findings.add(PolicyFinding(rule_id, FindingScope.GIT_REF))
         for record in ref_records.splitlines():
@@ -587,9 +828,12 @@ def _inspect_refs_and_reflogs(
         coverage[CoverageScope.GIT_REFS] = CoverageStatus.INCOMPLETE
 
     try:
-        _run_git(root, "reflog", "show", "--all", "--format=%H%x00%gD")
+        if expected_reflog_inventory is None:
+            raise _ObjectProtocolFailure
         for rule_id in _reflog_content_rules(root):
             findings.add(PolicyFinding(rule_id, FindingScope.GIT_REFLOG))
+        if _reflog_inventory(root) != expected_reflog_inventory:
+            raise _ObjectProtocolFailure
         coverage[CoverageScope.GIT_REFLOGS] = CoverageStatus.COMPLETE
     except (_GitFailure, _ObjectProtocolFailure, OSError):
         issues.add(AuditIssue("git-reflog-audit-failed", IssueScope.REFLOGS, IssueSeverity.ERROR))
@@ -672,6 +916,7 @@ def _audit_lfs(
     issues: set[AuditIssue],
     findings: set[PolicyFinding],
     coverage: dict[CoverageScope, CoverageStatus],
+    expected_inventory: bytes | None,
 ) -> None:
     pointer_sizes: dict[str, set[int]] = {}
     for scan in scans:
@@ -683,15 +928,33 @@ def _audit_lfs(
         if not git_common_dir.is_absolute():
             git_common_dir = root / git_common_dir
         lfs_objects_root = git_common_dir / "lfs" / "objects"
-        local_objects = tuple(_local_lfs_objects(lfs_objects_root))
-    except (_GitFailure, OSError):
+        local_files = tuple(_local_lfs_files(lfs_objects_root))
+        local_objects = tuple(
+            item for item in local_files if item.object_id is not None
+        )
+        inventory_stable = (
+            expected_inventory is not None
+            and _lfs_object_inventory(root) == expected_inventory
+        )
+    except (_GitFailure, OSError, _ObjectProtocolFailure):
         issues.add(AuditIssue("git-lfs-audit-failed", IssueScope.GIT_LFS, IssueSeverity.ERROR))
         coverage[CoverageScope.GIT_LFS] = CoverageStatus.INCOMPLETE
         return
 
-    lfs_is_used = bool(pointer_sizes or local_objects)
+    if not inventory_stable:
+        issues.add(
+            AuditIssue(
+                "git-lfs-inventory-changed",
+                IssueScope.GIT_LFS,
+                IssueSeverity.INCOMPLETE,
+            )
+        )
+        coverage[CoverageScope.GIT_LFS] = CoverageStatus.INCOMPLETE
+
+    lfs_is_used = bool(pointer_sizes or local_files)
     if not lfs_is_used:
-        coverage[CoverageScope.GIT_LFS] = CoverageStatus.NOT_USED
+        if inventory_stable:
+            coverage[CoverageScope.GIT_LFS] = CoverageStatus.NOT_USED
         return
 
     git_lfs = Path(_GIT_LFS_EXECUTABLE)
@@ -714,7 +977,7 @@ def _audit_lfs(
             )
             coverage[CoverageScope.GIT_LFS] = CoverageStatus.INCOMPLETE
 
-    local_ids = {object_id for object_id, _ in local_objects}
+    local_ids = {item.object_id for item in local_objects}
     for pointer_id, expected_sizes in pointer_sizes.items():
         if len(expected_sizes) != 1:
             findings.add(
@@ -734,7 +997,17 @@ def _audit_lfs(
             )
             coverage[CoverageScope.GIT_LFS] = CoverageStatus.INCOMPLETE
 
-    for object_id, path in local_objects:
+    for item in local_files:
+        object_id = item.object_id
+        path = item.path
+        if object_id is None:
+            findings.add(
+                PolicyFinding(
+                    "git-lfs-object-layout-invalid",
+                    FindingScope.GIT_LFS,
+                    path=item.relative_path,
+                )
+            )
         try:
             before = path.lstat()
             if not stat.S_ISREG(before.st_mode) or path.is_symlink():
@@ -757,7 +1030,7 @@ def _audit_lfs(
             )
             coverage[CoverageScope.GIT_LFS] = CoverageStatus.INCOMPLETE
             continue
-        if digest.hexdigest() != object_id:
+        if object_id is not None and digest.hexdigest() != object_id:
             issues.add(
                 AuditIssue(
                     "git-lfs-object-hash-mismatch",
@@ -766,7 +1039,9 @@ def _audit_lfs(
                 )
             )
             coverage[CoverageScope.GIT_LFS] = CoverageStatus.INCOMPLETE
-        pointer_expected_sizes = pointer_sizes.get(object_id)
+        pointer_expected_sizes = (
+            None if object_id is None else pointer_sizes.get(object_id)
+        )
         if pointer_expected_sizes is not None and before.st_size not in pointer_expected_sizes:
             issues.add(
                 AuditIssue(
@@ -781,7 +1056,10 @@ def _audit_lfs(
                 PolicyFinding(
                     rule_id,
                     FindingScope.GIT_LFS,
-                    object_id=f"sha256:{object_id}",
+                    path=item.relative_path if object_id is None else None,
+                    object_id=(
+                        None if object_id is None else f"sha256:{object_id}"
+                    ),
                 )
             )
 
@@ -789,7 +1067,7 @@ def _audit_lfs(
         coverage[CoverageScope.GIT_LFS] = CoverageStatus.COMPLETE
 
 
-def _local_lfs_objects(root: Path) -> Iterator[tuple[str, Path]]:
+def _local_lfs_files(root: Path) -> Iterator[_LfsFile]:
     if not root.exists():
         return
     if root.is_symlink():
@@ -800,8 +1078,20 @@ def _local_lfs_objects(root: Path) -> Iterator[tuple[str, Path]]:
         if any((Path(directory) / name).is_symlink() for name in directory_names):
             raise OSError
         for file_name in file_names:
-            if re.fullmatch(r"[0-9a-f]{64}", file_name):
-                yield file_name, Path(directory) / file_name
+            path = Path(directory) / file_name
+            if path.is_symlink() or not path.is_file():
+                raise OSError
+            relative_path = path.relative_to(root)
+            parts = relative_path.parts
+            object_id = (
+                file_name
+                if re.fullmatch(r"[0-9a-f]{64}", file_name)
+                and len(parts) == 3
+                and parts[0] == file_name[:2]
+                and parts[1] == file_name[2:4]
+                else None
+            )
+            yield _LfsFile(path, relative_path.as_posix(), object_id)
 
 
 def _hashing_chunks(
@@ -818,11 +1108,14 @@ def _run_external_scanner(
     findings: set[PolicyFinding],
     issues: set[AuditIssue],
     coverage: dict[CoverageScope, CoverageStatus],
+    state: _CapturedRepositoryState | None,
 ) -> None:
     scanner_config = root / policy.scanner_config
     scanner = Path(policy.external_scanner_executable)
     try:
-        indexed_config = _indexed_file_bytes(root, _index_entries(root), policy.scanner_config)
+        if state is None:
+            raise _ObjectProtocolFailure
+        indexed_config = _indexed_file_bytes(root, state.index_entries, policy.scanner_config)
         config_metadata = scanner_config.lstat()
         working_config = scanner_config.read_bytes()
     except (LookupError, OSError, _GitFailure, _ObjectProtocolFailure):
@@ -865,7 +1158,7 @@ def _run_external_scanner(
             "--redact",
             "--ignore-gitleaks-allow",
             "--config",
-            os.fspath(scanner_config),
+            policy.scanner_config,
             "--exit-code",
             "1",
         ],
@@ -888,7 +1181,14 @@ def _run_external_scanner(
         return
     corpus_complete = True
     try:
-        _write_release_corpus(root, process.stdin)
+        if state is None:
+            raise _ObjectProtocolFailure
+        _write_release_corpus(
+            root,
+            process.stdin,
+            state.object_descriptions,
+            state.ref_records,
+        )
     except (BrokenPipeError, OSError, _GitFailure, _ObjectProtocolFailure):
         corpus_complete = False
     finally:
@@ -937,13 +1237,18 @@ def _run_external_scanner(
         coverage[CoverageScope.EXTERNAL_SCANNER] = CoverageStatus.INCOMPLETE
 
 
-def _write_release_corpus(root: Path, stream: IO[bytes]) -> None:
-    for description in _all_objects(root):
+def _write_release_corpus(
+    root: Path,
+    stream: IO[bytes],
+    object_descriptions: tuple[_ObjectDescription, ...],
+    ref_records: bytes,
+) -> None:
+    for description in object_descriptions:
         stream.write(
             _run_git(root, "cat-file", description.object_type, description.object_id)
         )
         stream.write(b"\n")
-    stream.write(_run_git(root, "for-each-ref", "--format=%(objectname)%00%(refname)"))
+    stream.write(ref_records)
     stream.write(b"\n")
     for path in _reflog_paths(root):
         with path.open("rb") as source:
@@ -951,8 +1256,8 @@ def _write_release_corpus(root: Path, stream: IO[bytes]) -> None:
                 stream.write(chunk)
         stream.write(b"\n")
     lfs_root = _git_directory(root, common=True) / "lfs" / "objects"
-    for _object_id, path in _local_lfs_objects(lfs_root):
-        with path.open("rb") as source:
+    for item in _local_lfs_files(lfs_root):
+        with item.path.open("rb") as source:
             while chunk := source.read(_IO_CHUNK_SIZE):
                 stream.write(chunk)
         stream.write(b"\n")
@@ -1009,8 +1314,259 @@ def _repository_root(candidate: Path) -> Path:
     return Path(decoded).resolve()
 
 
+def _open_repository(candidate: Path) -> tuple[Path, int]:
+    resolved = _repository_root(candidate)
+    descriptor = os.open(
+        resolved,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    try:
+        before = resolved.stat()
+        opened = os.fstat(descriptor)
+        if _file_identity(before) != _file_identity(opened):
+            raise OSError("repository root changed while it was opened")
+        descriptor_root = Path(f"/proc/self/fd/{descriptor}")
+        if not descriptor_root.exists():
+            raise OSError("descriptor filesystem is unavailable")
+        observed = _repository_root(descriptor_root).stat()
+        if (observed.st_dev, observed.st_ino) != (opened.st_dev, opened.st_ino):
+            raise OSError("opened directory is not the repository root")
+        return descriptor_root, descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _capture_repository_state(root: Path) -> _CapturedRepositoryState:
+    object_format = _object_format(root)
+    commit_id = os.fsdecode(
+        _run_git(root, "rev-parse", "--verify", "HEAD^{commit}").strip()
+    )
+    _validate_object_id(commit_id, object_format)
+    tree_id = os.fsdecode(
+        _run_git(root, "rev-parse", "--verify", f"{commit_id}^{{tree}}").strip()
+    )
+    _validate_object_id(tree_id, object_format)
+
+    raw_index = _run_git(root, "ls-files", "--stage", "-z")
+    index_entries = _parse_index_entries(raw_index, object_format)
+    index_tree_id = os.fsdecode(_run_git(root, "write-tree").strip())
+    _validate_object_id(index_tree_id, object_format)
+    status = _run_git(
+        root,
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    )
+    untracked = _run_git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    index_clean = (
+        index_tree_id == tree_id
+        and _git_diff_is_clean(root, "diff-index", "--quiet", "--cached", commit_id, "--")
+    )
+    tracked_worktree_clean = _git_diff_is_clean(
+        root,
+        "diff-files",
+        "--quiet",
+        "--ignore-submodules=none",
+        "--",
+    )
+    worktree_tree_id = index_tree_id if tracked_worktree_clean and not untracked else None
+    worktree_clean = index_clean and tracked_worktree_clean and not status
+
+    ref_records = _ref_records(root, object_format)
+    reflog_inventory = _reflog_inventory(root)
+    lfs_object_inventory = _lfs_object_inventory(root)
+    descriptions = _all_objects(root, object_format=object_format)
+    ref_set_digest = _bytes_digest(ref_records)
+    reflog_record_digest = _bytes_digest(reflog_inventory)
+    lfs_object_inventory_digest = _bytes_digest(lfs_object_inventory)
+    scan_scope_digest = canonical_digest(
+        {
+            "lfs_object_inventory_digest": lfs_object_inventory_digest,
+            "object_format": object_format.value,
+            "objects": tuple(
+                {
+                    "object_id": item.object_id,
+                    "object_type": item.object_type,
+                    "size": item.size,
+                }
+                for item in descriptions
+            ),
+            "ref_set_digest": ref_set_digest,
+            "reflog_record_digest": reflog_record_digest,
+        },
+        domain="repository-audit-scan-scope-v2",
+    )
+    snapshot = RepositorySnapshot(
+        object_format=object_format,
+        commit_id=commit_id,
+        tree_id=tree_id,
+        index_tree_id=index_tree_id,
+        worktree_tree_id=worktree_tree_id,
+        index_state_digest=_bytes_digest(raw_index),
+        worktree_state_digest=_bytes_digest(status),
+        ref_set_digest=ref_set_digest,
+        reflog_record_digest=reflog_record_digest,
+        lfs_object_inventory_digest=lfs_object_inventory_digest,
+        scan_scope_digest=scan_scope_digest,
+    )
+    if (
+        os.fsdecode(_run_git(root, "rev-parse", "--verify", "HEAD^{commit}").strip())
+        != commit_id
+        or _run_git(root, "ls-files", "--stage", "-z") != raw_index
+        or os.fsdecode(_run_git(root, "write-tree").strip()) != index_tree_id
+        or _run_git(
+            root,
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        )
+        != status
+    ):
+        raise _ObjectProtocolFailure
+    return _CapturedRepositoryState(
+        snapshot=snapshot,
+        index_entries=index_entries,
+        tracked_entries=_head_entries(root, snapshot),
+        ref_records=ref_records,
+        reflog_inventory=reflog_inventory,
+        lfs_object_inventory=lfs_object_inventory,
+        object_descriptions=descriptions,
+        index_clean=index_clean,
+        worktree_clean=worktree_clean,
+    )
+
+
+def _bytes_digest(data: bytes) -> Digest:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def _validate_object_id(object_id: str, object_format: GitObjectFormat) -> None:
+    expected_width = 40 if object_format is GitObjectFormat.SHA1 else 64
+    if len(object_id) != expected_width or _OBJECT_ID.fullmatch(object_id) is None:
+        raise _ObjectProtocolFailure
+
+
+def _git_diff_is_clean(root: Path, *arguments: str) -> bool:
+    result = subprocess.run(
+        [_GIT_EXECUTABLE, *arguments],
+        cwd=root,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        env=_git_environment(),
+    )
+    if result.returncode not in {0, 1}:
+        raise _GitFailure(arguments[0] if arguments else "git-diff")
+    return result.returncode == 0
+
+
+def _ref_records(root: Path, object_format: GitObjectFormat) -> bytes:
+    records = _run_git(
+        root,
+        "for-each-ref",
+        "--sort=refname",
+        "--format=%(objectname)%00%(refname)",
+    )
+    for record in records.splitlines():
+        raw_object_id, separator, raw_ref = record.partition(b"\0")
+        if not separator or not raw_ref:
+            raise _ObjectProtocolFailure
+        try:
+            object_id = raw_object_id.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise _ObjectProtocolFailure from error
+        _validate_object_id(object_id, object_format)
+    return records
+
+
+def _reflog_inventory(root: Path) -> bytes:
+    records: list[dict[str, object]] = []
+    seen_directories: set[tuple[int, int]] = set()
+    for role, git_directory in (
+        ("worktree", _git_directory(root, common=False)),
+        ("common", _git_directory(root, common=True)),
+    ):
+        directory_metadata = git_directory.stat()
+        directory_identity = (directory_metadata.st_dev, directory_metadata.st_ino)
+        if directory_identity in seen_directories:
+            continue
+        seen_directories.add(directory_identity)
+        logs = git_directory / "logs"
+        if not logs.exists():
+            continue
+        if logs.is_symlink() or not logs.is_dir():
+            raise OSError
+        for directory, directory_names, file_names in os.walk(logs, followlinks=False):
+            directory_names.sort()
+            file_names.sort()
+            if any((Path(directory) / name).is_symlink() for name in directory_names):
+                raise OSError
+            for file_name in file_names:
+                path = Path(directory) / file_name
+                records.append(
+                    {
+                        "content_digest": _stable_file_digest(path),
+                        "path": path.relative_to(logs).as_posix(),
+                        "role": role,
+                    }
+                )
+    return json.dumps(
+        records,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+
+
+def _lfs_object_inventory(root: Path) -> bytes:
+    lfs_root = _git_directory(root, common=True) / "lfs" / "objects"
+    records = tuple(
+        {
+            "content_digest": _stable_file_digest(item.path),
+            "object_id": item.object_id,
+            "path": item.relative_path,
+        }
+        for item in _local_lfs_files(lfs_root)
+    )
+    return json.dumps(
+        records,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+
+
+def _stable_file_digest(path: Path) -> Digest:
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or path.is_symlink():
+        raise OSError
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_IO_CHUNK_SIZE):
+            digest.update(chunk)
+    after = path.lstat()
+    if _file_identity(before) != _file_identity(after):
+        raise _ObjectProtocolFailure
+    return f"sha256:{digest.hexdigest()}"
+
+
 def _index_entries(root: Path) -> tuple[_GitEntry, ...]:
-    output = _run_git(root, "ls-files", "--stage", "-z")
+    return _parse_index_entries(
+        _run_git(root, "ls-files", "--stage", "-z"),
+        _object_format(root),
+    )
+
+
+def _parse_index_entries(
+    output: bytes,
+    object_format: GitObjectFormat,
+) -> tuple[_GitEntry, ...]:
     entries: list[_GitEntry] = []
     for record in output.split(b"\0"):
         if not record:
@@ -1020,8 +1576,7 @@ def _index_entries(root: Path) -> tuple[_GitEntry, ...]:
         if not separator or len(fields) != 3:
             raise _ObjectProtocolFailure
         mode, object_id, raw_stage = (os.fsdecode(field) for field in fields)
-        if not _OBJECT_ID.fullmatch(object_id):
-            raise _ObjectProtocolFailure
+        _validate_object_id(object_id, object_format)
         try:
             stage = int(raw_stage)
         except ValueError as error:
@@ -1032,21 +1587,15 @@ def _index_entries(root: Path) -> tuple[_GitEntry, ...]:
     return tuple(entries)
 
 
-def _head_entries(root: Path) -> tuple[_GitEntry, ...]:
-    head = subprocess.run(
-        [_GIT_EXECUTABLE, "rev-parse", "--verify", "-q", "HEAD"],
-        cwd=root,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        env=_git_environment(),
+def _head_entries(root: Path, snapshot: RepositorySnapshot) -> tuple[_GitEntry, ...]:
+    output = _run_git(
+        root,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        snapshot.tree_id,
     )
-    if head.returncode == 1:
-        return ()
-    if head.returncode != 0:
-        raise _GitFailure("head-resolution")
-    output = _run_git(root, "ls-tree", "-r", "-z", "--full-tree", "HEAD")
     entries: list[_GitEntry] = []
     for record in output.split(b"\0"):
         if not record:
@@ -1056,13 +1605,19 @@ def _head_entries(root: Path) -> tuple[_GitEntry, ...]:
         if not separator or len(fields) != 3:
             raise _ObjectProtocolFailure
         mode, object_type, object_id = (os.fsdecode(field) for field in fields)
-        if object_type not in {"blob", "commit"} or not _OBJECT_ID.fullmatch(object_id):
+        if object_type not in {"blob", "commit"}:
             raise _ObjectProtocolFailure
+        _validate_object_id(object_id, snapshot.object_format)
         entries.append(_GitEntry(mode, object_id, os.fsdecode(raw_path)))
     return tuple(entries)
 
 
-def _all_objects(root: Path) -> tuple[_ObjectDescription, ...]:
+def _all_objects(
+    root: Path,
+    *,
+    object_format: GitObjectFormat | None = None,
+) -> tuple[_ObjectDescription, ...]:
+    active_format = object_format or _object_format(root)
     output = _run_git(
         root,
         "cat-file",
@@ -1075,13 +1630,14 @@ def _all_objects(root: Path) -> tuple[_ObjectDescription, ...]:
         if len(fields) != 3:
             raise _ObjectProtocolFailure
         object_id, object_type, size = (os.fsdecode(field) for field in fields)
-        if not _OBJECT_ID.fullmatch(object_id) or object_type not in {
+        if object_type not in {
             "blob",
             "commit",
             "tag",
             "tree",
         }:
             raise _ObjectProtocolFailure
+        _validate_object_id(object_id, active_format)
         try:
             parsed_size = int(size)
         except ValueError as error:
@@ -1095,7 +1651,7 @@ def _scan_objects(
 ) -> tuple[_ObjectScan, ...]:
     if not descriptions:
         return ()
-    hash_width = 20 if _object_format(root) == "sha1" else 32
+    hash_width = 20 if _object_format(root) is GitObjectFormat.SHA1 else 32
     process = subprocess.Popen(
         [_GIT_EXECUTABLE, "cat-file", "--batch"],
         cwd=root,
@@ -1261,11 +1817,12 @@ def _target_path_rule(prefix: bytes, size: int) -> str | None:
     return sensitive_path_rule(target)
 
 
-def _object_format(root: Path) -> str:
+def _object_format(root: Path) -> GitObjectFormat:
     value = os.fsdecode(_run_git(root, "rev-parse", "--show-object-format").strip())
-    if value not in {"sha1", "sha256"}:
-        raise _ObjectProtocolFailure
-    return value
+    try:
+        return GitObjectFormat(value)
+    except ValueError:
+        raise _ObjectProtocolFailure from None
 
 
 def _git_directory(root: Path, *, common: bool) -> Path:
@@ -1276,7 +1833,7 @@ def _git_directory(root: Path, *, common: bool) -> Path:
     path = Path(raw_path)
     if not path.is_absolute():
         path = root / path
-    return path.resolve()
+    return path
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int]:
@@ -1333,6 +1890,8 @@ def _build_report(
     findings: Iterable[PolicyFinding],
     issues: Iterable[AuditIssue],
     coverage: Mapping[CoverageScope, CoverageStatus],
+    *,
+    snapshot: RepositorySnapshot | None,
 ) -> AuditReport:
     sorted_findings = tuple(
         sorted(
@@ -1362,4 +1921,11 @@ def _build_report(
         status = AuditStatus.VIOLATION
     else:
         status = AuditStatus.PASS
-    return AuditReport(mode, status, sorted_findings, sorted_issues, coverage_evidence)
+    return AuditReport(
+        mode,
+        status,
+        sorted_findings,
+        sorted_issues,
+        coverage_evidence,
+        snapshot,
+    )

@@ -10,11 +10,15 @@ from edagym.policy.repository import (
     CoverageScope,
     CoverageStatus,
     FindingScope,
+    GitObjectFormat,
     IssueScope,
     IssueSeverity,
     PolicyFinding,
     RepositoryPolicy,
+    RepositorySnapshot,
+    RepositorySnapshotBinding,
     audit_repository,
+    bind_repository_snapshot,
 )
 
 __all__ = [
@@ -27,9 +31,13 @@ __all__ = [
     "CoverageScope",
     "CoverageStatus",
     "FindingScope",
+    "GitObjectFormat",
     "IssueScope",
     "IssueSeverity",
     "PolicyFinding",
     "RepositoryPolicy",
+    "RepositorySnapshot",
+    "RepositorySnapshotBinding",
     "audit_repository",
+    "bind_repository_snapshot",
 ]
