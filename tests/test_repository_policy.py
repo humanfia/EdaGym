@@ -16,7 +16,9 @@ from edagym.policy.repository import (
     CoverageScope,
     CoverageStatus,
     FindingScope,
+    GitObjectFormat,
     RepositoryPolicy,
+    RepositorySnapshot,
     audit_repository,
 )
 
@@ -158,6 +160,8 @@ def test_release_audit_scans_unreachable_objects_without_secret_excerpts(
     )
     lfs_object_path.parent.mkdir(parents=True)
     lfs_object_path.write_bytes(lfs_payload)
+    unexpected_lfs_path = repository / ".git" / "lfs" / "objects" / "scratch"
+    unexpected_lfs_path.write_bytes(lfs_payload)
     pointer = (
         "version https://git-lfs.github.com/spec/v1\n"
         f"oid sha256:{lfs_object_id}\n"
@@ -188,6 +192,11 @@ def test_release_audit_scans_unreachable_objects_without_secret_excerpts(
     assert any(
         finding.scope is FindingScope.GIT_LFS
         and finding.rule_id == "high-entropy-credential-assignment"
+        for finding in report.findings
+    )
+    assert any(
+        finding.scope is FindingScope.GIT_LFS
+        and finding.rule_id == "git-lfs-object-layout-invalid"
         for finding in report.findings
     )
     assert coverage[CoverageScope.GIT_REFS] is CoverageStatus.COMPLETE
@@ -237,3 +246,110 @@ def test_release_audit_handles_an_explicit_scanner_early_exit(tmp_path: Path) ->
         issue.code == "external-scanner-corpus-incomplete"
         for issue in report.issues
     )
+
+
+def test_release_audit_binds_one_clean_commit_index_and_worktree(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "repository")
+
+    clean = audit_repository(
+        repository,
+        AuditMode.RELEASE,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
+
+    assert clean.snapshot is not None
+    assert clean.snapshot.object_format is GitObjectFormat.SHA1
+    assert (
+        clean.snapshot.tree_id
+        == clean.snapshot.index_tree_id
+        == clean.snapshot.worktree_tree_id
+    )
+
+    (repository / "dirty.txt").write_text("indexed\n", encoding="utf-8")
+    _git(repository, "add", "dirty.txt")
+    (repository / "dirty.txt").write_text("working tree\n", encoding="utf-8")
+    dirty = audit_repository(
+        repository,
+        AuditMode.RELEASE,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
+
+    assert dirty.status is AuditStatus.ERROR
+    assert dirty.snapshot is not None
+    assert dirty.snapshot.tree_id != dirty.snapshot.index_tree_id
+    assert dirty.snapshot.worktree_tree_id is None
+    assert {issue.code for issue in dirty.issues} >= {
+        "release-index-dirty",
+        "release-worktree-dirty",
+    }
+
+
+def test_release_audit_rejects_a_ref_set_change_during_the_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+    original_scanner = repository_policy._run_external_scanner
+
+    def change_ref(root: Path, *arguments: object) -> None:
+        commit_id = _git(root, "rev-parse", "HEAD").strip()
+        _git(root, "update-ref", "refs/heads/concurrent", commit_id.decode("ascii"))
+        original_scanner(root, *arguments)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(repository_policy, "_run_external_scanner", change_ref)
+    report = audit_repository(
+        repository,
+        AuditMode.RELEASE,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
+
+    assert report.status is AuditStatus.INCOMPLETE
+    assert any(issue.code == "repository-snapshot-changed" for issue in report.issues)
+
+
+def test_snapshot_object_ids_must_match_the_declared_hash_format() -> None:
+    empty_digest = "sha256:" + hashlib.sha256(b"").hexdigest()
+
+    with pytest.raises(ValueError, match="object format"):
+        RepositorySnapshot(
+            object_format=GitObjectFormat.SHA256,
+            commit_id="1" * 40,
+            tree_id="2" * 40,
+            index_tree_id="2" * 40,
+            worktree_tree_id="2" * 40,
+            index_state_digest=empty_digest,
+            worktree_state_digest=empty_digest,
+            ref_set_digest=empty_digest,
+            reflog_record_digest=empty_digest,
+            lfs_object_inventory_digest=empty_digest,
+            scan_scope_digest=empty_digest,
+        )
+
+
+def test_audit_keeps_using_the_opened_repository_when_its_path_is_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository(tmp_path / "repository")
+    original_commit = _git(repository, "rev-parse", "HEAD").strip().decode("ascii")
+    moved = tmp_path / "opened-repository"
+    original_audit = repository_policy._audit_repository_files
+
+    def replace_path(root: Path, *arguments: object) -> None:
+        original_audit(root, *arguments)  # type: ignore[arg-type]
+        repository.rename(moved)
+        replacement = _repository(repository)
+        (replacement / "replacement.txt").write_text("different\n", encoding="utf-8")
+        _git(replacement, "add", "replacement.txt")
+        _git(replacement, "commit", "--quiet", "-m", "Replacement repository")
+
+    monkeypatch.setattr(repository_policy, "_audit_repository_files", replace_path)
+    report = audit_repository(
+        repository,
+        AuditMode.COMMIT,
+        policy=RepositoryPolicy(external_scanner_executable=_MISSING_SCANNER),
+    )
+
+    assert report.snapshot is not None
+    assert report.snapshot.commit_id == original_commit
+    assert not any(issue.code == "repository-snapshot-changed" for issue in report.issues)
