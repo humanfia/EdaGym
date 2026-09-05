@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import re
@@ -61,8 +62,16 @@ def _rectangles(value: object) -> tuple[tuple[int, int, int, int], ...]:
     return tuple(rectangles)
 
 
+def _engine_version() -> str:
+    """Report the installed engine version only after the engine itself imports."""
+
+    import klayout.db  # noqa: F401
+
+    return importlib.metadata.version("klayout")
+
+
 def _check(input_path: Path, output_path: Path) -> None:
-    import klayout.db as kdb  # type: ignore[import-not-found]
+    import klayout.db as kdb
 
     document = _document(input_path)
     minimum_spacing = _positive_integer(
@@ -75,7 +84,7 @@ def _check(input_path: Path, output_path: Path) -> None:
     violations = region.space_check(minimum_spacing)
     report = {
         "engine": "klayout.db",
-        "engine_version": kdb.__version__,
+        "engine_version": _engine_version(),
         "rule_id": _RULE_ID,
         "minimum_spacing_nm": minimum_spacing,
         "violation_count": int(violations.size()),
@@ -221,7 +230,7 @@ def _verify(
     summary_path: Path,
 ) -> None:
     import klayout.db as kdb
-    import klayout.rdb as krdb  # type: ignore[import-not-found]
+    import klayout.rdb as krdb
 
     _require_new_outputs(
         (drc_database_path, lvs_database_path, summary_path),
@@ -331,11 +340,9 @@ def _verify(
 
 
 def main(arguments: list[str] | None = None) -> int:
-    import klayout.db as kdb
-
     values = sys.argv[1:] if arguments is None else arguments
     if values == ["--version"]:
-        print(f"klayout.db {kdb.__version__}")
+        print(f"klayout.db {_engine_version()}")
         return 0
     os.umask(0o077)
     try:
