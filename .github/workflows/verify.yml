@@ -57,6 +57,11 @@ jobs:
 
       - name: Audit repository history
         run: |
+          status=0
           python scripts/check_repository_policy.py \
             --mode release \
-            --gitleaks /usr/bin/gitleaks
+            --gitleaks /usr/bin/gitleaks > audit.txt || status=$?
+          cat audit.txt
+          grep -E '^(issue |repository-audit .*status=(incomplete|error))' audit.txt \
+            | head -n 10 | sed 's/^/::error title=repository-audit::/'
+          exit "$status"
