@@ -246,6 +246,9 @@ def _fake_control_plane(root: Path, *, mode: str) -> tuple[dict[str, Path], Path
 
 
 def _capability(paths: dict[str, Path]) -> ExecutorCapability:
+    interpreter = Path(sys.executable).resolve()
+    if interpreter.stat().st_uid != 0:
+        pytest.skip("the Slurm worker interpreter must be a root-owned trusted executable")
     capability = probe_slurm_apptainer(
         provider_id="test_cluster",
         provider_digest=digest("test-cluster-provider"),
