@@ -47,11 +47,11 @@ jobs:
           status=0
           ruff check . || { status=1; echo '::error title=ruff::ruff check failed'; }
           mypy --no-incremental || { status=1; echo '::error title=mypy::mypy failed'; }
-          if ! pytest -q -rfE > pytest.log 2>&1; then
+          if ! pytest -q -rfE > "$RUNNER_TEMP/pytest.log" 2>&1; then
             status=1
-            grep -E '^(FAILED|ERROR) ' pytest.log | head -n 10 | sed 's/^/::error title=pytest::/'
+            grep -E '^(FAILED|ERROR) ' "$RUNNER_TEMP/pytest.log" | head -n 10 | sed 's/^/::error title=pytest::/'
           fi
-          tail -n 40 pytest.log
+          tail -n 40 "$RUNNER_TEMP/pytest.log"
           python -m edagym.authoring contract || { status=1; echo '::error title=contract::authoring contract failed'; }
           exit "$status"
 
@@ -60,8 +60,8 @@ jobs:
           status=0
           python scripts/check_repository_policy.py \
             --mode release \
-            --gitleaks /usr/bin/gitleaks > audit.txt || status=$?
-          cat audit.txt
-          grep -E '^(issue |repository-audit .*status=(incomplete|error))' audit.txt \
+            --gitleaks /usr/bin/gitleaks > "$RUNNER_TEMP/audit.txt" || status=$?
+          cat "$RUNNER_TEMP/audit.txt"
+          grep -E '^(issue |repository-audit .*status=(incomplete|error))' "$RUNNER_TEMP/audit.txt" \
             | head -n 10 | sed 's/^/::error title=repository-audit::/'
           exit "$status"
