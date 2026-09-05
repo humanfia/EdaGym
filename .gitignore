@@ -4,6 +4,7 @@
 /.pytest_cache/
 /.mypy_cache/
 /.ruff_cache/
+/.venv/
 /.coverage
 /htmlcov/
 /build/
@@ -23,6 +24,9 @@ __pycache__/
 /runs/
 /artifacts/
 /workspaces/
-/task_families/
 /.Xil/
 /.benchmarks/
+/.claude/
+
+# Build output of the VM guest agent.
+/guest/edagym-vm-agent/edagym-vm-agent
