@@ -9,7 +9,10 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+import pytest
+
 from edagym.canonical import canonical_bytes
+from edagym.executors.capabilities import ProviderAvailability, probe_local_containment
 from edagym.run.model import (
     ArtifactRecord,
     ArtifactRecordedEvent,
@@ -799,3 +802,11 @@ def release_manifest(
             ),
         ),
     )
+
+
+def require_local_containment() -> None:
+    """Skip evidence that needs the user systemd boundary when the host lacks it."""
+
+    capability = probe_local_containment()
+    if capability.availability is not ProviderAvailability.AVAILABLE:
+        pytest.skip(f"local containment is unavailable: {capability.reason}")

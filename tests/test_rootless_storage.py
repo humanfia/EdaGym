@@ -129,6 +129,10 @@ def test_rootless_storage_release_resumes_after_partial_node_cleanup(
     assert not os.path.ismount(mountpoint)
 
 
+@pytest.mark.skipif(
+    not all(path.is_file() for path in _STORAGE_RUNTIMES),
+    reason="rootless storage runtimes are unavailable",
+)
 def test_rootless_storage_rejects_quota_above_deployment_ceiling_before_creation(
     tmp_path: Path,
 ) -> None:

@@ -23,7 +23,7 @@ from edagym.specs.environment import (
     ReadonlyAssetMount,
 )
 from edagym.specs.release import FlowReleaseQualification
-from tests.factories import digest
+from tests.factories import digest, require_local_containment
 from tests.test_flow_runtime import (
     _environment_for,
     _runtime_pack,
@@ -37,6 +37,7 @@ def test_flow_cli_qualification_and_evaluation_emit_canonical_records(
     capfd: CaptureFixture[str],
     monkeypatch: MonkeyPatch,
 ) -> None:
+    require_local_containment()
     pack = _runtime_pack()
     canonical = _synthetic_provider_canonical(pack)
     asset_path = tmp_path / "evaluator-library.dat"
@@ -261,6 +262,7 @@ def test_flow_cli_qualification_and_evaluation_emit_canonical_records(
 
 
 def test_flow_runtime_rejects_a_nonignored_repository_path(tmp_path: Path) -> None:
+    require_local_containment()
     pack = _runtime_pack()
     canonical = _synthetic_provider_canonical(pack)
     catalog = _synthetic_flow_catalog(pack, canonical)

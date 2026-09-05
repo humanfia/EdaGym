@@ -56,7 +56,7 @@ from edagym.specs.environment import (
     RootlessLocalExecutor,
     ToolBinding,
 )
-from tests.factories import digest, environment_spec
+from tests.factories import digest, environment_spec, require_local_containment
 
 if TYPE_CHECKING:
     from edagym.drivers.probe import ResolvedInstallation
@@ -177,6 +177,7 @@ def test_brokered_executor_scrubs_ambient_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    require_local_containment()
     monkeypatch.setenv("SYNTHETIC_SECRET", "must-not-reach-child")
     workspace, outputs, jobs, cas = _directories(tmp_path)
     executable = Path(sys.executable).resolve()
@@ -297,6 +298,7 @@ def test_brokered_executor_scrubs_ambient_environment(
 def test_brokered_wall_deadline_terminates_the_scope_without_controller_polling(
     tmp_path: Path,
 ) -> None:
+    require_local_containment()
     workspace, outputs, jobs, cas = _directories(tmp_path)
     executable = Path(sys.executable).resolve()
     driver_digest = digest("python-deadline-driver")
@@ -474,6 +476,7 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
 
 
 def test_output_collection_never_follows_workspace_links(tmp_path: Path) -> None:
+    require_local_containment()
     workspace, outputs, jobs, cas = _directories(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()

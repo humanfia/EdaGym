@@ -40,7 +40,7 @@ jobs:
           python -m pip install -e '.[dev]'
           go install github.com/zricethezav/gitleaks/v8@v8.30.0
           sudo install -o root -g root -m 0755 \
-            "$GOBIN/gitleaks" /usr/local/bin/edagym-gitleaks
+            "$GOBIN/gitleaks" /usr/bin/gitleaks
 
       - name: Verify source and generated contracts
         run: |
@@ -53,4 +53,4 @@ jobs:
         run: |
           python scripts/check_repository_policy.py \
             --mode release \
-            --gitleaks /usr/local/bin/edagym-gitleaks
+            --gitleaks /usr/bin/gitleaks

@@ -108,7 +108,7 @@ from edagym.specs.task import (
 )
 from edagym.task_families.catalog import EDA_FLOW_FAMILIES
 
-from .factories import digest, environment_spec
+from .factories import digest, environment_spec, require_local_containment
 
 
 @dataclass(frozen=True)
@@ -140,6 +140,7 @@ class _SyntheticFlowCatalog:
 def test_flow_qualification_uses_journal_cas_and_composite_executor(
     tmp_path: Path,
 ) -> None:
+    require_local_containment()
     pack = _runtime_pack()
     canonical = _synthetic_provider_canonical(pack)
     environment = _environment_for(pack)
