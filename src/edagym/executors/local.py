@@ -52,12 +52,15 @@ from edagym.executors.model import (
     JobHandle,
     JobState,
     JobStateKind,
+    NativeHarnessPlan,
+    OperationPlan,
     ToolRecipeCommand,
     WorkspaceRecipeCommand,
 )
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.specs.common import ArtifactClass, Capability
 from edagym.specs.environment import (
+    PROTECTED_RAW_DISCLOSURE,
     ArtifactDisclosure,
     EnvironmentSpec,
     ExecutorKind,
@@ -838,9 +841,31 @@ class BrokeredHostExecutor:
 
 
 
-def _validate_plan_binding(plan: InvocationPlan, environment: EnvironmentSpec) -> None:
+def _validate_plan_binding(plan: OperationPlan, environment: EnvironmentSpec) -> None:
     if plan.deadline is not None and environment.executor.kind is not ExecutorKind.ROOTLESS_LOCAL:
         raise ExecutorUnavailable("this executor does not enforce absolute operation deadlines")
+    if isinstance(plan, NativeHarnessPlan):
+        assets = [
+            asset for asset in environment.assets if asset.asset_id == plan.executable_asset_id
+        ]
+        mounts = [
+            mount for mount in environment.filesystem.readonly_assets
+            if mount.asset_id == plan.executable_asset_id
+            and mount.scope is FilesystemScope.PARTICIPANT
+        ]
+        if (
+            len(assets) != 1 or len(mounts) != 1
+            or assets[0].restricted_digest != plan.harness.executable_digest
+        ):
+            raise ExecutorUnavailable("native executable differs from its frozen asset binding")
+        if any(
+            _disclosure_for(environment, artifact_class) != PROTECTED_RAW_DISCLOSURE
+            for artifact_class in {
+                ArtifactClass.DIAGNOSTIC, *(item.artifact_class for item in plan.outputs)
+            }
+        ):
+            raise ExecutorUnavailable("native process outputs require protected private disclosure")
+        return
     matches = [
         binding
         for binding in environment.tool_bindings
@@ -853,7 +878,7 @@ def _validate_plan_binding(plan: InvocationPlan, environment: EnvironmentSpec) -
         raise ExecutorUnavailable("invocation driver or executable identity is stale")
 
 
-def _validate_scope(plan: InvocationPlan, scope: FilesystemScope) -> None:
+def _validate_scope(plan: OperationPlan, scope: FilesystemScope) -> None:
     expected = {
         InvocationView.PARTICIPANT: FilesystemScope.PARTICIPANT,
         InvocationView.EVALUATOR: FilesystemScope.EVALUATOR,
@@ -1123,7 +1148,7 @@ def _remove_abandoned_raw_state(root: Path, invocation_id: str) -> None:
 
 def _collect_execution_result(
     *,
-    plan: InvocationPlan,
+    plan: OperationPlan,
     environment: EnvironmentSpec,
     artifact_store: ContentAddressedStore,
     workspace_descriptor: int,

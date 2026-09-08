@@ -7,7 +7,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from edagym.config.model import NativeCliKind
 from edagym.participants.harness import (
     HarnessAssistant,
     HarnessEvent,
@@ -22,6 +21,9 @@ from edagym.participants.harness import (
 )
 from edagym.providers.model import ProviderUsage
 from edagym.specs.common import Digest, Sensitivity
+from edagym.specs.harness import (
+    NativeCliKind,
+)
 
 MAX_NATIVE_TRANSCRIPT_BYTES = 16 << 20
 
@@ -33,7 +35,7 @@ class NativeTranscript:
     cli: NativeCliKind
     stdout: bytes = field(repr=False)
     events: tuple[HarnessEvent, ...]
-    exit_code: int
+    exit_code: int | None
     classification = Sensitivity.CONFIDENTIAL
 
     @property
@@ -57,7 +59,7 @@ class _UnsupportedEvent(ValueError):
 
 
 def adapt_native_transcript(
-    cli: NativeCliKind, stdout: bytes, *, exit_code: int
+    cli: NativeCliKind, stdout: bytes, *, exit_code: int | None
 ) -> NativeTranscript:
     """Project one non-interactive invocation; never infer missing usage or actions.
 

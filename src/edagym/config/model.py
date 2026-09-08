@@ -9,7 +9,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.providers.model import ProviderDefaults, ProviderProfile, WireProtocol
+from edagym.providers.model import ProviderDefaults, ProviderProfile
 from edagym.specs.common import (
     Capability,
     Digest,
@@ -19,6 +19,7 @@ from edagym.specs.common import (
     StrictModel,
 )
 from edagym.specs.environment import ExecutorKind, NetworkKind
+from edagym.specs.harness import HarnessKind, NativeCliKind
 
 
 class ToolSourceKind(StrEnum):
@@ -36,22 +37,6 @@ class ToolVisibility(StrEnum):
 class ConfigView(StrEnum):
     PARTICIPANT = "participant"
     EVALUATOR = "evaluator"
-
-
-class HarnessKind(StrEnum):
-    CONTROLLED_AGENT = "controlled_agent"
-    NATIVE_CLI = "native_cli"
-
-
-class NativeCliKind(StrEnum):
-    CODEX_EXEC = "codex_exec"
-    CLAUDE_CODE = "claude_code"
-
-    @property
-    def wire_protocol(self) -> WireProtocol:
-        return (
-            WireProtocol.RESPONSES if self is NativeCliKind.CODEX_EXEC else WireProtocol.MESSAGES
-        )
 
 
 class SessionKind(StrEnum):

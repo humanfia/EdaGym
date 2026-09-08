@@ -10,7 +10,7 @@ from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.evaluation.model import OutcomeKind
-from edagym.executors.model import ExecutionFailureKind, ExecutionResult, InvocationPlan, JobHandle
+from edagym.executors.model import ExecutionFailureKind, ExecutionResult, JobHandle, OperationPlan
 from edagym.run.artifact_model import CommittedManifest
 from edagym.run.journal_storage import JournalCommit
 from edagym.run.manifest import RunManifest
@@ -219,7 +219,7 @@ class CandidatePayload(StrictModel):
 
 
 class OperationPreparedPayload(StrictModel):
-    plan: InvocationPlan
+    plan: OperationPlan
     input_manifest: CommittedManifest
     parent_id: Identifier | None = None
 
@@ -367,7 +367,7 @@ class RunCommit(JournalCommit[RunEvent]):
 
 
 class RunRecord(StrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     manifest: RunManifest
     commits: tuple[RunCommit, ...] = ()
 

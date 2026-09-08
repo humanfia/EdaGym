@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 
-from edagym.config.model import NativeCliKind
 from edagym.participants.harness import (
     HarnessAssistant,
     HarnessFailure,
@@ -19,6 +18,9 @@ from edagym.participants.harness import (
     HarnessUsage,
 )
 from edagym.participants.native import adapt_native_transcript
+from edagym.specs.harness import (
+    NativeCliKind,
+)
 
 
 def _events(cli: NativeCliKind) -> list[dict[str, Any]]:

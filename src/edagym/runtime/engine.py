@@ -16,7 +16,7 @@ from edagym.authoring.factory import GeneratedTask, TaskFactory
 from edagym.authoring.qualification import QualificationRunEvidence, qualification_from_run
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.config.execution import ExecutionPolicyError, project_environment
-from edagym.config.model import ConfigView, PrivateConfigSnapshot
+from edagym.config.model import ConfigView, NativeCliHarnessConfig, PrivateConfigSnapshot
 from edagym.config.qualification import ConfiguredToolResolution, resolve_profile_tools
 from edagym.config.resolve import ResolvedEnvironmentPair, resolve_snapshot
 from edagym.config.view_qualification import (
@@ -33,10 +33,17 @@ from edagym.executors.model import (
     InvocationPlan,
     InvocationView,
     JobStateKind,
+    NativeHarnessPlan,
+    OperationPlan,
 )
 from edagym.executors.rootless import RootlessContainerExecutor
 from edagym.executors.rootless_storage import RootlessStorageProvider
 from edagym.implementation import framework_implementation_digest
+from edagym.participants.native import (
+    MAX_NATIVE_TRANSCRIPT_BYTES,
+    NativeTranscript,
+    adapt_native_transcript,
+)
 from edagym.policy.runtime_storage import private_directory, read_private, write_private
 from edagym.run.artifact_model import ArtifactManifest, BlobRef, CommittedManifest, ManifestEntry
 from edagym.run.artifacts import ContentAddressedStore, manifest_tree
@@ -324,6 +331,52 @@ class RunEngine:
             if file.visibility in principal.allowed_visibilities
         )
 
+    def native_transcript(
+        self, run_id: str, operation_id: str, principal: Principal
+    ) -> NativeTranscript:
+        """Derive private observations from the operation's verified stdout artifact."""
+
+        self._require_implementation()
+        journal = self._journal_for(run_id, principal)
+        if Visibility.AUTHOR not in principal.allowed_visibilities:
+            raise EngineError("native transcript requires author visibility")
+        operation = next(
+            (item for item in journal.state().operations
+             if item.prepared.payload.plan.invocation_id == operation_id),
+            None,
+        )
+        if operation is None or not isinstance(operation.prepared.payload.plan, NativeHarnessPlan):
+            raise EngineError("operation is not a native harness invocation")
+        plan = operation.prepared.payload.plan
+        configured = next(
+            (item for item in journal.snapshot().configuration.harnesses
+             if item.harness_id == plan.harness.harness_id),
+            None,
+        )
+        if (
+            not isinstance(configured, NativeCliHarnessConfig)
+            or configured.cli is not plan.harness.cli
+            or configured.version_label != plan.harness.cli_version
+            or journal.manifest.participant is None
+            or journal.manifest.participant.executor.implementation_digest
+            != self._implementation_digest
+        ):
+            raise EngineError("native transcript differs from its frozen implementation")
+        if operation.terminal is None:
+            raise EngineError("native operation has no collected transcript")
+        result = operation.terminal.payload.result
+        store = self._store(journal, plan.view)
+        store.verify_disclosure(
+            result.stdout, artifact_class=ArtifactClass.DIAGNOSTIC,
+            sensitivity=Sensitivity.CONFIDENTIAL, visibility=Visibility.AUTHOR,
+            redistribution=Redistribution.FORBIDDEN,
+        )
+        return adapt_native_transcript(
+            plan.harness.cli,
+            store.read_bytes(result.stdout, maximum_bytes=MAX_NATIVE_TRANSCRIPT_BYTES),
+            exit_code=result.state.exit_code,
+        )
+
     def interface(self, run_id: str, principal: Principal) -> RunInterface:
         journal = self._journal_for(run_id, principal)
         task = self._generated_task(journal).task
@@ -563,7 +616,7 @@ class RunEngine:
     def _prepare_operation(
         self,
         journal: RunJournal,
-        plan: InvocationPlan,
+        plan: OperationPlan,
         inputs: CommittedManifest,
         *,
         intent: InteractionIntent | None = None,
@@ -639,6 +692,8 @@ class RunEngine:
         self, journal: RunJournal, operation: OperationState, *, recovery: bool = True
     ) -> ExecutionResult:
         plan = operation.prepared.payload.plan
+        if isinstance(plan, NativeHarnessPlan):
+            raise EngineError("native operation requires an admitted native launcher")
         executor, environment, runtime_root, assets = self._executor(journal, plan.view)
         store = self._store(journal, plan.view)
         job_directory = journal.directory / plan.view.value / "jobs" / plan.invocation_id

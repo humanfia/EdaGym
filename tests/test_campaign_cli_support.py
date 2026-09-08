@@ -57,7 +57,6 @@ from edagym.providers.campaign_runner import CampaignRunner
 from edagym.providers.campaign_schedule import (
     CampaignTask,
     CampaignTaskRole,
-    MeteredProviderHarnessBinding,
 )
 from edagym.providers.model import (
     ProviderDefaults,
@@ -75,6 +74,9 @@ from edagym.security.canary import CanaryPolicy
 from edagym.security.synthetic_preflight import SyntheticPreflightError
 from edagym.specs.budget import EpisodeBudget, ModelBudget, ResourceBudget
 from edagym.specs.common import Capability
+from edagym.specs.harness import (
+    MeteredProviderHarnessBinding,
+)
 from edagym.specs.session import (
     BenchmarkMode,
     HarnessActor,

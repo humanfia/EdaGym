@@ -87,7 +87,6 @@ from edagym.providers.campaign_runner import (
 from edagym.providers.campaign_schedule import (
     CampaignTask,
     CampaignTaskRole,
-    MeteredProviderHarnessBinding,
 )
 from edagym.providers.model import (
     FunctionCall,
@@ -155,6 +154,9 @@ from edagym.specs.environment import (
     FilesystemScope,
     LicenseBinding,
     ManagedEncryption,
+)
+from edagym.specs.harness import (
+    MeteredProviderHarnessBinding,
 )
 from edagym.specs.operation import (
     CandidateInputOperationArgument,

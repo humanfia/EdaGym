@@ -141,6 +141,23 @@ persist these bytes in the private artifact store. Unsupported event types,
 malformed records, and a stream without its terminal record are explicit adapter
 failures. They do not produce replacement tool calls or usage estimates.
 
+`OperationPlan` distinguishes EDA tool invocations from `NativeHarnessPlan`.
+Both share run identity, workspace input identity, deadlines, and executor
+handles. Native plans bind a harness, its executable asset, and the prompt blob;
+they do not acquire a fictitious EDA capability or driver. The shared harness
+types live in `specs.harness`, independently of campaign scheduling. Invocation
+digests use `invocation-plan-v4`; the configured `RunRecord` schema is version 3
+and private rootless invocation receipts are version 2.
+
+Native preparation and terminal facts remain author-only in the existing run
+journal. `RunEngine.native_transcript` requires author visibility and derives
+observations from the terminal operation's verified private stdout blob, under
+the frozen harness and framework implementation. It does not append a second
+transcript record. A missing process exit code remains unknown. Rootless recovery
+and fencing can bind the native operation identity; automatic native launch still
+requires the pending admitted launcher integration and cannot use the EDA tool
+launch path.
+
 Completed assistant messages, observed tool requests/results, session identity,
 usage, and terminal status remain distinct observations. A Codex completed patch
 can have a result without an observed request. Claude cached input counts are

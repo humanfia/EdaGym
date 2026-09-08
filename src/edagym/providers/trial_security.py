@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from edagym.canonical import canonical_digest
 from edagym.providers.campaign_runner import CampaignRunner
-from edagym.providers.campaign_schedule import MeteredProviderHarnessBinding, ScheduledTrial
+from edagym.providers.campaign_schedule import (
+    ScheduledTrial,
+)
 from edagym.providers.provider_budget import CampaignProviderBudget
 from edagym.run.trial_model import CampaignTrialRunBinding
 from edagym.runtime_surface_protocol import RuntimeSurfaceBinding
 from edagym.security.runtime_surface import runtime_surface_export_policy_digest
 from edagym.specs.common import Digest
 from edagym.specs.environment import EnvironmentSpec
+from edagym.specs.harness import (
+    MeteredProviderHarnessBinding,
+)
 from edagym.specs.release import ReleaseManifest
 from edagym.specs.session import HarnessActor, SessionSpec
 from edagym.specs.task import TaskSpec

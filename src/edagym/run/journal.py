@@ -11,7 +11,7 @@ from typing import cast
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.config.model import PrivateConfigSnapshot
 from edagym.evaluation.model import OutcomeKind
-from edagym.executors.model import InvocationView, JobHandle, JobStateKind
+from edagym.executors.model import InvocationView, JobHandle, JobStateKind, NativeHarnessPlan
 from edagym.run.journal_storage import (
     EventConflict,
     InvalidTransition,
@@ -51,7 +51,7 @@ from edagym.run.model import (
     RunUnavailableEvent,
     WorkspaceCommittedEvent,
 )
-from edagym.specs.common import Digest
+from edagym.specs.common import Digest, Visibility
 
 
 def journal_anchor(manifest: RunManifest) -> Digest:
@@ -117,6 +117,13 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             if cancel_requested:
                 raise InvalidTransition("cancelled runs cannot prepare new operations")
             payload, plan = event.payload, event.payload.plan
+            if isinstance(plan, NativeHarnessPlan) and (
+                plan.harness.harness_id != manifest.harness_id
+                or event.visibility is not Visibility.AUTHOR
+            ):
+                raise InvalidTransition(
+                    "native operation requires its bound harness and private facts"
+                )
             if plan.invocation_id in operations:
                 raise EventConflict("operation identifier is already prepared")
             if (
@@ -144,6 +151,8 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             if operation is None:
                 raise InvalidTransition("operation fact has no active preparation")
             plan = operation.prepared.payload.plan
+            if isinstance(plan, NativeHarnessPlan) and event.visibility is not Visibility.AUTHOR:
+                raise InvalidTransition("native operation facts must remain private")
             environment = (
                 manifest.participant
                 if plan.view is InvocationView.PARTICIPANT

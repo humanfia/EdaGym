@@ -81,6 +81,7 @@ from edagym.executors.model import (
     JobHandle,
     JobState,
     JobStateKind,
+    OperationPlan,
     ToolRecipeCommand,
     WorkspaceRecipeCommand,
 )
@@ -171,7 +172,7 @@ class _ContainerObservation(StrictModel):
 class _InvocationBinding(StrictModel):
     """Execution identity derivable from the durable prepared operation."""
 
-    plan: InvocationPlan
+    plan: OperationPlan
     environment: EnvironmentSpec
 
     @property
@@ -210,7 +211,7 @@ class _InvocationBinding(StrictModel):
 class _InvocationReceipt(_InvocationBinding):
     """Private launch inputs persisted before creating an owned container."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     workspace: Path
     artifact_directory: Path
     storage: InvocationStorageReceipt | None
@@ -691,7 +692,7 @@ class RootlessContainerExecutor:
 
     def recover_result(
         self,
-        plan: InvocationPlan,
+        plan: OperationPlan,
         *,
         environment: EnvironmentSpec,
         storage_available: bool,
@@ -787,7 +788,7 @@ class RootlessContainerExecutor:
             return result
 
     def fence(
-        self, plan: InvocationPlan, *, environment: EnvironmentSpec
+        self, plan: OperationPlan, *, environment: EnvironmentSpec
     ) -> RootlessIsolationCleanup:
         """Release only resources owned by this frozen operation, without relaunch."""
         with self._guard():
@@ -798,7 +799,7 @@ class RootlessContainerExecutor:
             return cleanup
 
     def _recovery_binding(
-        self, plan: InvocationPlan, environment: EnvironmentSpec
+        self, plan: OperationPlan, environment: EnvironmentSpec
     ) -> _InvocationBinding:
         self._validate_environment(environment)
         _validate_plan_binding(plan, environment)
@@ -1019,7 +1020,9 @@ class RootlessContainerExecutor:
             raise ExecutorUnavailable("durable invocation identity is corrupt")
         self._validate_environment(receipt.environment)
         if receipt.storage is None:
-            if receipt.plan.driver_digest != ISOLATION_PROBE_IMPLEMENTATION_DIGEST:
+            if not isinstance(receipt.plan, InvocationPlan) or (
+                receipt.plan.driver_digest != ISOLATION_PROBE_IMPLEMENTATION_DIGEST
+            ):
                 raise ExecutorUnavailable("ordinary invocation has no bounded storage receipt")
         elif (
             receipt.storage.run_id != receipt.plan.run_id
@@ -1413,7 +1416,7 @@ class RootlessContainerExecutor:
 
     def _require_storage_lease(
         self,
-        plan: InvocationPlan,
+        plan: OperationPlan,
         *,
         environment: EnvironmentSpec,
         workspace: Path,

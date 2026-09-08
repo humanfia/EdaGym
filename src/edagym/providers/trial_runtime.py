@@ -86,7 +86,6 @@ from edagym.providers.campaign_runner import (
 )
 from edagym.providers.campaign_schedule import (
     CampaignTask,
-    MeteredProviderHarnessBinding,
     ScheduledTrial,
     require_paid_campaign_task_origin,
 )
@@ -158,6 +157,9 @@ from edagym.specs.common import (
     Visibility,
 )
 from edagym.specs.environment import EnvironmentSpec, FilesystemScope, ToolBinding
+from edagym.specs.harness import (
+    MeteredProviderHarnessBinding,
+)
 from edagym.specs.operation import ParticipantOperationBinding
 from edagym.specs.release import ReleaseManifest, TaskInstance
 from edagym.specs.session import RecoveryPolicy, SessionSpec

@@ -11,24 +11,23 @@ from pydantic import Field, field_validator, model_validator
 from edagym.benchmark.model import BenchmarkSpec, EvaluationCell
 from edagym.benchmark.schedule import ScheduledEvaluation, build_benchmark_schedule
 from edagym.canonical import canonical_digest
-from edagym.config.model import HarnessKind, NativeCliKind
 from edagym.providers.campaign import (
     CampaignScope,
     CampaignSpec,
     FeatureSupport,
     ModelSetManifest,
 )
-from edagym.providers.model import ResolvedProviderConfig, WireProtocol
+from edagym.providers.model import ResolvedProviderConfig
 from edagym.specs.common import (
     Capability,
     Digest,
     Identifier,
     JcsNonNegativeInt,
-    JcsPositiveInt,
     ModelLabel,
     ServiceTierLabel,
     StrictModel,
 )
+from edagym.specs.harness import CampaignHarnessBinding
 from edagym.specs.task import NativeSealedTaskOrigin, TaskOrigin
 
 
@@ -80,54 +79,9 @@ def campaign_role_allows_capability(
     return capability in CAMPAIGN_ROLE_CAPABILITIES[role]
 
 
-class MeteredUsagePolicy(StrEnum):
-    EXACT = "exact"
-
-
 def require_paid_campaign_task_origin(origin: TaskOrigin) -> None:
     if not isinstance(origin, NativeSealedTaskOrigin):
         raise ValueError("paid campaigns require native sealed tasks")
-
-
-class _ProviderHarnessBinding(StrictModel):
-    harness_id: Identifier
-    provider_profile_digest: Digest
-    provider_config_digest: Digest
-    wire_protocol: WireProtocol
-    instruction_digest: Digest
-    tool_schema_digest: Digest
-    scaffold_digest: Digest
-    usage_policy: Literal[MeteredUsagePolicy.EXACT] = MeteredUsagePolicy.EXACT
-
-    @property
-    def digest(self) -> Digest:
-        return canonical_digest(self, domain="campaign-harness-v3")
-
-
-class MeteredProviderHarnessBinding(_ProviderHarnessBinding):
-    kind: Literal[HarnessKind.CONTROLLED_AGENT] = HarnessKind.CONTROLLED_AGENT
-    wire_protocol: Literal[WireProtocol.RESPONSES] = WireProtocol.RESPONSES
-    maximum_requests_per_action: JcsPositiveInt
-
-
-class NativeCliHarnessBinding(_ProviderHarnessBinding):
-    kind: Literal[HarnessKind.NATIVE_CLI] = HarnessKind.NATIVE_CLI
-    cli: NativeCliKind
-    executable_digest: Digest
-    transport_digest: Digest
-    cli_version: Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[ -~]+$")]
-
-    @model_validator(mode="after")
-    def validate_protocol(self) -> Self:
-        if self.wire_protocol is not self.cli.wire_protocol:
-            raise ValueError("native harness protocol differs from its CLI adapter")
-        return self
-
-
-CampaignHarnessBinding = Annotated[
-    MeteredProviderHarnessBinding | NativeCliHarnessBinding,
-    Field(discriminator="kind"),
-]
 
 
 class CellPolicy(StrictModel):

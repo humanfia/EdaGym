@@ -46,7 +46,6 @@ from edagym.providers.campaign_schedule import (
     CampaignHeader,
     CampaignTask,
     CampaignTaskRole,
-    MeteredProviderHarnessBinding,
     build_campaign_schedule,
 )
 from edagym.providers.model import (
@@ -74,6 +73,9 @@ from edagym.run.trial_model import (
 )
 from edagym.specs.budget import EpisodeBudget
 from edagym.specs.common import Capability, ProviderResponseStatus, Redistribution
+from edagym.specs.harness import (
+    MeteredProviderHarnessBinding,
+)
 from edagym.specs.task import PublicCalibrationTaskOrigin
 from tests.campaign_fixtures import campaign_cells, campaign_header
 from tests.factories import SYNTHETIC_CREDENTIAL_SOURCE_DIGEST

@@ -20,7 +20,6 @@ from edagym.providers.campaign import (
 )
 from edagym.providers.campaign_schedule import (
     CampaignCell,
-    CampaignHarnessBinding,
     CampaignHeader,
     CampaignTask,
     CellPolicy,
@@ -28,6 +27,9 @@ from edagym.providers.campaign_schedule import (
 )
 from edagym.providers.model import ResolvedProviderConfig
 from edagym.specs.budget import EpisodeBudget
+from edagym.specs.harness import (
+    CampaignHarnessBinding,
+)
 
 
 def campaign_cells(

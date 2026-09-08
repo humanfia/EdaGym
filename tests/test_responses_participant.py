@@ -31,7 +31,6 @@ from edagym.participants.responses import (
 )
 from edagym.projections import project_atif
 from edagym.projections.model import AtifInteractionExtra
-from edagym.providers.campaign_schedule import MeteredProviderHarnessBinding
 from edagym.providers.model import (
     FunctionCall,
     FunctionCallInput,
@@ -82,6 +81,9 @@ from edagym.specs.environment import (
     ArtifactRetentionRule,
     EnvironmentSpec,
     ManagedEncryption,
+)
+from edagym.specs.harness import (
+    MeteredProviderHarnessBinding,
 )
 from edagym.specs.session import HarnessActor, SessionSpec
 

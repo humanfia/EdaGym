@@ -14,6 +14,9 @@ from edagym.run.artifact_model import (
     BlobRef,
 )
 from edagym.specs.common import ArtifactClass, Capability, Digest, Identifier, StrictModel
+from edagym.specs.harness import (
+    NativeCliHarnessBinding,
+)
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _FORBIDDEN_ENVIRONMENT_MARKERS = (
@@ -150,21 +153,20 @@ RecipeCommand = Annotated[
 ]
 
 
-class InvocationPlan(StrictModel):
-    """A run-owned operation whose digest also binds every executor handle."""
+class InvocationKind(StrEnum):
+    TOOL = "tool"
+    NATIVE_HARNESS = "native_harness"
+
+
+class _InvocationPlanBase(StrictModel):
+    """Run identity and execution boundaries shared by every operation target."""
 
     invocation_id: Identifier
     run_id: Digest
-    capability: Capability
-    tool_id: Identifier
-    driver_digest: Digest
     view: InvocationView
-    executable: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")]
-    arguments: tuple[Annotated[str, Field(max_length=16_384)], ...] = ()
     working_directory: str = "."
     environment: Annotated[tuple[EnvironmentEntry, ...], Field(max_length=64)] = ()
     input_manifest_digest: Digest
-    recipe: Annotated[tuple[RecipeCommand, ...], Field(max_length=256)] = ()
     outputs: tuple[OutputDeclaration, ...] = ()
     deadline: datetime | None = None
 
@@ -206,6 +208,22 @@ class InvocationPlan(StrictModel):
             raise ValueError("invocation output identities and paths must be unique")
         return tuple(sorted(value, key=lambda entry: entry.logical_id))
 
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self, domain="invocation-plan-v4")
+
+
+class InvocationPlan(_InvocationPlanBase):
+    """An EDA tool operation bound to one registered driver and executable."""
+
+    kind: Literal[InvocationKind.TOOL] = InvocationKind.TOOL
+    capability: Capability
+    tool_id: Identifier
+    driver_digest: Digest
+    executable: Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")]
+    arguments: tuple[Annotated[str, Field(max_length=16_384)], ...] = ()
+    recipe: Annotated[tuple[RecipeCommand, ...], Field(max_length=256)] = ()
+
     @model_validator(mode="after")
     def reject_control_characters(self) -> Self:
         values = (self.executable, *self.arguments)
@@ -234,9 +252,18 @@ class InvocationPlan(StrictModel):
                 raise ValueError("a composite recipe requires its canonical command report")
         return self
 
-    @property
-    def digest(self) -> str:
-        return canonical_digest(self, domain="invocation-plan-v3")
+class NativeHarnessPlan(_InvocationPlanBase):
+    """A native CLI operation without an invented EDA tool or driver identity."""
+
+    kind: Literal[InvocationKind.NATIVE_HARNESS] = InvocationKind.NATIVE_HARNESS
+    view: Literal[InvocationView.PARTICIPANT] = InvocationView.PARTICIPANT
+    harness: NativeCliHarnessBinding
+    executable_asset_id: Identifier
+    prompt: BlobRef
+    deadline: datetime
+
+
+OperationPlan = Annotated[InvocationPlan | NativeHarnessPlan, Field(discriminator="kind")]
 
 
 class JobHandle(StrictModel):
