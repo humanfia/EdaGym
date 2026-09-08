@@ -93,7 +93,7 @@ class _ProviderHarnessBinding(StrictModel):
     harness_id: Identifier
     provider_profile_digest: Digest
     provider_config_digest: Digest
-    wire_protocol: Literal[WireProtocol.RESPONSES] = WireProtocol.RESPONSES
+    wire_protocol: WireProtocol
     instruction_digest: Digest
     tool_schema_digest: Digest
     scaffold_digest: Digest
@@ -101,11 +101,12 @@ class _ProviderHarnessBinding(StrictModel):
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="campaign-harness-v2")
+        return canonical_digest(self, domain="campaign-harness-v3")
 
 
 class MeteredProviderHarnessBinding(_ProviderHarnessBinding):
     kind: Literal[HarnessKind.CONTROLLED_AGENT] = HarnessKind.CONTROLLED_AGENT
+    wire_protocol: Literal[WireProtocol.RESPONSES] = WireProtocol.RESPONSES
     maximum_requests_per_action: JcsPositiveInt
 
 
@@ -115,6 +116,12 @@ class NativeCliHarnessBinding(_ProviderHarnessBinding):
     executable_digest: Digest
     transport_digest: Digest
     cli_version: Annotated[str, Field(min_length=1, max_length=160, pattern=r"^[ -~]+$")]
+
+    @model_validator(mode="after")
+    def validate_protocol(self) -> Self:
+        if self.wire_protocol is not self.cli.wire_protocol:
+            raise ValueError("native harness protocol differs from its CLI adapter")
+        return self
 
 
 CampaignHarnessBinding = Annotated[
@@ -431,7 +438,7 @@ def _trial_id(binding: TrialBinding) -> str:
 class CampaignHeader(StrictModel):
     """The complete frozen inputs from which scheduling and budgets are derived."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     campaign: CampaignSpec
     benchmark: BenchmarkSpec
     cells: Annotated[tuple[CampaignCell, ...], Field(min_length=1)]
@@ -487,4 +494,4 @@ class CampaignHeader(StrictModel):
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="provider-campaign-header-v2")
+        return canonical_digest(self, domain="provider-campaign-header-v3")

@@ -117,8 +117,33 @@ process-output admission remains part of the unfinished run-event integration.
 This transport has been exercised with a native CLI and synthetic provider
 responses inside a network-disabled container. It is not yet the configured
 RunEngine campaign launcher. Controlled Messages integration, native execution closure
-admission, and the unified run-event adapter remain required before native cells
+admission, and journal integration of harness observations remain required before native cells
 can be declared available for scored campaigns.
+
+## Native transcript observations
+
+`participants.native.adapt_native_transcript` translates Codex exec JSONL and
+Claude Code stream-json output into the typed events in `participants.harness`.
+It retains the complete private stdout bytes, including unknown events, and
+provides their content digest. The process owner must bound stdout capture and
+persist these bytes in the private artifact store. Unsupported event types,
+malformed records, and a stream without its terminal record are explicit adapter
+failures. They do not produce replacement tool calls or usage estimates.
+
+Completed assistant messages, observed tool requests/results, session identity,
+usage, and terminal status remain distinct observations. A Codex completed patch
+can have a result without an observed request. Claude cached input counts are
+included in its total input usage; Codex input counts are already inclusive.
+CLI usage is not a settlement receipt: the provider ledger consumes the relay's
+receipt. A CLI final does not submit a candidate or establish a task score.
+These projections follow the [Codex JSONL contract](https://learn.chatgpt.com/docs/non-interactive-mode)
+and [Claude programmatic output contract](https://code.claude.com/docs/en/headless).
+
+Native campaign bindings freeze the CLI's protocol: Responses for Codex exec,
+Messages for Claude Code. Controlled provider bindings remain Responses-only.
+The harness digest uses `campaign-harness-v3`; `CampaignHeader` schema version 3
+binds the expanded native protocol contract. Existing campaign headers must be
+regenerated rather than reinterpreted as version 3.
 
 ## Credential-free campaign preflight
 

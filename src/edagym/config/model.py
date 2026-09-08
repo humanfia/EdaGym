@@ -9,7 +9,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.providers.model import ProviderDefaults, ProviderProfile
+from edagym.providers.model import ProviderDefaults, ProviderProfile, WireProtocol
 from edagym.specs.common import (
     Capability,
     Digest,
@@ -46,6 +46,12 @@ class HarnessKind(StrEnum):
 class NativeCliKind(StrEnum):
     CODEX_EXEC = "codex_exec"
     CLAUDE_CODE = "claude_code"
+
+    @property
+    def wire_protocol(self) -> WireProtocol:
+        return (
+            WireProtocol.RESPONSES if self is NativeCliKind.CODEX_EXEC else WireProtocol.MESSAGES
+        )
 
 
 class SessionKind(StrEnum):
@@ -390,7 +396,7 @@ class EdaGymConfig(StrictModel):
         runtimes = {item.runtime_id: item for item in self.runtimes}
         tools = {item.tool_id: item for item in self.tools}
         libraries = {item.library_id: item for item in self.libraries}
-        providers = {item.provider_id for item in self.providers}
+        providers = {item.provider_id: item for item in self.providers}
         credentials = {item.credential_id for item in self.credentials}
         harnesses = {item.harness_id for item in self.harnesses}
         if any(provider.credential_reference not in credentials for provider in self.providers):
@@ -404,6 +410,12 @@ class EdaGymConfig(StrictModel):
         for harness in self.harnesses:
             if harness.provider_id not in providers:
                 raise ValueError("harness references an unknown provider")
+            if (
+                isinstance(harness, NativeCliHarnessConfig)
+                and providers[harness.provider_id].profile.wire_protocol
+                is not harness.cli.wire_protocol
+            ):
+                raise ValueError("native harness provider protocol differs from its CLI adapter")
         for session in self.sessions:
             if session.harness_id is not None and session.harness_id not in harnesses:
                 raise ValueError("session references an unknown harness")
