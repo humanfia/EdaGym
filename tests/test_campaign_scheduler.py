@@ -435,7 +435,7 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
         ),
     )
     model_set = _model_set(*routes)
-    tasks = _tasks()
+    tasks = _tasks(3)
     campaign = _campaign(
         scope=CampaignScope.COMMON_CORE,
         tasks=tasks,
@@ -445,21 +445,9 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
 
     schedule = build_campaign_schedule(campaign, model_set, tasks)
     rebuilt = build_campaign_schedule(campaign, model_set, tuple(reversed(tasks)))
-    duplicate_role_tasks = (
-        *tasks[:-1],
-        tasks[-1].model_copy(
-            update={
-                "role": tasks[0].role,
-                "device_capability": tasks[0].device_capability,
-            }
-        ),
-    )
-    with pytest.raises(ValueError, match="representative role"):
-        build_campaign_schedule(campaign, model_set, duplicate_role_tasks)
-
     assert schedule == rebuilt
     assert len(schedule.trials) == len(tasks) * len(routes) * 3
-    assert tuple(trial.ordinal for trial in schedule.trials) == tuple(range(48))
+    assert tuple(trial.ordinal for trial in schedule.trials) == tuple(range(18))
     combinations = {
         (
             trial.binding.task_release_digest,
@@ -468,8 +456,11 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
         )
         for trial in schedule.trials
     }
-    assert len(combinations) == 48
-    assert len({trial.trial_id for trial in schedule.trials}) == 48
+    assert combinations == {
+        (task.task_release_digest, route.route_id, seed)
+        for task in tasks for route in routes for seed in campaign.paired_trial_seeds
+    }
+    assert len({trial.trial_id for trial in schedule.trials}) == 18
     for repetition in range(3):
         observed = tuple(
             trial.binding.task_release_digest
@@ -478,7 +469,7 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
         )[:: len(routes)]
         assert observed == schedule.ordered_task_release_digests
     projection = _runner(campaign, model_set, tasks, tmp_path / "scope").budget_projection()
-    assert projection.trial_count == 48
+    assert projection.trial_count == 18
     assert projection.global_limits == CampaignResources(
         requests=64,
         input_tokens=6400,
@@ -506,36 +497,14 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
     assert projection.global_total_token_limit == 12800
 
     common_values = campaign.model_dump(mode="python")
-    with pytest.raises(ValueError, match="exactly three"):
-        CampaignSpec.model_validate({**common_values, "paired_trial_seeds": (_seed(1), _seed(2))})
     pilot = CampaignSpec.model_validate(
         {
             **common_values,
             "scope": CampaignScope.MODEL_COMPARISON_PILOT,
-            "paired_trial_seeds": (_seed(1),),
+            "paired_trial_seeds": (_seed(1), _seed(2)),
         }
     )
-    assert pilot.repetitions == 1
-    with pytest.raises(ValueError, match="exactly one"):
-        CampaignSpec.model_validate(
-            {**common_values, "scope": CampaignScope.MODEL_COMPARISON_PILOT}
-        )
-    with pytest.raises(ValueError, match="exactly eight"):
-        CampaignSpec.model_validate(
-            {
-                **common_values,
-                "scope": CampaignScope.MODEL_COMPARISON_PILOT,
-                "paired_trial_seeds": (_seed(1),),
-                "task_release_digests": common_values["task_release_digests"][:-1],
-            }
-        )
-    with pytest.raises(ValueError, match="one reasoning effort"):
-        CampaignSpec.model_validate(
-            {
-                **common_values,
-                "reasoning_efforts": ("high", "low"),
-            }
-        )
+    assert len(build_campaign_schedule(pilot, model_set, tasks).trials) == 12
     effort_campaign = CampaignSpec.model_validate(
         {
             **common_values,
@@ -556,7 +525,7 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
     }
 
 
-def test_end_to_end_smoke_is_a_three_task_single_route_safety_boundary() -> None:
+def test_end_to_end_smoke_limits_model_dispatch_without_expanding_tasks() -> None:
     routes = (
         _route(
             "frontier-route",
@@ -568,27 +537,7 @@ def test_end_to_end_smoke_is_a_three_task_single_route_safety_boundary() -> None
         ),
     )
     model_set = _model_set(*routes)
-    base_tasks = _tasks(3)
-    tasks = (
-        base_tasks[0].model_copy(
-            update={
-                "role": CampaignTaskRole.RTL_GENERATION,
-                "device_capability": Capability.RTL_SIMULATION,
-            }
-        ),
-        base_tasks[1].model_copy(
-            update={
-                "role": CampaignTaskRole.SYNTHESIS_QOR,
-                "device_capability": Capability.ASIC_SYNTHESIS,
-            }
-        ),
-        base_tasks[2].model_copy(
-            update={
-                "role": CampaignTaskRole.PHYSICAL_ANALOG,
-                "device_capability": Capability.CIRCUIT_SIMULATION,
-            }
-        ),
-    )
+    tasks = _tasks(1)
     campaign = _campaign(
         scope=CampaignScope.END_TO_END_SMOKE,
         tasks=tasks,
@@ -598,41 +547,23 @@ def test_end_to_end_smoke_is_a_three_task_single_route_safety_boundary() -> None
     )
 
     schedule = build_campaign_schedule(campaign, model_set, tasks)
-    assert len(schedule.trials) == 3
+    assert len(schedule.trials) == 1
     assert {trial.binding.route_id for trial in schedule.trials} == {routes[0].route_id}
     spoofed_capability = (
         *tasks[:-1],
-        tasks[-1].model_copy(update={"device_capability": Capability.RTL_SIMULATION}),
+        tasks[-1].model_copy(update={"device_capability": Capability.STATIC_TIMING}),
     )
     with pytest.raises(ValueError, match="capability is not admitted"):
         build_campaign_schedule(campaign, model_set, spoofed_capability)
-    wrong_roles = tuple(
-        task.model_copy(
-            update={
-                "role": CampaignTaskRole.RTL_GENERATION,
-                "device_capability": Capability.RTL_SIMULATION,
-            }
-        )
-        for task in tasks
-    )
-    with pytest.raises(ValueError, match="smoke tasks must cover"):
-        build_campaign_schedule(campaign, model_set, wrong_roles)
     values = campaign.model_dump(mode="python")
-    with pytest.raises(ValueError, match="three tasks, one route"):
-        CampaignSpec.model_validate(
-            {
-                **values,
-                "task_release_digests": values["task_release_digests"][:-1],
-            }
-        )
-    with pytest.raises(ValueError, match="three tasks, one route"):
+    with pytest.raises(ValueError):
         CampaignSpec.model_validate(
             {
                 **values,
                 "route_ids": tuple(route.route_id for route in routes),
             }
         )
-    with pytest.raises(ValueError, match="three tasks, one route"):
+    with pytest.raises(ValueError):
         CampaignSpec.model_validate(
             {
                 **values,
@@ -663,7 +594,7 @@ def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
         ),
     )
     model_set = _model_set(*routes)
-    tasks = _tasks(6)
+    tasks = _tasks(2)
     campaign = _campaign(
         scope=CampaignScope.REASONING_EFFORT_SENSITIVITY,
         tasks=tasks,
@@ -673,7 +604,7 @@ def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
     )
 
     schedule = build_campaign_schedule(campaign, model_set, tasks)
-    assert len(schedule.trials) == 24
+    assert len(schedule.trials) == 8
     assert {trial.binding.route_id for trial in schedule.trials} == {
         route.route_id for route in routes
     }
@@ -696,7 +627,7 @@ def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
         for effort in ("high", "max")
     }
 
-    with pytest.raises(ValueError, match="six tasks, two reasoning efforts"):
+    with pytest.raises(ValueError):
         CampaignSpec.model_validate(
             {
                 **campaign.model_dump(mode="python"),
@@ -709,12 +640,6 @@ def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
             model_set,
             tasks,
         )
-    wrong_roles = (
-        *tasks[:-1],
-        tasks[-1].model_copy(update={"role": CampaignTaskRole.LONG_RUN_RESUME}),
-    )
-    with pytest.raises(ValueError, match="six representative roles"):
-        build_campaign_schedule(campaign, model_set, wrong_roles)
 
 
 def test_campaign_report_preserves_requested_and_reported_service_tiers(

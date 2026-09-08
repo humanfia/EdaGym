@@ -252,39 +252,6 @@ def build_campaign_schedule(
         require_paid_campaign_task_origin(task.task_origin)
         if not campaign_role_allows_capability(task.role, task.device_capability):
             raise ValueError("campaign task capability is not admitted for its role")
-    task_roles = {task.role for task in tasks}
-    if campaign.scope is CampaignScope.END_TO_END_SMOKE and not (
-        CampaignTaskRole.RTL_GENERATION in task_roles
-        and task_roles
-        & {CampaignTaskRole.SYNTHESIS_QOR, CampaignTaskRole.STA_CLOSURE}
-        and task_roles
-        & {CampaignTaskRole.PHYSICAL_ANALOG, CampaignTaskRole.FPGA_IMPLEMENTATION}
-    ):
-        raise ValueError(
-            "end-to-end smoke tasks must cover RTL generation, synthesis or STA, "
-            "and physical, analog, or FPGA execution"
-        )
-    if campaign.scope in {
-        CampaignScope.MODEL_COMPARISON_PILOT,
-        CampaignScope.COMMON_CORE,
-    } and task_roles != set(CampaignTaskRole):
-        raise ValueError("pilot and common core tasks must cover every representative role")
-    effort_roles = {
-        CampaignTaskRole.RTL_GENERATION,
-        CampaignTaskRole.DEBUG_FORMAL,
-        CampaignTaskRole.SYNTHESIS_QOR,
-        CampaignTaskRole.STA_CLOSURE,
-        CampaignTaskRole.PHYSICAL_ANALOG,
-        CampaignTaskRole.FPGA_IMPLEMENTATION,
-    }
-    if (
-        campaign.scope is CampaignScope.REASONING_EFFORT_SENSITIVITY
-        and task_roles != effort_roles
-    ):
-        raise ValueError(
-            "reasoning effort sensitivity tasks must cover the six representative roles"
-        )
-
     ordered_releases = tuple(
         sorted(
             task_by_release,

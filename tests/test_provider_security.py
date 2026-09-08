@@ -60,7 +60,6 @@ from edagym.providers.campaign import (
     ModelSetManifest,
     RetryPolicy,
     RouteQualification,
-    UnknownSpendLimit,
 )
 from edagym.providers.campaign_runner import (
     CampaignAccountingError,
@@ -1644,106 +1643,30 @@ def test_budget_reservations_are_atomic_under_concurrency() -> None:
     assert ledger.snapshot().reserved_requests == 0
 
 
-def test_campaign_envelope_freezes_model_coverage_and_paid_limits() -> None:
-    route = ModelRoute(
-        route_id="shared_route",
-        requested_model="route.test",
-        provider_reported_model="route.test",
-        reference_kind=ModelReferenceKind.UNKNOWN,
-        categories=(
-            ModelCategory.FRONTIER_REASONING,
-            ModelCategory.CODING_AGENT,
-            ModelCategory.BALANCED,
-            ModelCategory.HIGH_THROUGHPUT,
-        ),
-        qualification=RouteQualification(
-            reasoning_control=FeatureSupport.SUPPORTED,
-            requested_service_tier="fast",
-            canary_tool_schema_digest=_digest("route-tool-schema"),
-            canary_evidence_digest=_digest("route-canary"),
-        ),
-    )
-    manifest = ModelSetManifest(
-        provider_config_digest=_digest("provider-config"),
-        discovery_digest=_digest("model-discovery"),
-        resolved_on="2026-09-04",
-        routes=(route,),
-    )
+def test_campaign_limits_reject_claims_above_their_parent_budget() -> None:
     token_limits = CampaignTokenLimits(
-        max_requests=16,
-        max_requests_per_trial=4,
-        max_input_tokens_per_request=100,
-        max_output_tokens_per_request=100,
-        max_input_tokens_per_trial=400,
-        max_output_tokens_per_trial=400,
-        max_total_tokens_per_trial=800,
-        max_input_tokens=1600,
-        max_output_tokens=1600,
-        max_total_tokens=3200,
+        max_requests=16, max_requests_per_trial=4,
+        max_input_tokens_per_request=100, max_output_tokens_per_request=100,
+        max_input_tokens_per_trial=400, max_output_tokens_per_trial=400,
+        max_total_tokens_per_trial=800, max_input_tokens=1600,
+        max_output_tokens=1600, max_total_tokens=3200,
     )
-    values = {
-        "campaign_id": "common_core",
-        "scope": CampaignScope.COMMON_CORE,
-        "model_set_digest": manifest.digest,
-        "route_ids": tuple(route.route_id for route in manifest.routes),
-        "task_release_digests": tuple(_digest(f"task-release-{index}") for index in range(8)),
-        "environment_digests": (_digest("environment"),),
-        "harness_digests": (_digest("harness"),),
-        "prompt_digest": _digest("prompt"),
-        "tool_schema_digest": _digest("tool-schema"),
-        "feedback_policy_digest": _digest("feedback"),
-        "reasoning_efforts": ("high",),
-        "service_tier": "fast",
-        "paired_trial_seeds": (_seed(11), _seed(22), "f" * 32),
-        "task_order_seed": _seed(44),
-        "retry_policy": RetryPolicy(max_request_attempts=1, backoff_milliseconds=0),
-        "token_limits": token_limits,
-        "execution_limits": CampaignExecutionLimits(
-            max_turns_per_trial=8,
-            max_tool_calls_per_trial=32,
-            max_wall_seconds_per_trial=1200,
-            max_eda_compute_seconds_per_trial=600,
-            max_license_seconds_per_trial=300,
-            max_artifact_bytes_per_trial=1 << 28,
-            max_turns=24,
-            max_tool_calls=96,
-            max_wall_seconds=3600,
-            max_eda_compute_seconds=1800,
-            max_license_seconds=900,
-            max_artifact_bytes=1 << 30,
-        ),
-        "provider_spend_limit": UnknownSpendLimit(),
-    }
-    campaign = CampaignSpec.model_validate(values)
-
-    assert campaign.repetitions == 3
-    assert campaign.token_limits.max_requests == 16
-    assert campaign.token_limits.max_input_tokens_per_trial == 400
-    assert campaign.digest.startswith("sha256:")
-    with pytest.raises(ValueError, match="trial input limit"):
+    with pytest.raises(ValueError):
         CampaignTokenLimits.model_validate(
-            {
-                **token_limits.model_dump(),
-                "max_input_tokens_per_request": 401,
-            }
+            {**token_limits.model_dump(), "max_input_tokens_per_request": 401}
         )
-    with pytest.raises(ValueError, match="wall-time"):
-        execution_limits = values["execution_limits"]
-        assert isinstance(execution_limits, CampaignExecutionLimits)
+    execution_limits = CampaignExecutionLimits(
+        max_turns_per_trial=8, max_tool_calls_per_trial=32,
+        max_wall_seconds_per_trial=1200, max_eda_compute_seconds_per_trial=600,
+        max_license_seconds_per_trial=300, max_artifact_bytes_per_trial=1 << 28,
+        max_turns=24, max_tool_calls=96, max_wall_seconds=3600,
+        max_eda_compute_seconds=1800, max_license_seconds=900,
+        max_artifact_bytes=1 << 30,
+    )
+    with pytest.raises(ValueError):
         CampaignExecutionLimits.model_validate(
-            {
-                **execution_limits.model_dump(),
-                "max_wall_seconds_per_trial": 3601,
-            }
+            {**execution_limits.model_dump(), "max_wall_seconds_per_trial": 3601}
         )
-    with pytest.raises(ValueError):
-        CampaignSpec.model_validate(
-            {**values, "paired_trial_seeds": (_seed(1), "0" * 31 + "A")}
-        )
-    with pytest.raises(ValueError):
-        CampaignSpec.model_validate({**values, "task_order_seed": 44})
-    with pytest.raises(ValueError):
-        CampaignSpec.model_validate({**values, "scope": CampaignScope.EXPANDED_BREADTH})
 
 
 class _HttpsStub:

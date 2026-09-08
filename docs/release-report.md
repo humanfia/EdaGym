@@ -37,13 +37,13 @@ derived `CampaignReport`, and the exact `RouteCanaryEvidence` named by every
 route in the model set. It reconstructs the report from the record and checks
 each canary's digest, requested and reported model labels, reasoning support,
 service-tier observations, and positive token counters against the route.
-Release
-readiness requires a three-task, one-route, one-repetition end-to-end smoke
-campaign, one eight-task pilot, and one eight-task common-core campaign. The
-required suite also includes the six-task reasoning-effort sensitivity matrix.
+The release suite includes an end-to-end smoke campaign, a pilot, a common-core
+campaign, and a reasoning-effort sensitivity matrix. Task counts and repetitions
+come from their frozen campaign specifications. Smoke dispatch uses one route,
+one reasoning effort, and one repetition.
 The pilot and common core select the same frozen model routes and share their
 other comparison dimensions, model set, provider profile, and provider configuration.
-The common core has three paired repetitions by construction. Every trial
+Every trial
 needs a comparable terminal outcome and positive provider-reported token
 usage. Any dispatched attempt whose usage is unknown makes required campaign
 evidence fail; a successful retry cannot hide a potentially billable unknown
@@ -53,14 +53,14 @@ and do not establish official hosting. Each required model category is either
 covered by a qualified route or carries a typed model-set exclusion; an honest
 unavailable category is not relabelled as success and does not by itself fail
 EdaGym. Expanded-breadth campaigns remain optional and require separate spend
-approval. The six-task reasoning-effort sensitivity campaign is required for
+approval. The reasoning-effort sensitivity campaign is required for
 every route whose canary qualified reasoning control. It shares the
 pilot/common-core model set, exact task-binding subset, harness, feedback,
 per-trial budget, seed, and provider variables while varying the reasoning
 effort dimension.
 
 The smoke attestation is a derived projection, not a second run ledger. It
-exactly joins all three scheduled `RunRecord` values and their
+exactly joins every scheduled `RunRecord` and its
 `CampaignTrialResult` receipts to the campaign journal, task specifications,
 instances, releases, environments, and sessions. The joined trials must cover
 Sail RTL, synthesis or static timing, and a physical, analog, or FPGA flow.

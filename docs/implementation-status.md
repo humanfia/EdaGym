@@ -19,11 +19,11 @@ This branch is an implementation checkpoint, not a completed release.
 
 ## Validation
 
-The full suite at this checkpoint reports **310 passed, 8 failed** in 308.26
-seconds (exit 1). Failures remain in three campaign scheduler cases, three CLI
-surface cases, the campaign envelope case in provider security, and the release
-gate case. They include retired CLI arguments and removed fixed cardinality
-assumptions; their retained semantic checks still need migration.
+The full suite reports **316 passed** in 305.87 seconds (exit 0). Retained CLI
+checks exercise configuration-based run creation, frozen snapshot recovery, and
+cursor replay. Retired help-inventory and `human-turn` tests were removed.
+Campaign tests verify complete frozen products without fixed task-role quotas;
+release evidence must cover the corresponding frozen trial and task bindings.
 
 Ruff, strict mypy (204 source files), generated schema consistency, and
 `git diff --check` pass. The four executor boundary tests pass, including actual

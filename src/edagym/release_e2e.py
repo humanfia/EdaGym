@@ -1,4 +1,4 @@
-"""Mechanical end-to-end release evidence from one three-trial paid smoke campaign."""
+"""Mechanical end-to-end release evidence from a frozen paid smoke campaign."""
 
 from __future__ import annotations
 
@@ -273,9 +273,9 @@ class EndToEndTrialEvidence(StrictModel):
 
 
 class EndToEndSmokeEvidence(StrictModel):
-    """Aggregate proof over the complete three-trial smoke campaign."""
+    """Aggregate proof over the complete frozen smoke campaign."""
 
-    trials: Annotated[tuple[EndToEndTrialEvidence, ...], Field(min_length=3, max_length=3)]
+    trials: Annotated[tuple[EndToEndTrialEvidence, ...], Field(min_length=1)]
     training_run_id: Digest | None = None
     eda_tool_ids: tuple[Identifier, ...]
     failed_requirements: tuple[EndToEndRequirement, ...]
@@ -346,16 +346,21 @@ def project_end_to_end_smoke(
     backend_qualification_sources: tuple[VerifiedBackendQualificationSource, ...],
     artifact_stores: Mapping[Digest, ContentAddressedStore],
 ) -> EndToEndSmokeEvidence:
-    """Replay and bind all three real smoke trials into one release attestation."""
+    """Replay and bind every frozen smoke trial into one release attestation."""
 
     if (
         campaign_record.header.campaign.scope is not CampaignScope.END_TO_END_SMOKE
         or campaign_report.campaign_scope is not CampaignScope.END_TO_END_SMOKE
-        or len(campaign_report.trials) != 3
-        or len(run_records) != 3
-        or len(trial_results) != 3
     ):
-        raise ValueError("end-to-end smoke evidence requires exactly three trial journals")
+        raise ValueError("end-to-end evidence requires a frozen smoke campaign")
+    scheduled = {trial.trial_id for trial in campaign_record.header.schedule.trials}
+    if (
+        {report.trial.trial_id for report in campaign_report.trials} != scheduled
+        or len(campaign_report.trials) != len(scheduled)
+        or len(run_records) != len(scheduled)
+        or len(trial_results) != len(scheduled)
+    ):
+        raise ValueError("end-to-end evidence must cover every frozen trial")
     runs = {item.header.run_id: item for item in run_records}
     results = {item.run_id: item for item in trial_results}
     tasks = {item.digest: item for item in task_specs}

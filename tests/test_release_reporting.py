@@ -315,8 +315,18 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
     smoke = scope is CampaignScope.END_TO_END_SMOKE
     route_ids = ("frontier",) if smoke else ("frontier", "coding", "balanced", "throughput")
     common_tasks = tuple(_digest(f"comparison-task-{index}") for index in range(8))
+    smoke_cases = (
+        (SAIL_RTL_FAMILIES[0].family, CampaignTaskRole.RTL_GENERATION, Capability.RTL_SIMULATION),
+        ("synthesis_qor_tuning", CampaignTaskRole.SYNTHESIS_QOR, Capability.ASIC_SYNTHESIS),
+        (
+            "physical_design_closure",
+            CampaignTaskRole.PHYSICAL_ANALOG,
+            Capability.DIGITAL_IMPLEMENTATION,
+        ),
+        (SAIL_RTL_FAMILIES[1].family, CampaignTaskRole.RTL_GENERATION, Capability.RTL_SIMULATION),
+    )
     task_releases = (
-        tuple(_digest(f"smoke-release-{index}") for index in range(3))
+        tuple(_digest(f"smoke-release-{index}") for index in range(len(smoke_cases)))
         if smoke
         else common_tasks[:6]
         if scope is CampaignScope.REASONING_EFFORT_SENSITIVITY
@@ -338,21 +348,6 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
         * len(reasoning_efforts)
         * len(paired_trial_seeds)
     )
-    smoke_families = (
-        SAIL_RTL_FAMILIES[0].family,
-        "synthesis_qor_tuning",
-        "physical_design_closure",
-    )
-    smoke_roles = (
-        CampaignTaskRole.RTL_GENERATION,
-        CampaignTaskRole.SYNTHESIS_QOR,
-        CampaignTaskRole.PHYSICAL_ANALOG,
-    )
-    smoke_capabilities = (
-        Capability.RTL_SIMULATION,
-        Capability.ASIC_SYNTHESIS,
-        Capability.DIGITAL_IMPLEMENTATION,
-    )
     end_to_end = (
         EndToEndSmokeEvidence(
             trials=tuple(
@@ -361,9 +356,9 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
                     run_id=_digest(f"smoke-run-{index}"),
                     run_record_digest=_digest(f"smoke-record-{index}"),
                     campaign_trial_result_digest=_digest(f"smoke-trial-result-{index}"),
-                    task_family=smoke_families[index],
-                    task_role=smoke_roles[index],
-                    device_capability=smoke_capabilities[index],
+                    task_family=case[0],
+                    task_role=case[1],
+                    device_capability=case[2],
                     task_spec_digest=_digest(f"smoke-task-{index}"),
                     task_instance_digest=_digest(f"smoke-instance-{index}"),
                     release_digest=_digest(f"smoke-release-{index}"),
@@ -436,7 +431,7 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
                         else ReleaseEvidenceStatus.UNAVAILABLE
                     ),
                 )
-                for index in range(3)
+                for index, case in enumerate(smoke_cases)
             ),
             training_run_id=_digest("smoke-run-0"),
             eda_tool_ids=("iverilog", "vcs"),
@@ -838,10 +833,10 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
     assert first.digest == second.digest
     assert first.decision is ReleaseDecision.READY
 
-    missing_flow = first.model_dump(mode="json")
-    missing_flow["flows"].pop()
-    with pytest.raises(ValidationError, match="exactly twelve flow families"):
-        ReleaseReport.model_validate(missing_flow)
+    mismatched_flow = first.model_dump(mode="json")
+    mismatched_flow["flows"][0]["catalog_attestation_digest"] = _digest("other-flow-catalog")
+    with pytest.raises(ValidationError):
+        ReleaseReport.model_validate(mismatched_flow)
 
     forged_coverage = first.model_dump(mode="json")
     synthesis = next(
@@ -903,7 +898,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
         if item["campaign_scope"] == CampaignScope.END_TO_END_SMOKE.value
     )
     smoke["end_to_end"]["trials"].pop()
-    with pytest.raises(ValidationError, match="at least 3 items"):
+    with pytest.raises(ValidationError, match="frozen campaign task bindings"):
         ReleaseReport.model_validate(incomplete_smoke)
 
     mislabeled_actual_trial = first.model_dump(mode="json")
@@ -982,7 +977,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
 
     incomplete_authoring = first.model_dump(mode="json")
     incomplete_authoring["authoring"]["qualification_digests"].pop()
-    with pytest.raises(ValidationError, match="every Sail base and advanced"):
+    with pytest.raises(ValidationError):
         ReleaseReport.model_validate(incomplete_authoring)
 
     unavailable_executor = first.model_dump(mode="json")

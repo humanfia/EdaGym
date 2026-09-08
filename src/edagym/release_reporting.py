@@ -332,6 +332,12 @@ class CampaignEvidence(StrictModel):
             self.end_to_end is not None
         ):
             raise ValueError("only the end-to-end smoke campaign may carry run evidence")
+        if self.end_to_end is not None and (
+            len(self.end_to_end.trials) != expected_trial_count
+            or {trial.release_digest for trial in self.end_to_end.trials}
+            != {binding.task_release_digest for binding in self.task_bindings}
+        ):
+            raise ValueError("end-to-end evidence must cover the frozen campaign task bindings")
         return self
 
 
