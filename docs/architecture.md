@@ -51,10 +51,10 @@ disjoint from the journal, artifact store, and credential configuration. One
 canonical view and one bounded intent cross standard input and output.
 
 The calibration transport is absent from paid campaign interfaces. It has no
-provider dispatch or usage-accounting authority. `CampaignTask` instead requires
-a `MeteredProviderHarnessBinding` tied to the campaign header's provider profile,
-configuration, and wire protocol. Campaign replay also requires the run's
-provider request facts to match the settled dispatch requests and usage. The
+provider dispatch or usage-accounting authority. Controlled `CampaignCell` values
+require a `MeteredProviderHarnessBinding` tied to the campaign header's provider
+profile, configuration, and wire protocol. Campaign replay also requires the
+run's provider request facts to match settled dispatch requests and usage. The
 calibration container owner is written durably before launch and recovered by
 the next exclusive channel owner after a crash. Both its turn limit and the
 remaining run wall budget constrain the deadline.
@@ -223,6 +223,20 @@ reads to verify the same CAS closure. Resource ownership checks are independent
 of containment-health checks: a matching container ID and frozen labels permit
 targeted cleanup even when execution isolation can no longer be established.
 Unknown outcomes require fencing before the terminal failure is journaled.
+
+## Harness configuration
+
+Private configuration schema version 3 uses a discriminated harness union.
+Controlled harnesses reference a provider; native harnesses additionally name
+`codex_exec` or `claude_code` and an executable path. The snapshot resolver
+normalizes only native executable paths. Human sessions omit a harness and do
+not require a separate human harness record.
+
+The explicit config import command accepts version 2 documents that satisfy
+these typed fields. It does not infer a CLI from a filename or convert an
+ambiguous native binding. Frozen run snapshots are never upgraded in place.
+These configuration bindings do not constitute native execution qualification;
+the native sandbox closure, relay, and RunEngine adapter remain integration work.
 
 ## Paid campaign accounting
 

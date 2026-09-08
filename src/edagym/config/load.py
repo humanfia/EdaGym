@@ -58,8 +58,11 @@ def import_legacy_config(source_path: Path, output_path: Path) -> EdaGymConfig:
         raise ConfigError("legacy configuration must be an object")
     if "source_path" in raw:
         raise ConfigError("legacy configuration cannot set its own source location")
-    if raw.get("schema_version") == 1:
+    version = raw.get("schema_version")
+    if version == 1:
         _migrate_visibility(raw)
+    if version in (1, 2):
+        raw["schema_version"] = EdaGymConfig.model_fields["schema_version"].default
     try:
         config = EdaGymConfig.model_validate(raw)
     except ValidationError as error:
@@ -151,7 +154,6 @@ def _migrate_visibility(document: dict[str, object]) -> None:
                 raise ConfigError("legacy tool visibility cannot define one unambiguous view")
             view["tool_visibility"] = next(iter(selected), ToolVisibility.EXACT_TOOLSET)
             profile[name] = view
-    document["schema_version"] = EdaGymConfig.model_fields["schema_version"].default
 
 
 def _toml_bytes(config: EdaGymConfig) -> bytes:

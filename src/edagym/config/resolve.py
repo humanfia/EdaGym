@@ -13,6 +13,7 @@ from edagym.config.model import (
     EdaGymConfig,
     InstalledTreeToolSource,
     LibraryConfig,
+    NativeCliHarnessConfig,
     PrivateConfigSnapshot,
     ProfileConfig,
     ProfileViewConfig,
@@ -247,7 +248,7 @@ def freeze_profile(config: EdaGymConfig, profile: ProfileConfig) -> PrivateConfi
         ),
         harnesses=tuple(
             item
-            if item.executable_path is None
+            if not isinstance(item, NativeCliHarnessConfig)
             else item.model_copy(
                 update={
                     "executable_path": _resolve_private_path(config, item.executable_path),

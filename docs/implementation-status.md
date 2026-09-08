@@ -192,6 +192,29 @@ and campaign concurrency limits remain unfinished. Benchmark inference still
 requires harness-separated analysis before real native/controlled comparisons;
 the campaign-wide operational summaries are not that inference.
 
+## Typed harness configuration
+
+Configuration schema version 3 replaces the optional-field harness record with
+controlled and native CLI branches. Native bindings require an explicit CLI kind,
+provider reference, and executable path; controlled bindings reject executable
+paths. Human sessions remain harness-free. Snapshot path normalization follows
+the native branch, and the config digest domain advances with the schema.
+
+The offline import command owns version conversion for both earlier schemas.
+Ambiguous native inputs require correction before import; frozen snapshots are
+not rewritten. Inline probes exercised relative-path freezing, required native
+inputs, invalid controlled fields, and explicit version 1 and 2 import. No tests
+were added for constraints already enforced by the discriminated schema.
+
+Validation on the final source passed the three CLI checks (1.73 seconds) and
+four real-tool configured-run checks (300.27 seconds), both with exit 0. Ruff,
+strict mypy over 214 source files, schema consistency, and diff checks passed.
+An earlier real-tool invocation was invalidated by a concurrent source edit and
+rejected by the frozen implementation identity check; it is not passing evidence.
+
+This is a configuration prerequisite for stage F. It does not implement native
+execution, relay grants, or the RunEngine campaign consumer.
+
 ## Remaining integration
 
 - Complete exact-toolset filesystem exclusion qualification.

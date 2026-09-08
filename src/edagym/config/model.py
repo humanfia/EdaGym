@@ -38,7 +38,6 @@ class ConfigView(StrEnum):
 
 
 class HarnessKind(StrEnum):
-    HUMAN = "human"
     CONTROLLED_AGENT = "controlled_agent"
     NATIVE_CLI = "native_cli"
 
@@ -164,11 +163,8 @@ class ProviderConfig(StrictModel):
         return value
 
 
-class HarnessConfig(StrictModel):
+class _HarnessConfiguration(StrictModel):
     harness_id: Identifier
-    kind: HarnessKind
-    executable_path: Path | None = None
-    provider_id: Identifier | None = None
     version_label: Annotated[str, Field(min_length=1, max_length=160)]
     tool_permissions: tuple[Capability, ...] = ()
 
@@ -179,17 +175,23 @@ class HarnessConfig(StrictModel):
             raise ValueError("harness tool permissions must be unique")
         return tuple(sorted(value, key=lambda item: item.value))
 
-    @model_validator(mode="after")
-    def validate_binding(self) -> Self:
-        if self.kind is HarnessKind.HUMAN:
-            if self.executable_path is not None or self.provider_id is not None:
-                raise ValueError("human harnesses do not bind executables or providers")
-        elif self.kind is HarnessKind.CONTROLLED_AGENT:
-            if self.provider_id is None:
-                raise ValueError("controlled harnesses require one provider reference")
-        elif self.executable_path is None:
-            raise ValueError("native CLI harnesses require an explicit executable path")
-        return self
+
+class ControlledHarnessConfig(_HarnessConfiguration):
+    kind: Literal[HarnessKind.CONTROLLED_AGENT] = HarnessKind.CONTROLLED_AGENT
+    provider_id: Identifier
+
+
+class NativeCliHarnessConfig(_HarnessConfiguration):
+    kind: Literal[HarnessKind.NATIVE_CLI] = HarnessKind.NATIVE_CLI
+    cli: NativeCliKind
+    executable_path: Path
+    provider_id: Identifier
+
+
+HarnessConfig = Annotated[
+    ControlledHarnessConfig | NativeCliHarnessConfig,
+    Field(discriminator="kind"),
+]
 
 
 class SiteConfig(StrictModel):
@@ -311,7 +313,7 @@ class SnapshotView(StrictModel):
 class EdaGymConfig(StrictModel):
     """One private TOML document with no include, merge, or environment overlay layer."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     sites: tuple[SiteConfig, ...]
     runtimes: tuple[RuntimeBaseSpec, ...] = ()
     tools: tuple[ToolConfig, ...] = ()
@@ -372,7 +374,7 @@ class EdaGymConfig(StrictModel):
                 if runtime is None or runtime.image_digest != tool.source.image_digest:
                     raise ValueError("user-image tools must bind one declared runtime digest")
         for harness in self.harnesses:
-            if harness.provider_id is not None and harness.provider_id not in providers:
+            if harness.provider_id not in providers:
                 raise ValueError("harness references an unknown provider")
         for session in self.sessions:
             if session.harness_id is not None and session.harness_id not in harnesses:
@@ -408,7 +410,7 @@ class EdaGymConfig(StrictModel):
     def digest(self) -> Digest:
         return canonical_digest(
             self.model_dump(mode="json", exclude={"source_path"}),
-            domain="edagym-private-config-v2",
+            domain="edagym-private-config-v3",
         )
 
     def redacted_view(self) -> dict[str, object]:
@@ -499,7 +501,7 @@ class PrivateConfigSnapshot(StrictModel):
         paths.extend(
             harness.executable_path
             for harness in config.harnesses
-            if harness.executable_path is not None
+            if isinstance(harness, NativeCliHarnessConfig)
         )
         storage = config.profiles[0].storage.root
         if storage is not None:
