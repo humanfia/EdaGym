@@ -6,7 +6,7 @@ import http.client
 import json
 import os
 import socket
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -16,8 +16,8 @@ import pytest
 
 from edagym.providers.budget import BudgetLedger
 from edagym.providers.model import RequestTokenClaim
-from edagym.providers.native_responses import NativeResponsesResult
-from edagym.providers.relay import NativeResponsesRelay
+from edagym.providers.native_wire import NativeProviderResult
+from edagym.providers.relay import NativeProviderRelay
 from edagym.providers.responses import ResponsesCampaign
 from edagym.run.trial_model import ProviderSecurityBinding
 from edagym.security.canary_artifact import ProviderCanaryEvidence
@@ -75,7 +75,8 @@ class _Evidence:
         self.ledger = ledger
         self.request: bytes | None = None
         self.response: bytes | None = None
-        self.result: NativeResponsesResult | None = None
+        self.result: NativeProviderResult | None = None
+        self.beta_features: tuple[str, ...] | None = None
         self.rejected = False
 
     def request_reserved(
@@ -87,13 +88,15 @@ class _Evidence:
         security_binding: ProviderSecurityBinding,
         canary_evidence: ProviderCanaryEvidence,
         request_body: bytes,
+        beta_features: tuple[str, ...],
     ) -> None:
         assert self.ledger.snapshot().reserved_requests > 0
         assert security_binding.budget_binding_digest == self.ledger.limits_digest
         assert canary_evidence.receipt.digest == security_binding.canary_receipt_digest
         self.request = request_body
+        self.beta_features = beta_features
 
-    def response_received(self, *, response_body: bytes, result: NativeResponsesResult) -> None:
+    def response_received(self, *, response_body: bytes, result: NativeProviderResult) -> None:
         self.response, self.result = response_body, result
 
     def response_rejected(self, *, response_body: bytes) -> None:
@@ -126,13 +129,13 @@ def _relay(
     evidence: list[_Evidence],
     *,
     trial_id: str,
-) -> NativeResponsesRelay:
+) -> NativeProviderRelay:
     def observe(_key: str) -> _Evidence:
         observer = _Evidence(ledger)
         evidence.append(observer)
         return observer
 
-    return NativeResponsesRelay(
+    return NativeProviderRelay(
         directory=root,
         sender=sender,
         trial_id=trial_id,
@@ -146,12 +149,13 @@ def _relay(
 
 
 def _request(
-    relay: NativeResponsesRelay,
+    relay: NativeProviderRelay,
     *,
     body: bytes | None = None,
     token: str | None = None,
     path: str = "/v1/responses",
     method: str = "POST",
+    protocol_headers: Mapping[str, str] | None = None,
 ) -> tuple[int, bytes]:
     connection = http.client.HTTPConnection("unused.invalid", timeout=5)
     connection.sock = socket.socket(socket.AF_UNIX)
@@ -169,6 +173,7 @@ def _request(
             headers={
                 "Authorization": "Bearer " + (relay.bearer_token if token is None else token),
                 "Content-Type": "application/json",
+                **(protocol_headers or {}),
             },
         )
         response = connection.getresponse()
@@ -189,7 +194,7 @@ def test_native_relays_preserve_wire_and_share_pre_dispatch_caps(tmp_path: Path)
             results = tuple(
                 pool.map(lambda index: _request(first if index % 2 else second), range(8))
             )
-        assert sorted(status for status, _ in results) == [200] * 4 + [429] * 4
+        assert sorted(status for status, _ in results) == [200] * 4 + [403] * 4
         assert all(body == raw for status, body in results if status == 200)
         assert len(upstream.records) == 4
         for path, authorization, body in upstream.records:
@@ -262,7 +267,7 @@ def test_expired_native_grant_cannot_start_a_provider_request(tmp_path: Path) ->
 
     with _provider(tmp_path, _stream()) as (sender, ledger, upstream):
         expires_at = datetime.now(UTC) + timedelta(seconds=1)
-        with NativeResponsesRelay(
+        with NativeProviderRelay(
             directory=tmp_path / "relay",
             sender=sender,
             trial_id="native",

@@ -21,6 +21,7 @@ from edagym.providers.model import (
     ProviderContentType,
     ProviderProfile,
     ProviderUsage,
+    ProviderWire,
     ReasoningSummary,
     Refusal,
     RequestTokenClaim,
@@ -52,7 +53,7 @@ from edagym.security.runtime_surface import RuntimeSurfaceManifest
 from edagym.specs.common import Digest, Identifier, Sensitivity, ServiceTierLabel
 
 if TYPE_CHECKING:
-    from edagym.providers.native_responses import NativeResponsesRequest, NativeResponsesResult
+    from edagym.providers.native_wire import NativeProviderRequest, NativeProviderResult
 
 _SERVICE_TIER = TypeAdapter(ServiceTierLabel)
 _BROKER_AUTHORITY = object()
@@ -75,7 +76,11 @@ class ProviderHttpError(ProviderTransportError):
 
 
 class ProviderProtocolError(ProviderTransportError):
-    """A provider response did not satisfy the typed Responses subset."""
+    """A provider response did not satisfy its metered wire contract."""
+
+
+class ProviderModelChangeError(ProviderProtocolError):
+    """A response crossed a serving-model boundary within one provider request."""
 
 
 class RawHttpResponse:
@@ -136,6 +141,7 @@ class ProviderExchangeObserver[Completion: ProviderCompletion](Protocol):
         security_binding: ProviderSecurityBinding,
         canary_evidence: ProviderCanaryEvidence,
         request_body: bytes,
+        beta_features: tuple[str, ...],
     ) -> None: ...
 
     def response_received(
@@ -486,6 +492,10 @@ class ResponsesCampaign:
         return self._configuration.profile.digest
 
     @property
+    def provider_wire(self) -> ProviderWire:
+        return self._configuration.profile.wire
+
+    @property
     def provider_config_digest(self) -> Digest:
         return self._configuration.digest
 
@@ -511,6 +521,7 @@ class ResponsesCampaign:
 
         return self._metered_request(
             wire_protocol=WireProtocol.RESPONSES,
+            beta_features=(),
             trial_id=trial_id,
             request_key=request_key,
             requested_model=request.model,
@@ -526,22 +537,28 @@ class ResponsesCampaign:
         *,
         trial_id: Identifier,
         request_key: Identifier,
-        request: NativeResponsesRequest,
-        observer: ProviderExchangeObserver[NativeResponsesResult],
-    ) -> NativeResponsesResult:
+        request: NativeProviderRequest,
+        observer: ProviderExchangeObserver[NativeProviderResult],
+    ) -> NativeProviderResult:
         """Account for a native streaming request through the same reservation owner."""
 
-        from edagym.providers.native_responses import decode_native_response
+        from edagym.providers.native_messages import decode_messages_stream
+        from edagym.providers.native_responses import decode_responses_stream
 
         return self._metered_request(
-            wire_protocol=WireProtocol.RESPONSES,
+            wire_protocol=request.wire_protocol,
+            beta_features=request.beta_features,
             trial_id=trial_id,
             request_key=request_key,
             requested_model=request.model,
             claim=request.token_claim,
             body=request.wire_body,
             response_type=ProviderContentType.EVENT_STREAM,
-            decode=decode_native_response,
+            decode=(
+                decode_responses_stream
+                if request.wire_protocol is WireProtocol.RESPONSES
+                else decode_messages_stream
+            ),
             observer=observer,
         )
 
@@ -549,6 +566,7 @@ class ResponsesCampaign:
         self,
         *,
         wire_protocol: WireProtocol,
+        beta_features: tuple[str, ...],
         trial_id: Identifier,
         request_key: Identifier,
         requested_model: str,
@@ -583,6 +601,7 @@ class ResponsesCampaign:
             self._access.credential.authorize(
                 headers,
                 profile=self._configuration.profile,
+                beta_features=beta_features,
             )
             if observer is not None:
                 observer.request_reserved(
@@ -592,6 +611,7 @@ class ResponsesCampaign:
                     security_binding=self._security_binding,
                     canary_evidence=self._canary_evidence,
                     request_body=body,
+                    beta_features=beta_features,
                 )
         except BaseException:
             reservation.cancel()

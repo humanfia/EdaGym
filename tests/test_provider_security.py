@@ -82,11 +82,13 @@ from edagym.providers.model import (
     ProviderDefaults,
     ProviderProfile,
     ProviderUsage,
+    ProviderWire,
     RequestTokenClaim,
     ResolvedProviderConfig,
     ResponsesRequest,
     ResponsesResult,
     ResponseStatus,
+    ResponsesWire,
     ToolParameter,
     ToolValueKind,
 )
@@ -841,7 +843,9 @@ class _RecordingExchangeObserver:
         security_binding: ProviderSecurityBinding,
         canary_evidence: ProviderCanaryEvidence,
         request_body: bytes,
+        beta_features: tuple[str, ...],
     ) -> None:
+        assert beta_features == ()
         assert trial_id == self.trial_id
         assert provider_profile_digest.startswith("sha256:")
         assert provider_config_digest.startswith("sha256:")
@@ -872,9 +876,10 @@ class _RejectingExchangeObserver(_RecordingExchangeObserver):
         security_binding: ProviderSecurityBinding,
         canary_evidence: ProviderCanaryEvidence,
         request_body: bytes,
+        beta_features: tuple[str, ...],
     ) -> None:
         del trial_id, provider_profile_digest, provider_config_digest
-        del security_binding, canary_evidence, request_body
+        del security_binding, canary_evidence, request_body, beta_features
         raise RuntimeError("observer rejected request")
 
 
@@ -1743,11 +1748,17 @@ def _open_local_campaign(
     origin: str,
     client_context: ssl.SSLContext,
     surface_root: Path,
+    *,
+    wire: ProviderWire | None = None,
 ) -> tuple[ResponsesCampaign, _StaticCredentialSource, BudgetLedger]:
+    wire = wire or ResponsesWire()
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
         profile=ProviderProfile(
-            logical_id="local.stub", origin=origin, request_path="/v1/responses"
+            logical_id="local.stub",
+            origin=origin,
+            request_path=f"/v1/{wire.protocol.value}",
+            wire=wire,
         ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )

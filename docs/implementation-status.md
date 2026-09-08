@@ -250,8 +250,9 @@ passed again in 9.55 seconds (exit 0). Ruff, strict mypy over 216 source files,
 generated schema consistency, and diff checks passed. No test-owned containers
 or mounts remained after validation.
 
-Messages transport, configured native executable admission, credential-source
-selection, and the RunEngine campaign/event joins remain unfinished. The existing
+Controlled Messages integration, configured native executable admission,
+credential-source selection, and the RunEngine campaign/event joins remain
+unfinished. The existing
 campaign dispatcher still refuses native cells. The relay experiments do not
 waive that gate or establish native campaign qualification.
 
@@ -266,9 +267,9 @@ requests refuse a mismatched protocol before reservation or dispatch.
 
 Generated campaign schemas and existing provider consumers use the new identity.
 Old profile documents and their attestations require regeneration and
-requalification; no legacy-field fallback is retained. Messages request and
-stream parsing, native relay integration, and configured credential-source
-selection remain unfinished. This migration does not enable native campaigns.
+requalification; no legacy-field fallback is retained. Configured native
+execution, credential-source selection, and the RunEngine campaign/event joins
+remain unfinished. This migration does not enable native campaigns.
 
 The focused provider checks passed 33 tests in 14.64 seconds. The subsequent
 full suite passed 336 tests in 759.24 seconds (exit 0), with source, test, and
@@ -277,6 +278,48 @@ files, generated schema consistency, and diff checks passed. The new evidence
 uses real local TLS to verify profile-bound endpoints and credential headers,
 and verifies that protocol mismatch produces neither dispatch nor reservation.
 No test-owned containers or mounts remained after validation.
+
+## Messages streams and native request grants
+
+Native Responses and Messages share `NativeProviderRequest`,
+`NativeProviderResult`, and `NativeProviderRelay`. Protocol modules own request
+normalization and terminal receipt decoding; the existing provider sender owns
+all reservations and settlement. Messages counts uncached, cache-created, and
+cache-read inputs together and updates cumulative counters without double
+counting. Missing counts, interrupted streams, and ungranted server-tool usage
+retain the conservative charge. A valid output-limit receipt settles exact
+usage while preserving its incomplete response status.
+
+Messages profiles freeze allowed beta features. Each native request admits and
+records its selected subset; that selection also contributes to its request
+identity. API version, feature, and authorization headers are projected by the
+bound credential lease. Mid-stream model changes have a distinct typed failure.
+The relay refuses model changes and exhausted fixed budgets with a terminal
+HTTP 403, avoiding the CLI's retry treatment of transient rate limits.
+
+The implemented relay was exercised with both installed native CLIs in isolated,
+network-disabled containers and synthetic upstream responses. Claude made three
+accounted requests, including its auxiliary title call, and completed an actual
+local tool command. The synthetic ledger recorded 300 input and 60 output
+tokens, with zero outstanding reservations. A two-request cap admitted only two
+upstream requests; the CLI then reported budget exhaustion and exited with code
+1 without waiting for the outer timeout. Codex completed its two-request flow
+through the shared normalization layer. Both positive probes passed the host
+path, network, home, ambient-credential, and tool-execution checks. These are
+protocol and accounting evidence, not model capability or benchmark scores.
+
+The full suite passed 345 tests in 770.23 seconds (exit 0). A later malformed-role
+probe exposed an unclassified exception; role decoding now converts through the
+closed enum before checking the supported domain. Only the Messages parser
+changed after the full run, and all nine affected checks passed again in 10.79
+seconds (exit 0). A temporary real Unix/TLS probe verified seven unsupported role
+forms return HTTP 400 without reservation, observation, or upstream dispatch.
+Ruff, strict mypy over 218 source files, generated schema consistency, and diff
+checks passed. No test-owned containers or mounts remained after validation.
+
+Configured CLI closure admission, controlled Messages participants,
+credential-source selection, native run-event persistence, and campaign linkage
+to RunEngine remain unfinished. Native campaign dispatch remains unavailable.
 
 ## Remaining integration
 

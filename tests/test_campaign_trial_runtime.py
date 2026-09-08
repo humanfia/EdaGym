@@ -397,6 +397,7 @@ class _MeteredSequenceSender(MeteredResponsesParticipantSender):
                 security_binding=self._security_binding,
                 canary_evidence=self._canary_evidence,
                 request_body=request._wire_body(),
+                beta_features=(),
             )
         except BaseException:
             reservation.cancel()

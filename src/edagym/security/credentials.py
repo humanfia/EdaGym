@@ -166,7 +166,13 @@ class CredentialLease:
         self._lock = Lock()
         self._closed = False
 
-    def authorize(self, headers: MutableMapping[str, str], *, profile: ProviderProfile) -> None:
+    def authorize(
+        self,
+        headers: MutableMapping[str, str],
+        *,
+        profile: ProviderProfile,
+        beta_features: tuple[str, ...] = (),
+    ) -> None:
         """Project protocol and credential headers from the bound provider identity."""
 
         with self._lock:
@@ -175,10 +181,20 @@ class CredentialLease:
             if profile.digest != self._profile_digest:
                 raise CredentialSecurityError("credential lease profile binding does not match")
             if any(
-                name.casefold() in {"authorization", "x-api-key", "anthropic-version"}
+                name.casefold()
+                in {"authorization", "x-api-key", "anthropic-version", "anthropic-beta"}
                 for name in headers
             ):
                 raise CredentialSecurityError("provider identity header is already present")
+            if isinstance(profile.wire, MessagesWire):
+                try:
+                    beta_features = profile.wire.admit_features(beta_features)
+                except ValueError:
+                    raise CredentialSecurityError(
+                        "provider beta feature grant does not match"
+                    ) from None
+            elif beta_features:
+                raise CredentialSecurityError("Responses requests do not accept Messages features")
             value = self._value.decode("utf-8")
             if profile.wire.authorization is ProviderAuthorization.BEARER:
                 headers["Authorization"] = "Bearer " + value
@@ -186,6 +202,8 @@ class CredentialLease:
                 headers["x-api-key"] = value
             if isinstance(profile.wire, MessagesWire):
                 headers["anthropic-version"] = profile.wire.api_version
+                if beta_features:
+                    headers["anthropic-beta"] = ",".join(beta_features)
 
     def close(self) -> None:
         with self._lock:

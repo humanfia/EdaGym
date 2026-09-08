@@ -194,6 +194,7 @@ class _TwoRequestSender:
             ),
             canary_evidence=self._canary_evidence,
             request_body=request_body,
+            beta_features=(),
         )
         usage: ProviderUsage | None
         if len(self.requests) == 1 and self._include_usage:

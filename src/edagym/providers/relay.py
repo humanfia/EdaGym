@@ -1,4 +1,4 @@
-"""A short-lived, single-trial Responses capability over a private Unix socket."""
+"""A short-lived, single-trial provider capability over a private Unix socket."""
 
 from __future__ import annotations
 
@@ -21,16 +21,25 @@ from typing import Any, Self, SupportsIndex
 from edagym.policy.runtime_storage import private_directory
 from edagym.providers.budget import BudgetExceeded
 from edagym.providers.campaign_budget import CampaignAccountingError, CampaignBudgetExceeded
-from edagym.providers.model import ProviderContentType, RequestTokenClaim
-from edagym.providers.native_responses import NativeResponsesRequest, NativeResponsesResult
+from edagym.providers.model import (
+    MessagesWire,
+    ProviderContentType,
+    RequestTokenClaim,
+    WireProtocol,
+)
+from edagym.providers.native_wire import NativeProviderRequest, NativeProviderResult
 from edagym.providers.responses import (
     ProviderExchangeObserver,
+    ProviderModelChangeError,
     ProviderTransportError,
     ResponsesCampaign,
 )
 from edagym.security.canary_artifact import MAX_PROVIDER_TRANSCRIPT_REQUEST_BYTES
 
-_RESPONSE_PATH = "/v1/responses"
+_REQUEST_PATHS = {
+    WireProtocol.RESPONSES: frozenset({"/v1/responses"}),
+    WireProtocol.MESSAGES: frozenset({"/v1/messages", "/v1/messages?beta=true"}),
+}
 _SOCKET_NAME = "provider.sock"
 _CONNECTION_TIMEOUT_SECONDS = 5
 
@@ -45,11 +54,12 @@ class RelayRefusal(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     ACCOUNTING_REFUSED = "accounting_refused"
     PROVIDER_EXCHANGE_FAILED = "provider_exchange_failed"
+    PROVIDER_MODEL_CHANGED = "provider_model_changed"
     EVIDENCE_COMMIT_FAILED = "evidence_commit_failed"
     CAPABILITY_IN_BODY = "capability_in_body"
 
 
-class NativeResponsesRelay:
+class NativeProviderRelay:
     """Expose only a frozen model request, with all usage owned by the existing sender.
 
     The controller supplies the episode deadline and request controls from its
@@ -68,7 +78,7 @@ class NativeResponsesRelay:
         reasoning_effort: str,
         service_tier: str,
         expires_at: datetime,
-        observer_factory: Callable[[str], ProviderExchangeObserver[NativeResponsesResult]],
+        observer_factory: Callable[[str], ProviderExchangeObserver[NativeProviderResult]],
     ) -> None:
         if expires_at.tzinfo is None or expires_at.utcoffset() is None:
             raise ValueError("relay expiration requires an absolute timezone-aware deadline")
@@ -145,7 +155,7 @@ class NativeResponsesRelay:
         self.close()
 
     def __repr__(self) -> str:
-        return "NativeResponsesRelay(<restricted>)"
+        return "NativeProviderRelay(<restricted>)"
 
     __str__ = __repr__
 
@@ -154,7 +164,7 @@ class NativeResponsesRelay:
 
 
 class _RelayServer(socketserver.UnixStreamServer):
-    relay: NativeResponsesRelay
+    relay: NativeProviderRelay
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         # Native payloads and capability tokens must not enter ambient stderr.
@@ -202,7 +212,7 @@ class _RelayHandler(BaseHTTPRequestHandler):
             return
         lengths = self.headers.get_all("Content-Length", [])
         if (
-            self.path != _RESPONSE_PATH
+            self.path not in _REQUEST_PATHS[relay._sender.provider_wire.protocol]
             or self.headers.get_all("Transfer-Encoding") is not None
             or len(lengths) != 1
             or len(lengths[0]) > 10
@@ -220,12 +230,23 @@ class _RelayHandler(BaseHTTPRequestHandler):
             self._failure(HTTPStatus.REQUEST_TIMEOUT, RelayRefusal.REQUEST_EXPIRED)
             return
         try:
-            request = NativeResponsesRequest(
+            wire = relay._sender.provider_wire
+            versions = self.headers.get_all("anthropic-version", [])
+            if versions and (not isinstance(wire, MessagesWire) or versions != [wire.api_version]):
+                self._failure(HTTPStatus.BAD_REQUEST, RelayRefusal.NATIVE_REQUEST_UNSUPPORTED)
+                return
+            request = NativeProviderRequest(
                 body,
+                wire=wire,
                 requested_model=relay._requested_model,
                 token_claim=relay._token_claim,
                 reasoning_effort=relay._reasoning_effort,
                 service_tier=relay._service_tier,
+                beta_features=tuple(
+                    feature.strip()
+                    for value in self.headers.get_all("anthropic-beta", [])
+                    for feature in value.split(",")
+                ),
             )
         except ProviderTransportError:
             self._failure(HTTPStatus.BAD_REQUEST, RelayRefusal.NATIVE_REQUEST_UNSUPPORTED)
@@ -236,7 +257,14 @@ class _RelayHandler(BaseHTTPRequestHandler):
         if relay._token.encode() in request.wire_body:
             self._failure(HTTPStatus.BAD_REQUEST, RelayRefusal.CAPABILITY_IN_BODY)
             return
-        key = "native_" + hashlib.sha256(request.wire_body).hexdigest()
+        identity = (
+            request.wire_protocol.value.encode()
+            + b"\0"
+            + ",".join(request.beta_features).encode()
+            + b"\0"
+            + request.wire_body
+        )
+        key = "native_" + hashlib.sha256(identity).hexdigest()
         try:
             result = relay._sender.request_native(
                 trial_id=relay._trial_id,
@@ -245,10 +273,13 @@ class _RelayHandler(BaseHTTPRequestHandler):
                 observer=relay._observer_factory(key),
             )
         except (CampaignBudgetExceeded, BudgetExceeded):
-            self._failure(HTTPStatus.TOO_MANY_REQUESTS, RelayRefusal.BUDGET_EXHAUSTED)
+            self._failure(HTTPStatus.FORBIDDEN, RelayRefusal.BUDGET_EXHAUSTED)
             return
         except CampaignAccountingError:
             self._failure(HTTPStatus.CONFLICT, RelayRefusal.ACCOUNTING_REFUSED)
+            return
+        except ProviderModelChangeError:
+            self._failure(HTTPStatus.FORBIDDEN, RelayRefusal.PROVIDER_MODEL_CHANGED)
             return
         except ProviderTransportError:
             self._failure(HTTPStatus.BAD_GATEWAY, RelayRefusal.PROVIDER_EXCHANGE_FAILED)

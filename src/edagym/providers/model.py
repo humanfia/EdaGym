@@ -99,6 +99,11 @@ class ProviderAuthorization(StrEnum):
     API_KEY = "x_api_key"
 
 
+BetaFeature = Annotated[
+    str, StringConstraints(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9-]*$")
+]
+
+
 class ResponsesWire(StrictModel):
     protocol: Literal[WireProtocol.RESPONSES] = WireProtocol.RESPONSES
     authorization: Literal[ProviderAuthorization.BEARER] = ProviderAuthorization.BEARER
@@ -108,6 +113,21 @@ class MessagesWire(StrictModel):
     protocol: Literal[WireProtocol.MESSAGES] = WireProtocol.MESSAGES
     authorization: ProviderAuthorization
     api_version: Literal["2023-06-01"] = "2023-06-01"
+    beta_features: tuple[BetaFeature, ...] = Field(
+        default=(), max_length=32, exclude_if=lambda value: not value
+    )
+
+    @field_validator("beta_features")
+    @classmethod
+    def normalize_features(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("provider beta features must be unique")
+        return tuple(sorted(value))
+
+    def admit_features(self, selected: tuple[str, ...]) -> tuple[str, ...]:
+        if len(selected) != len(set(selected)) or not set(selected) <= set(self.beta_features):
+            raise ValueError("request beta features are outside the frozen provider profile")
+        return tuple(sorted(selected))
 
 
 ProviderWire = Annotated[ResponsesWire | MessagesWire, Field(discriminator="protocol")]

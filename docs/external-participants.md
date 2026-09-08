@@ -35,14 +35,16 @@ This ephemeral adapter rejects training sessions instead of claiming resume
 semantics it does not implement. Metered campaigns continue to use the
 Responses-compatible participant boundary.
 
-## Native Responses relay
+## Native provider relay
 
 Provider identities use the version-two `ProviderProfile`: an explicit
 `request_path` and a closed `ResponsesWire` or `MessagesWire` configuration.
 `CredentialLease.authorize` verifies the complete profile digest before adding
 its credential headers. Responses uses Bearer authorization; Messages explicitly
 selects Bearer or `x-api-key` and pins `anthropic-version` to `2023-06-01`.
-Caller-supplied identity headers are refused. This follows the header contract in
+Messages beta features are frozen in the profile; each request selects an admitted
+subset. The request identity and private observer evidence include that selection.
+Caller-supplied controller identity headers are refused. This follows the header contract in
 the [Messages API overview](https://platform.claude.com/docs/en/api/overview).
 
 The version-two profile and resolved-config digest domains replace version one.
@@ -52,29 +54,47 @@ requalified against the new identity. WebSocket and storage restrictions remain
 owned by the actual request adapters; duplicated always-false profile flags and
 the redundant provider-kind label have been removed.
 
-Messages identity and transport headers are supported, but a Messages request
-adapter is not yet connected. Existing Responses senders reject a mismatched
-wire protocol before reserving or dispatching. A Messages profile alone does
-not qualify a native harness or enable a Messages campaign.
+Native Responses and Messages requests use the shared provider sender. Controlled
+Responses requests still reject a Messages profile before reservation or dispatch;
+a controlled Messages participant is not yet connected. A provider profile alone
+does not qualify a native harness or enable a native campaign.
 
-`NativeResponsesRelay` exposes one short-lived trial capability on a private
-Unix socket. It accepts only the fixed Responses path, requires its issued
+`NativeProviderRelay` exposes one short-lived trial capability on a private
+Unix socket. It accepts only the fixed path for its sender's protocol, requires its issued
 bearer token, and rejects requests after the absolute deadline supplied by the
 controller. The caller derives that deadline and the model, effort, service tier,
 and request limits from its frozen run. The relay does not issue upstream access:
 its sender must already have passed `ResponsesBroker` admission.
 
-`NativeResponsesRequest` preserves native message histories, namespace tools,
-and custom tool calls. It fixes the declared model controls, caps output tokens,
-requires stateless streaming, and rejects provider-hosted tools and unsupported
-request fields. Ordinary Responses requests and native streams use the same
+`NativeProviderRequest` normalizes the declared wire protocol. The Responses
+adapter preserves message histories, namespace tools, and custom tool calls. The
+Messages adapter preserves text, client tool conversations, and actually supplied
+thinking blocks; it supports the frozen adaptive/disabled thinking modes and
+output effort. It admits the native SDK's fixed `/v1/messages?beta=true` entry
+point, while the upstream destination remains the profile's fixed request path.
+Both adapters fix model controls, cap output tokens, require stateless streaming,
+and reject provider-hosted tools and unsupported input forms. Ordinary Responses
+requests and native streams use the same
 reservation, dispatch, and settlement implementation. Multiple relays can share
 that accounting owner. No token counter lives in the relay.
 
 The transport currently buffers each bounded stream before forwarding it. One
 recognized terminal event with exact provider usage is required. Unknown events,
 incomplete streams, missing usage, and inconsistent terminal receipts are
-failures. Observed rejected response bodies remain private evidence; their
+failures. Messages requires a complete `message_start` / `message_delta` /
+`message_stop` sequence and sums uncached, cache-creation, and cache-read input
+tokens. Cumulative usage updates replace prior counters; they are not added
+together. Missing cache counts cannot establish an exact total. A provider
+output-limit stop with a valid receipt settles its exact usage and remains an
+incomplete response. These rules follow the
+[streaming contract](https://platform.claude.com/docs/en/build-with-claude/streaming)
+and [cache usage contract](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+
+Model fallback blocks or a changed serving-model delta raise the distinct
+`ProviderModelChangeError`. The relay returns a terminal authorization refusal
+for model changes and exhausted fixed budgets, so the CLI does not interpret
+local budget exhaustion as a transient rate limit. Observed rejected response
+bodies remain private evidence; their
 presence is not asserted to be a valid provider result. Dispatched requests with
 unknown usage retain the conservative charge established by the budget owner.
 Authorization headers are not supplied to transcript observers. The relay refuses
@@ -84,7 +104,7 @@ process-output admission remains part of the unfinished run-event integration.
 
 This transport has been exercised with a native CLI and synthetic provider
 responses inside a network-disabled container. It is not yet the configured
-RunEngine campaign launcher. Messages-wire support, native execution closure
+RunEngine campaign launcher. Controlled Messages integration, native execution closure
 admission, and the unified run-event adapter remain required before native cells
 can be declared available for scored campaigns.
 

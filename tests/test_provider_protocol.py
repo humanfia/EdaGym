@@ -61,7 +61,7 @@ def test_bound_profile_owns_protocol_and_credential_headers_on_the_wire(
             with pytest.raises(CredentialSecurityError):
                 credential.authorize(headers, profile=mismatched)
             assert headers == {}
-            for name in ("AUTHORIZATION", "X-API-KEY", "ANTHROPIC-VERSION"):
+            for name in ("AUTHORIZATION", "X-API-KEY", "ANTHROPIC-VERSION", "ANTHROPIC-BETA"):
                 conflicting = {name: "caller-supplied"}
                 with pytest.raises(CredentialSecurityError):
                     credential.authorize(conflicting, profile=profile)

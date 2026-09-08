@@ -662,8 +662,9 @@ class _JournalExchangeRecorder:
         security_binding: ProviderSecurityBinding,
         canary_evidence: ProviderCanaryEvidence,
         request_body: bytes,
+        beta_features: tuple[str, ...],
     ) -> None:
-        if self._started or trial_id != self._journal.header.binding.trial_key:
+        if beta_features or self._started or trial_id != self._journal.header.binding.trial_key:
             raise ParticipantAdapterError(ParticipantFailureKind.CHANNEL_FAILURE)
         provider_identity = (provider_profile_digest, provider_config_digest)
         if (
