@@ -215,10 +215,7 @@ def _configured_rootless_runtime(
     installation, capability = selected.installation, selected.capability
     assert installation.execution_closure_digest == selected.receipt.execution_closure_digest
     assert installation.package_manifest_digest is None
-    assert isinstance(environment.executor, RootlessLocalExecutor)
-    environment = project_environment(
-        pair, view, (selected,), environment.executor
-    )
+    environment = project_environment(pair, view, (selected,))
     return environment, installation, capability
 
 
@@ -515,7 +512,7 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
     binding = environment.tool_bindings[0]
     store = ContentAddressedStore.open_private(cas, policy=environment.artifact_policy)
     executor = RootlessContainerExecutor(
-        executor_id="podman_rootless",
+        executor_id=environment.executor.executor_id,
         implementation_digest=environment.executor.implementation_digest,
         capability=capability,
         tool_installations={installation.tool_id: installation},

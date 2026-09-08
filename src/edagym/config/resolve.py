@@ -108,7 +108,12 @@ def resolve_profile(config: EdaGymConfig, profile_id: str) -> ResolvedEnvironmen
     """Resolve a profile into one private participant/evaluator pair and frozen snapshot."""
 
     profile = _one(config.profiles, "profile_id", profile_id, "profile")
-    snapshot = freeze_profile(config, profile)
+    return resolve_snapshot(freeze_profile(config, profile))
+
+
+def resolve_snapshot(snapshot: PrivateConfigSnapshot) -> ResolvedEnvironmentPair:
+    """Recheck the frozen selection without creating a new configuration identity."""
+
     config = snapshot.configuration
     profile = config.profiles[0]
     site = resolve_site(config, profile.site_id)

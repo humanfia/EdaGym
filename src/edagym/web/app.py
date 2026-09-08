@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.requests import Request
@@ -195,7 +196,8 @@ class WebApplication:
             session_id = body.get("session_id", "human")
             if not isinstance(session_id, str):
                 raise ValueError("a configured session is required")
-            projection = self.engine.prepare_task(
+            projection = await run_in_threadpool(
+                self.engine.prepare_task,
                 generated,
                 resolved.snapshot,
                 session_id,
@@ -277,7 +279,9 @@ class WebApplication:
         if not request.headers.get("idempotency-key"):
             return JSONResponse({"error": "idempotency_key_required"}, status_code=400)
         try:
-            result = self.engine.resume(request.path_params["run_id"], self.principal)
+            result = await run_in_threadpool(
+                self.engine.resume, request.path_params["run_id"], self.principal
+            )
             return JSONResponse(result.model_dump(mode="json"))
         except (EngineError, ValueError):
             return JSONResponse({"error": "frozen_run_unavailable"}, status_code=409)
@@ -300,7 +304,8 @@ class WebApplication:
                 kind=kind,
                 payload=body.get("payload", {}),
             )
-            accepted = self.engine.submit_intent(
+            accepted = await run_in_threadpool(
+                self.engine.submit_intent,
                 request.path_params["run_id"], intent, principal=self.principal
             )
             return JSONResponse(accepted.model_dump(mode="json"), status_code=202)

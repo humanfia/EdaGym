@@ -18,10 +18,14 @@ from pydantic import Field, TypeAdapter, field_validator
 
 from edagym.authoring.factory import GeneratedTask, TaskFactory
 from edagym.canonical import canonical_bytes, canonical_digest
-from edagym.config.model import PrivateConfigSnapshot
+from edagym.config.execution import ExecutionPolicyError, project_environment
+from edagym.config.model import ConfigView, PrivateConfigSnapshot
+from edagym.config.qualification import resolve_profile_tools
+from edagym.config.resolve import resolve_snapshot
 from edagym.policy.runtime_storage import private_directory, read_private, write_private
 from edagym.run.manifest import RunManifest
 from edagym.specs.common import Digest, Identifier, StrictModel, Visibility
+from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import QualificationStatus
 
 _DIRECTORY_MODE = 0o700
@@ -272,6 +276,11 @@ class _Journal:
     def _validate(self, events: Iterable[EngineEvent]) -> None:
         previous: Digest | None = None
         for sequence, event in enumerate(events):
+            if sequence == 0 and (
+                event.kind != "run_prepared"
+                or event.payload.get("manifest_digest") != self.manifest.digest
+            ):
+                raise EngineError("run journal does not bind its frozen manifest")
             if event.sequence != sequence or event.run_id != self.manifest.run_id:
                 raise EngineError("run journal sequence or identity is corrupt")
             if event.previous_digest != previous:
@@ -301,6 +310,20 @@ class RunEngine:
 
         if snapshot.configuration.sites[0].state_root != self.state_root:
             raise EngineError("snapshot belongs to another private state root")
+        qualification = generated.instance.qualification
+        reason = (
+            "task_qualification_required"
+            if qualification is None or qualification.status is not QualificationStatus.QUALIFIED
+            else "executor_qualification_required"
+        )
+        participant: EnvironmentSpec | None
+        evaluator: EnvironmentSpec | None
+        try:
+            participant, evaluator = self._resolve_environments(snapshot)
+        except ExecutionPolicyError as error:
+            participant = evaluator = None
+            if reason == "executor_qualification_required":
+                reason = error.gap.value
         manifest = RunManifest.from_snapshot(
             run_id=run_id or f"run_{secrets.token_hex(16)}",
             task=generated.instance,
@@ -319,42 +342,35 @@ class RunEngine:
                 )
             ),
             creation_intent_digest=creation_intent_digest,
+            participant=participant,
+            evaluator=evaluator,
         )
         TaskFactory().persist(generated, self.state_root)
-        qualification = generated.instance.qualification
-        reason = (
-            "task_qualification_required"
-            if qualification is None or qualification.status is not QualificationStatus.QUALIFIED
-            else "executor_qualification_required"
-        )
-        return self.create_run(manifest, principal, snapshot=snapshot, unavailable_reason=reason)
+        return self._create_run(manifest, principal, snapshot=snapshot, unavailable_reason=reason)
 
-    def create_run(
+    def _create_run(
         self,
         manifest: RunManifest,
         principal: Principal,
         *,
-        executor_available: bool = False,
-        unavailable_reason: str = "executor_unavailable",
-        snapshot: PrivateConfigSnapshot | None = None,
+        unavailable_reason: str,
+        snapshot: PrivateConfigSnapshot,
     ) -> RunProjection:
         self._authorize(manifest.run_id, principal)
-        if snapshot is not None and snapshot.digest != manifest.private_config_snapshot_digest:
+        if snapshot.digest != manifest.private_config_snapshot_digest:
             raise EngineError("run snapshot does not match its manifest")
         journal = _Journal.create(self.runs_root, manifest)
         with journal.locked():
-            if snapshot is not None:
-                write_private(
-                    journal.directory / "snapshot.json",
-                    canonical_bytes(snapshot) + b"\n",
-                )
-            return self._initialize_run(journal, principal, executor_available, unavailable_reason)
+            write_private(
+                journal.directory / "snapshot.json",
+                canonical_bytes(snapshot) + b"\n",
+            )
+            return self._initialize_run(journal, principal, unavailable_reason)
 
     def _initialize_run(
         self,
         journal: _Journal,
         principal: Principal,
-        executor_available: bool,
         unavailable_reason: str,
     ) -> RunProjection:
         manifest = journal.manifest
@@ -370,29 +386,18 @@ class RunEngine:
             timestamp=now,
         )
         journal.append(prepared)
-        if executor_available:
-            journal.append(
-                self._event(
-                    journal,
-                    kind="run_started",
-                    actor_id=principal.principal_id,
-                    payload={},
-                    timestamp=datetime.now(UTC),
-                )
+        if not unavailable_reason or "\n" in unavailable_reason:
+            raise ValueError("unavailable reason must be a bounded one-line value")
+        journal.append(
+            self._event(
+                journal,
+                kind="run_unavailable",
+                actor_id=None,
+                payload={"reason": unavailable_reason},
+                timestamp=datetime.now(UTC),
+                visibility=Visibility.PARTICIPANT,
             )
-        else:
-            if not unavailable_reason or "\n" in unavailable_reason:
-                raise ValueError("unavailable reason must be a bounded one-line value")
-            journal.append(
-                self._event(
-                    journal,
-                    kind="run_unavailable",
-                    actor_id=None,
-                    payload={"reason": unavailable_reason},
-                    timestamp=datetime.now(UTC),
-                    visibility=Visibility.PARTICIPANT,
-                )
-            )
+        )
         return self.project(manifest.run_id, principal=principal)
 
     def project(self, run_id: str, principal: Principal) -> RunProjection:
@@ -453,7 +458,26 @@ class RunEngine:
             if snapshot.digest != journal.manifest.private_config_snapshot_digest:
                 raise EngineError("frozen configuration snapshot is corrupt")
             self._generated_task(journal)
+            manifest = journal.manifest
+            if manifest.participant is not None or manifest.evaluator is not None:
+                try:
+                    environments = self._resolve_environments(snapshot)
+                except ExecutionPolicyError as error:
+                    raise EngineError("frozen execution environment is unavailable") from error
+                if environments != (manifest.participant, manifest.evaluator):
+                    raise EngineError("frozen execution environment has changed")
             return self.project(run_id, principal)
+
+    @staticmethod
+    def _resolve_environments(
+        snapshot: PrivateConfigSnapshot,
+    ) -> tuple[EnvironmentSpec, EnvironmentSpec]:
+        pair = resolve_snapshot(snapshot)
+        resolutions = resolve_profile_tools(pair)
+        return (
+            project_environment(pair, ConfigView.PARTICIPANT, resolutions),
+            project_environment(pair, ConfigView.EVALUATOR, resolutions),
+        )
 
     def files(self, run_id: str, principal: Principal) -> tuple[dict[str, object], ...]:
         generated = self._generated_task(self._journal_for(run_id, principal))

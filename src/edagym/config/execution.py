@@ -12,7 +12,10 @@ from edagym.canonical import canonical_digest
 from edagym.config.model import ConfigView, UserImageToolSource, VerifierTrust
 from edagym.config.qualification import ConfiguredToolResolution
 from edagym.config.resolve import ResolvedEnvironmentPair
+from edagym.executors.asset_identity import AssetIdentityError, capture_asset_identity
+from edagym.executors.asset_policy import AssetSourcePolicyError, load_system_asset_source_policy
 from edagym.executors.capabilities import ProviderAvailability
+from edagym.implementation import framework_implementation_digest
 from edagym.run.artifacts import PRIVATE_ARTIFACT_KEY_PROVIDER_ID
 from edagym.specs.common import ArtifactClass, Redistribution, Sensitivity, Visibility
 from edagym.specs.environment import (
@@ -22,6 +25,7 @@ from edagym.specs.environment import (
     ArtifactPolicy,
     ArtifactRetentionRule,
     AssetBinding,
+    ContainerRuntime,
     EnvironmentIdentity,
     EnvironmentSpec,
     ExecutorKind,
@@ -47,6 +51,7 @@ class ExecutionPolicyGap(StrEnum):
     INODE_LIMIT_UNSUPPORTED = "configured_inode_limit_unsupported"
     ENVIRONMENT_UNSUPPORTED = "configured_tool_environment_unsupported"
     TOOL_EVIDENCE_MISMATCH = "configured_tool_evidence_mismatch"
+    LIBRARY_EVIDENCE_MISMATCH = "configured_library_evidence_mismatch"
 
 
 class ExecutionPolicyError(ValueError):
@@ -61,11 +66,10 @@ def project_environment(
     pair: ResolvedEnvironmentPair,
     view: ConfigView,
     resolutions: tuple[ConfiguredToolResolution, ...],
-    executor: RootlessLocalExecutor,
 ) -> EnvironmentSpec:
     """Bind profile grants and limits to the installations that actually probed.
 
-    The executor's implementation identity comes from its deployment owner.
+    The executor identity binds the installed framework and observed runtime.
     Library paths and storage roots remain in the private resolved profile;
     neither is serialized into the path-free execution projection.
     """
@@ -104,8 +108,22 @@ def project_environment(
         or set(by_tool) != {item.tool.tool_id for item in selected.tools}
     ):
         raise ExecutionPolicyError(ExecutionPolicyGap.TOOL_EVIDENCE_MISMATCH)
-    if executor.image_digest != selected.runtime.image_digest:
+    capability = observed[0].capability
+    if (
+        capability is None
+        or capability.availability is not ProviderAvailability.AVAILABLE
+        or capability.runtime is None
+        or selected.runtime.image_digest not in capability.image_digests
+    ):
         raise ExecutionPolicyError(ExecutionPolicyGap.TOOL_EVIDENCE_MISMATCH)
+    executor = RootlessLocalExecutor(
+        executor_id=f"rootless_{view.value}",
+        implementation_digest=framework_implementation_digest(),
+        runtime=ContainerRuntime.PODMAN,
+        runtime_version=capability.runtime.version,
+        runtime_probe_digest=capability.runtime.version_output_digest,
+        image_digest=selected.runtime.image_digest,
+    )
     bindings = []
     for tool in (item.tool for item in selected.tools):
         if tool.environment_reference_ids:
@@ -157,6 +175,23 @@ def project_environment(
         redistribution=Redistribution.FORBIDDEN,
     )
     libraries = {item.library_id: item for item in pair.snapshot.configuration.libraries}
+    paths = dict(selected.library_paths)
+    if set(paths) != set(selected.library_ids):
+        raise ExecutionPolicyError(ExecutionPolicyGap.LIBRARY_EVIDENCE_MISMATCH)
+    if paths:
+        source_policy = load_system_asset_source_policy()
+        try:
+            for library_id, path in paths.items():
+                source_policy.require_source(
+                    path,
+                    protected_paths=(pair.site.state_root,),
+                    writable_paths=() if storage.root is None else (storage.root,),
+                )
+                captured = capture_asset_identity(path)
+                if captured.restricted_digest != libraries[library_id].content_digest:
+                    raise ExecutionPolicyError(ExecutionPolicyGap.LIBRARY_EVIDENCE_MISMATCH)
+        except (AssetIdentityError, AssetSourcePolicyError) as error:
+            raise ExecutionPolicyError(ExecutionPolicyGap.LIBRARY_EVIDENCE_MISMATCH) from error
     return EnvironmentSpec(
         identity=EnvironmentIdentity(
             environment_id=f"{view.value}_view",

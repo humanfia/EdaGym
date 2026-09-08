@@ -13,6 +13,7 @@ from edagym.config.resolve import (
     ResolvedSite,
     resolve_profile,
     resolve_site,
+    resolve_snapshot,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "load_config",
     "resolve_profile",
     "resolve_site",
+    "resolve_snapshot",
 ]

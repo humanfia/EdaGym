@@ -256,6 +256,7 @@ class BenchmarkSpec(StrictModel):
 class TrialObservation(StrictModel):
     """One final-candidate observation; invalid attempts remain in the ledger."""
 
+    schema_version: SchemaVersion = 1
     model_id: Identifier
     cell_id: Identifier
     task_instance_digest: Digest
@@ -286,6 +287,7 @@ class ContrastResult(StrictModel):
 class BenchmarkQualityReport(StrictModel):
     """Evidence-derived status; it cannot alter the frozen benchmark rules."""
 
+    schema_version: SchemaVersion = 1
     benchmark_digest: Digest
     framework_ready: bool
     station_campaign_complete: bool

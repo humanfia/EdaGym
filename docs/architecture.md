@@ -267,5 +267,21 @@ The current control-plane boundary is `RunEngine`: browser, CLI, and agent
 adapters submit the same typed intents and read cursor-based projections. A
 private TOML configuration resolves user-owned tools and libraries into one
 immutable snapshot referenced by each `RunManifest`; execution views are
-derived from that snapshot. Framework readiness, station campaign completion,
-and benchmark quality remain independent evidence states.
+derived from that snapshot. A version-2 manifest freezes both observed
+`EnvironmentSpec` projections, including tool deployment attestations, runtime,
+resources, library content identities, and artifact policy. The original
+configuration digest remains unchanged when the selected snapshot is resolved
+again. An unavailable run can lack execution projections; resume never fills
+them from a later configuration.
+
+`project_environment` derives executor identity from the installed framework
+source and the observed container runtime. The framework identity covers the
+complete Python package and controller Python version, so implementation
+changes require a new run. `RunEngine.resume` rechecks tool closures and bounded
+library sources against the frozen projections before admitting continuation.
+Private paths remain in the configuration snapshot. Version-1 control-plane
+manifests are not upgraded implicitly.
+
+These bindings do not confer tool-visibility or task qualification. Framework
+readiness, station campaign completion, and benchmark quality remain
+independent evidence states.

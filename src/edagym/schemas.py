@@ -77,7 +77,8 @@ def schema_document(name: SchemaName) -> dict[str, object]:
     model = SCHEMA_MODELS[name]
     generated = model.model_json_schema(mode="validation")
     generated["$schema"] = "https://json-schema.org/draft/2020-12/schema"
-    generated["$id"] = f"https://edagym.local/schemas/v1/{name}.schema.json"
+    version = model.model_fields["schema_version"].default
+    generated["$id"] = f"https://edagym.local/schemas/v{version}/{name}.schema.json"
     return generated
 
 

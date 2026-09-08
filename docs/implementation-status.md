@@ -13,6 +13,9 @@ This branch is an implementation checkpoint, not a completed release.
   with durable private closure evidence.
 - Profile-derived execution environments with declared tool grants, scoped
   library mount declarations, resource limits, and artifact policy.
+- Run manifest v2 freezes the observed participant and evaluator environments,
+  including framework source identity. Resume verifies both against the original
+  private snapshot and rejects tool, library, or implementation drift.
 - Benchmark specifications, schedule and reporting foundations, and external
   participant adapter contracts.
 - Removal of framework-owned EDA installation/build paths and unconditional
@@ -22,18 +25,24 @@ This branch is an implementation checkpoint, not a completed release.
 
 ## Validation
 
-The full suite reports **318 passed** in 330.69 seconds (exit 0). Retained CLI
+The full suite reports **318 passed** in 332.78 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
 release evidence must cover the corresponding frozen trial and task bindings.
 
-Ruff, strict mypy (204 source files), generated schema consistency, and
+Ruff, strict mypy (207 source files), generated schema consistency, and
 `git diff --check` pass. Actual rootless synthesis uses configured tool identity
 and cgroup limits of 250 millicores, 128 MiB memory, and 32 processes. Icarus
 compilation and simulation use the same resolved installation and preserve
 successful and failing simulation exit statuses. Concurrent private CAS openers
 share a durable encryption key; reopening after key loss refuses replacement.
+
+Fresh-controller audits reproduced both frozen environments, rejected changed
+library content and framework source, and accepted restored library content.
+Actual image probes during browser create and resume leave the ASGI event loop
+responsive. These audits use unqualified tasks and do not imply execution
+qualification or integrated run recovery.
 
 A separate real-tool audit exercised three generated RTL repair references and
 thirteen semantic mutants across three difficulty levels. All expected outcomes

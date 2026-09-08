@@ -86,20 +86,20 @@ PersistedDocument = (
     | EdaGymConfig
 )
 
-_MODEL_BY_KIND_AND_VERSION: Mapping[tuple[DocumentKind, int], type[PersistedDocument]] = {
-    ("backend_qualification", 1): BackendQualification,
-    ("task", 1): TaskSpec,
-    ("environment", 1): EnvironmentSpec,
-    ("session", 1): SessionSpec,
-    ("task_instance", 1): TaskInstance,
-    ("release_manifest", 1): ReleaseManifest,
-    ("release_command", 1): ReleaseCommandReceipt,
-    ("release_report", 1): ReleaseReport,
-    ("benchmark", 1): BenchmarkSpec,
-    ("benchmark_quality_report", 1): BenchmarkQualityReport,
-    ("benchmark_schedule", 1): BenchmarkSchedule,
-    ("trial_observation", 1): TrialObservation,
-    ("config", 1): EdaGymConfig,
+_MODEL_BY_KIND: Mapping[DocumentKind, type[PersistedDocument]] = {
+    "backend_qualification": BackendQualification,
+    "task": TaskSpec,
+    "environment": EnvironmentSpec,
+    "session": SessionSpec,
+    "task_instance": TaskInstance,
+    "release_manifest": ReleaseManifest,
+    "release_command": ReleaseCommandReceipt,
+    "release_report": ReleaseReport,
+    "benchmark": BenchmarkSpec,
+    "benchmark_quality_report": BenchmarkQualityReport,
+    "benchmark_schedule": BenchmarkSchedule,
+    "trial_observation": TrialObservation,
+    "config": EdaGymConfig,
 }
 
 
@@ -120,8 +120,8 @@ def load_document(data: object, *, kind: DocumentKind) -> PersistedDocument:
     version = data.get("schema_version")
     if type(version) is not int:
         raise UnsupportedSchemaVersion("schema_version must be an integer")
-    model = _MODEL_BY_KIND_AND_VERSION.get((kind, version))
-    if model is None:
+    model = _MODEL_BY_KIND.get(kind)
+    if model is None or version != model.model_fields["schema_version"].default:
         raise UnsupportedSchemaVersion(f"unsupported {kind} schema version: {version}")
     return model.model_validate(data)
 

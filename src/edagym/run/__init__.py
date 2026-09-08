@@ -2,6 +2,7 @@
 
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.run.journal import RunJournal, replay
+from edagym.run.manifest import RunManifest
 from edagym.run.model import CampaignTrialRunBinding, RunBinding, RunEvent, RunHeader, RunState
 
 __all__ = [
@@ -11,9 +12,7 @@ __all__ = [
     "RunEvent",
     "RunHeader",
     "RunJournal",
+    "RunManifest",
     "RunState",
     "replay",
 ]
-from edagym.run.manifest import ManifestView, RunManifest
-
-__all__ = ["ManifestView", "RunManifest"]

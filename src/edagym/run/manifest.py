@@ -3,45 +3,28 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal, Self
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.config.model import PrivateConfigSnapshot
-from edagym.specs.common import Capability, Digest, Identifier, SchemaVersion, StrictModel
-from edagym.specs.environment import NetworkKind
+from edagym.specs.common import Capability, Digest, Identifier, StrictModel
+from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import TaskInstance
-
-
-class ManifestView(StrictModel):
-    """Private execution identity of one participant or evaluator view."""
-
-    tool_ids: tuple[Identifier, ...]
-    library_ids: tuple[Identifier, ...]
-    runtime_digest: Digest | None
-    network: NetworkKind
-    resource_digest: Digest | None = None
-    storage_digest: Digest | None = None
-
-    @field_validator("tool_ids", "library_ids")
-    @classmethod
-    def normalize_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("manifest view identifiers must be unique")
-        return tuple(sorted(value))
 
 
 class RunManifest(StrictModel):
     """One immutable binding for task, views, session, harness, and budgets."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     run_id: Identifier
     task_instance_digest: Digest
     task_spec_digest: Digest
     private_config_snapshot_digest: Digest
     creation_intent_digest: Digest | None = None
-    participant: ManifestView
-    evaluator: ManifestView
+    participant: EnvironmentSpec | None = None
+    evaluator: EnvironmentSpec | None = None
     session_id: Identifier
     session_digest: Digest
     initial_writer: Identifier | None = None
@@ -64,10 +47,22 @@ class RunManifest(StrictModel):
             raise ValueError("manifest capabilities must be unique")
         return tuple(sorted(value, key=lambda item: item.value))
 
+    @model_validator(mode="after")
+    def validate_environments(self) -> Self:
+        if (self.participant is None) != (self.evaluator is None):
+            raise ValueError("a run freezes both execution views together")
+        if any(
+            environment is not None
+            and environment.identity.provenance != (self.private_config_snapshot_digest,)
+            for environment in (self.participant, self.evaluator)
+        ):
+            raise ValueError("run environments must derive from the frozen snapshot")
+        return self
+
     @property
     def digest(self) -> Digest:
         return canonical_digest(
-            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v1"
+            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v2"
         )
 
     @classmethod
@@ -83,6 +78,8 @@ class RunManifest(StrictModel):
         capabilities: tuple[Capability, ...] = (),
         created_at: datetime | None = None,
         creation_intent_digest: Digest | None = None,
+        participant: EnvironmentSpec | None = None,
+        evaluator: EnvironmentSpec | None = None,
     ) -> RunManifest:
         """Mechanically derive a manifest without copying private path values."""
 
@@ -101,22 +98,8 @@ class RunManifest(StrictModel):
             task_spec_digest=task_spec_digest,
             private_config_snapshot_digest=snapshot.digest,
             creation_intent_digest=creation_intent_digest,
-            participant=ManifestView(
-                tool_ids=snapshot.participant.tool_ids,
-                library_ids=snapshot.participant.library_ids,
-                runtime_digest=snapshot.participant.runtime_digest,
-                network=snapshot.participant.network,
-                resource_digest=snapshot.participant.resource_digest,
-                storage_digest=snapshot.participant.storage_digest,
-            ),
-            evaluator=ManifestView(
-                tool_ids=snapshot.evaluator.tool_ids,
-                library_ids=snapshot.evaluator.library_ids,
-                runtime_digest=snapshot.evaluator.runtime_digest,
-                network=snapshot.evaluator.network,
-                resource_digest=snapshot.evaluator.resource_digest,
-                storage_digest=snapshot.evaluator.storage_digest,
-            ),
+            participant=participant,
+            evaluator=evaluator,
             session_id=session_id,
             session_digest=canonical_digest(session, domain="session-configuration-v1"),
             initial_writer=initial_writer,
