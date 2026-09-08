@@ -1530,6 +1530,7 @@ class RunOrchestrator:
         expected = context.assignment
         if (
             plan.invocation_id != context.job_id
+            or plan.run_id != context.run_id
             or plan.input_manifest_digest != context.input_manifest_digest
             or plan.capability is not expected.capability
             or plan.tool_id != expected.tool_id

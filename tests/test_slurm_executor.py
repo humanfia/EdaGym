@@ -318,6 +318,7 @@ def _environment(capability: ExecutorCapability, image_digest: str) -> Environme
 def _plan(view: InvocationView = InvocationView.EVALUATOR) -> InvocationPlan:
     return InvocationPlan(
         invocation_id="slurm_probe",
+        run_id=digest("slurm-probe-run"),
         capability=Capability.RTL_SIMULATION,
         tool_id="payload_tool",
         driver_digest=digest("slurm-payload-driver"),

@@ -326,6 +326,7 @@ class ExecutorParticipantToolDispatcher:
         )
         plan = InvocationPlan(
             invocation_id=invocation_id,
+            run_id=state.run_id,
             capability=binding.capability,
             tool_id=binding.tool_id,
             driver_digest=binding.driver_digest,

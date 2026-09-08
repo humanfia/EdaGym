@@ -34,6 +34,9 @@ parser, and closure identities are part of the evidence.
   credentials, an explicit network policy, and bounded resources. Composite
   evaluator recipes and their supervisor enter through executor-owned read-only
   control mounts, never through the participant workspace.
+  Payloads and the container monitor remain inside one delegated invocation
+  scope, which enforces the wall deadline and retains its termination reason.
+  Podman logs have an explicit byte limit derived from artifact policy.
 - Brokered host execution keeps the participant separate from a trusted,
   registered EDA recipe. It is suitable for sealed commercial evaluation.
 - Both local profiles supervise each invocation through the user systemd

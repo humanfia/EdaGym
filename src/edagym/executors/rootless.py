@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -10,12 +12,13 @@ import stat
 import subprocess
 import threading
 import time
-from collections.abc import Mapping
-from contextlib import suppress
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, suppress
+from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Literal
 
 from pydantic import TypeAdapter, field_validator
 
@@ -48,16 +51,22 @@ from edagym.executors.isolation_preflight import (
 )
 from edagym.executors.licenses import LicenseLease
 from edagym.executors.local import (
+    CollectionError,
     ExecutorUnavailable,
+    UnknownJob,
     _bind_asset_closure,
-    _isolation_unit,
-    _PrivateTransientFile,
-    _ProcessManager,
-    _remove_private_transient_files,
+    _collect_execution_result,
+    _forget_isolation,
+    _open_owned_directory,
+    _remove_invocation_transient_files,
     _revalidate_bound_assets,
     _sealed_environment_file,
+    _systemd_launch_environment,
+    _systemd_scope_command,
     _systemd_unit_is_quiescent,
+    _systemd_unit_result,
     _systemd_unit_state,
+    _terminate_isolation,
     _validate_plan_binding,
     _validate_scope,
     _write_private_transient_file,
@@ -65,6 +74,7 @@ from edagym.executors.local import (
 from edagym.executors.model import (
     COMPOSITE_REPORT_PATH,
     EnvironmentEntry,
+    ExecutionFailureKind,
     ExecutionResult,
     InvocationPlan,
     JobHandle,
@@ -76,14 +86,17 @@ from edagym.executors.model import (
 from edagym.executors.podman import (
     ROOTLESS_CONTROL_TARGETS,
     PodmanCommand,
+    PodmanContainment,
     RootlessControlFile,
     rootless_podman_command,
     rootless_resources_supported,
 )
+from edagym.executors.protocol import InvocationStorageReceipt
 from edagym.executors.rootless_storage import (
     RootlessStorageLease,
     RootlessStorageProvider,
 )
+from edagym.policy.runtime_storage import private_directory, read_private, write_private
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.runtime_surface_protocol import IsolationSurface
 from edagym.specs.common import Digest, Identifier, SchemaVersion, StrictModel
@@ -102,8 +115,11 @@ if TYPE_CHECKING:
 _IDENTIFIER_ADAPTER = TypeAdapter(Identifier)
 _DIGEST_ADAPTER = TypeAdapter(Digest)
 _COMPOSITE_SUPERVISOR_PATH = Path(__file__).with_name("composite_driver.py")
-_ROOTLESS_CONTROL_PROTOCOL = "sealed-composite-v1"
+_ROOTLESS_CONTROL_PROTOCOL = "scoped-podman-v2"
 _CONTAINER_OWNER_LABEL = "io.edagym.execution"
+_CONTAINER_RUN_LABEL = "io.edagym.run"
+_CONTAINER_OPERATION_LABEL = "io.edagym.operation"
+_CONTAINER_ENVIRONMENT_LABEL = "io.edagym.environment"
 _CONTROL_PLANE_TIMEOUT_SECONDS = 10
 _QUIESCENCE_TIMEOUT_SECONDS = 5.0
 _QUIESCENCE_POLL_SECONDS = 0.05
@@ -113,6 +129,86 @@ _PRIVATE_DIRECTORY_MODE = 0o700
 class RootlessResourceKind(StrEnum):
     CONTAINER = "container"
     CONTAINMENT_SCOPE = "containment_scope"
+
+
+class _ContainerStatus(StrEnum):
+    CONFIGURED = "configured"
+    CREATED = "created"
+    RUNNING = "running"
+    PAUSED = "paused"
+    EXITED = "exited"
+    STOPPED = "stopped"
+    STOPPING = "stopping"
+    REMOVING = "removing"
+
+
+class _ContainerObservation(StrictModel):
+    container_id: str
+    status: _ContainerStatus
+    running: bool
+    exit_code: int
+    error: str
+    oom_killed: bool
+    started_at: datetime
+    finished_at: datetime
+    process_cgroup: str | None
+
+    @property
+    def active(self) -> bool:
+        return self.running or self.status in {
+            _ContainerStatus.RUNNING, _ContainerStatus.PAUSED,
+            _ContainerStatus.STOPPING, _ContainerStatus.REMOVING,
+        }
+
+
+class _InvocationReceipt(StrictModel):
+    """Private launch inputs persisted before creating an owned container."""
+
+    schema_version: Literal[1] = 1
+    plan: InvocationPlan
+    environment: EnvironmentSpec
+    workspace: Path
+    artifact_directory: Path
+    storage: InvocationStorageReceipt | None
+
+    @property
+    def handle(self) -> JobHandle:
+        return JobHandle(
+            job_id=self.plan.invocation_id,
+            invocation_digest=self.plan.digest,
+            executor_id=self.environment.executor.executor_id,
+        )
+
+    @property
+    def owner(self) -> Digest:
+        return canonical_digest(
+            {"environment_digest": self.environment.digest, "handle": self.handle},
+            domain="rootless-container-owner-v2",
+        )
+
+    @property
+    def container_name(self) -> str:
+        return f"edagym-{self.owner.removeprefix('sha256:')}"
+
+    @property
+    def scope_unit(self) -> str:
+        return f"{self.container_name}.scope"
+
+    @property
+    def labels(self) -> dict[str, str]:
+        return {
+            _CONTAINER_OWNER_LABEL: self.owner,
+            _CONTAINER_RUN_LABEL: self.plan.run_id,
+            _CONTAINER_OPERATION_LABEL: self.plan.invocation_id,
+            _CONTAINER_ENVIRONMENT_LABEL: self.environment.digest,
+        }
+
+
+class _ScopeAttachment(StrictModel):
+    """A kernel observation binding the container payload to its delegated scope."""
+
+    container_id: str
+    cgroup_path: str
 
 
 class RootlessIsolationCleanup(StrictModel):
@@ -188,12 +284,12 @@ class RootlessContainerExecutor:
         ):
             raise ExecutorUnavailable("rootless installations require one runtime owner")
         self._runtime = first
-        self._manager = _ProcessManager(
-            executor_id=self.executor_id,
-            asset_source_policy=asset_source_policy,
-            artifact_store=artifact_store,
-            job_state_root=job_state_root,
-        )
+        if type(asset_source_policy) is not AssetSourcePolicy:
+            raise ExecutorUnavailable("executor requires trusted asset source authority")
+        self._asset_source_policy = asset_source_policy
+        self._job_state_root = private_directory(job_state_root, create=True)
+        self._lock = threading.RLock()
+        write_private(self._job_state_root / ".provider.lock", b"")
 
     @property
     def isolation_capability_digest(self) -> Digest:
@@ -307,6 +403,32 @@ class RootlessContainerExecutor:
         fixed_probe: bool,
         synthetic_claim: _SyntheticPreflightLaunchClaim | None,
     ) -> tuple[JobHandle, Digest | None]:
+        with self._guard():
+            return self._launch_locked(
+                plan,
+                environment=environment,
+                workspace=workspace,
+                artifact_directory=artifact_directory,
+                asset_paths=asset_paths,
+                scope=scope,
+                license_lease=license_lease,
+                fixed_probe=fixed_probe,
+                synthetic_claim=synthetic_claim,
+            )
+
+    def _launch_locked(
+        self,
+        plan: InvocationPlan,
+        *,
+        environment: EnvironmentSpec,
+        workspace: Path,
+        artifact_directory: Path,
+        asset_paths: Mapping[str, Path],
+        scope: FilesystemScope,
+        license_lease: LicenseLease | None,
+        fixed_probe: bool,
+        synthetic_claim: _SyntheticPreflightLaunchClaim | None,
+    ) -> tuple[JobHandle, Digest | None]:
         self._validate_environment(environment)
         if fixed_probe is not (synthetic_claim is not None):
             raise ExecutorUnavailable("synthetic launch authority differs from probe mode")
@@ -328,7 +450,8 @@ class RootlessContainerExecutor:
             _require_private_directory(workspace)
             _require_private_directory(artifact_directory)
         asset_snapshots = _bind_asset_closure(
-            self._manager,
+            source_policy=self._asset_source_policy,
+            protected_paths=(self._artifact_store.root, self._job_state_root),
             environment=environment,
             asset_paths=asset_paths,
             scope=scope,
@@ -340,28 +463,57 @@ class RootlessContainerExecutor:
         selected = self._installations_for_environment(environment)
         image_runtime = next(iter(selected.values())).execution_closure.rootless_image_runtime
         assert image_runtime is not None
-        transients: tuple[_PrivateTransientFile, ...] = ()
+        receipt = _InvocationReceipt(
+            plan=plan,
+            environment=environment,
+            workspace=workspace,
+            artifact_directory=artifact_directory,
+            storage=None if storage_lease is None else storage_lease.receipt,
+        )
+        directory = self._job_directory(plan.invocation_id)
+        if directory.exists():
+            existing = self._load_invocation(plan.invocation_id)
+            if (
+                existing.plan != plan or existing.environment != environment
+                or existing.workspace != workspace
+                or existing.artifact_directory != artifact_directory
+                or existing.storage is None or receipt.storage is None
+                or existing.storage.run_id != receipt.storage.run_id
+                or existing.storage.storage_instance_digest
+                != receipt.storage.storage_instance_digest
+            ):
+                raise ExecutorUnavailable("invocation already owns another execution binding")
+            _revalidate_bound_assets(
+                asset_snapshots,
+                protected_paths=(self._artifact_store.root, self._job_state_root),
+                writable_paths=(workspace, artifact_directory),
+            )
+            state = self._state(existing)
+            if state.state is JobStateKind.QUEUED:
+                self._start_container(existing)
+            return existing.handle, None
+        self._require_concurrency_slot(environment)
+        private_directory(directory, create=True)
+        write_private(directory / "invocation.json", canonical_bytes(receipt))
         environment_fd: int | None = None
         runtime_descriptor: int | None = None
-        container_created = False
         try:
             control_files: Mapping[RootlessControlFile, Path] | None = None
             arguments: tuple[str, ...]
             if plan.recipe:
                 recipe = self._resolved_recipe(plan, environment, selected)
                 supervisor = _write_private_transient_file(
-                    self._manager.job_state_root,
+                    self._job_state_root,
                     plan.invocation_id,
                     "rootless-supervisor",
                     self._supervisor_bytes,
                 )
                 recipe_file = _write_private_transient_file(
-                    self._manager.job_state_root,
+                    self._job_state_root,
                     plan.invocation_id,
                     "rootless-recipe",
                     canonical_bytes(recipe),
                 )
-                transients = (supervisor, recipe_file)
                 control_files = MappingProxyType(
                     {
                         RootlessControlFile.COMPOSITE_SUPERVISOR: supervisor.path,
@@ -410,16 +562,13 @@ class RootlessContainerExecutor:
                 working_directory=plan.working_directory,
                 exact_entrypoint=True,
                 hermetic_process_environment=True,
-                container_name=_container_name(self.executor_id, plan.invocation_id),
-                container_labels={
-                    _CONTAINER_OWNER_LABEL: _container_owner(
-                        self.executor_id,
-                        plan.invocation_id,
-                    )
-                },
+                container_name=receipt.container_name,
+                container_labels=receipt.labels,
                 control_files=control_files,
                 command_kind=PodmanCommand.CREATE,
                 cidfile=self._container_receipt_path(plan.invocation_id),
+                log_max_bytes=environment.artifact_policy.quota_bytes,
+                containment=PodmanContainment.DELEGATED_SCOPE,
             )
             create_command = (
                 os.fspath(LOCAL_ENV_PATH),
@@ -428,7 +577,7 @@ class RootlessContainerExecutor:
             )
             _revalidate_bound_assets(
                 asset_snapshots,
-                self._manager,
+                protected_paths=(self._artifact_store.root, self._job_state_root),
                 writable_paths=(workspace, artifact_directory),
             )
             if not all(
@@ -448,41 +597,10 @@ class RootlessContainerExecutor:
                 invocation_id=plan.invocation_id,
                 synthetic_claim=synthetic_claim,
             )
-            container_created = True
-            command = (
-                os.fspath(LOCAL_ENV_PATH),
-                "--argv0=/usr/bin/podman",
-                os.fspath(runtime_path),
-                "start",
-                "--attach",
-                _container_name(self.executor_id, plan.invocation_id),
-            )
-            handle = self._manager.launch_command(
-                plan=plan,
-                environment=environment,
-                command=command,
-                process_environment=process_environment,
-                workspace=workspace,
-                artifact_directory=artifact_directory,
-                apply_host_limits=False,
-                pass_fds=pass_fds,
-                transient_files=transients,
-                post_execution_validators=tuple(
-                    installation.execution_closure.revalidate for installation in selected.values()
-                ),
-            )
+            self._start_container(receipt)
             if synthetic_claim is not None and parent_launch_digest is None:
                 raise ExecutorUnavailable("synthetic parent launch was not observed")
-            return handle, parent_launch_digest
-        except BaseException:
-            if container_created:
-                with suppress(Exception):
-                    self._remove_container(plan.invocation_id)
-            _remove_private_transient_files(
-                transients,
-                self._manager.job_state_root,
-            )
-            raise
+            return receipt.handle, parent_launch_digest
         finally:
             if environment_fd is not None:
                 os.close(environment_fd)
@@ -490,14 +608,67 @@ class RootlessContainerExecutor:
                 os.close(runtime_descriptor)
 
     def inspect(self, handle: JobHandle) -> JobState:
-        return self._manager.inspect(handle)
+        with self._guard():
+            return self._state(self._invocation_for(handle))
 
     def cancel(self, handle: JobHandle) -> JobState:
-        return self._manager.cancel(handle)
+        with self._guard():
+            receipt = self._invocation_for(handle)
+            state = self._state(receipt)
+            if state.state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
+                write_private(
+                    self._job_directory(handle.job_id) / "stop.json",
+                    canonical_bytes(ExecutionFailureKind.CANCELLED),
+                )
+                self._stop_container(receipt)
+                return self._state(receipt)
+            return state
 
     def collect(self, handle: JobHandle) -> ExecutionResult:
-        # The caller commits the result before abandon releases the container.
-        return self._manager.collect(handle)
+        with self._guard():
+            receipt = self._invocation_for(handle)
+            result_path = self._job_directory(handle.job_id) / "result.json"
+            if result_path.exists():
+                content = read_private(result_path)
+                result = ExecutionResult.model_validate_json(content)
+                if (
+                    canonical_bytes(result) != content
+                    or result.state != self._state(receipt)
+                ):
+                    raise CollectionError("durable result belongs to another invocation")
+                for blob in (result.stdout, result.stderr, *(item.blob for item in result.outputs)):
+                    self._artifact_store.verify(blob)
+                return result
+            state = self._state(receipt)
+            if state.state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
+                raise CollectionError("job output cannot be collected before termination")
+            if state.state is JobStateKind.LOST:
+                raise CollectionError("container outcome is unknown; no result can be collected")
+            self._validate_collection_storage(receipt)
+            installations = self._installations_for_environment(receipt.environment)
+            if not all(item.execution_closure.revalidate() for item in installations.values()):
+                raise CollectionError("tool execution closure changed during execution")
+            stdout_path, stderr_path = self._capture_logs(receipt)
+            workspace = _open_owned_directory(receipt.workspace)
+            try:
+                artifacts = _open_owned_directory(receipt.artifact_directory)
+                try:
+                    result = _collect_execution_result(
+                        plan=receipt.plan,
+                        environment=receipt.environment,
+                        artifact_store=self._artifact_store,
+                        workspace_descriptor=workspace,
+                        artifact_directory_descriptor=artifacts,
+                        stdout_path=stdout_path,
+                        stderr_path=stderr_path,
+                        state=state,
+                    )
+                finally:
+                    os.close(artifacts)
+            finally:
+                os.close(workspace)
+            write_private(result_path, canonical_bytes(result))
+            return result
 
     def abandon(self, invocation_id: str) -> None:
         cleanup = self.cleanup(invocation_id)
@@ -505,33 +676,27 @@ class RootlessContainerExecutor:
             raise ExecutorUnavailable("rootless cleanup did not prove resource absence")
 
     def cleanup(self, invocation_id: str) -> RootlessIsolationCleanup:
-        normalized = _IDENTIFIER_ADAPTER.validate_python(invocation_id)
-        self._manager.abandon(normalized)
-        self._remove_container(normalized)
-        unit = _isolation_unit(self.executor_id, normalized)
-        active_state, control_group = _systemd_unit_state(unit)
-        container_state = self._run_podman(
-            "container", "exists", _container_name(self.executor_id, normalized)
-        )
-        remaining: list[RootlessResourceKind] = []
-        if not _systemd_unit_is_quiescent(unit):
-            remaining.append(RootlessResourceKind.CONTAINMENT_SCOPE)
-        if container_state.returncode != 1:
-            remaining.append(RootlessResourceKind.CONTAINER)
-        return RootlessIsolationCleanup(
-            invocation_id=normalized,
-            observation_digest=canonical_digest(
-                {
-                    "executor_id": self.executor_id,
-                    "invocation_id": normalized,
-                    "active_state": active_state,
-                    "control_group_present": bool(control_group),
-                    "container_absence_status": container_state.returncode,
-                },
-                domain="rootless-cleanup-observation-v1",
-            ),
-            remaining_resources=tuple(remaining),
-        )
+        with self._guard():
+            receipt = self._load_invocation(invocation_id)
+            _terminate_isolation(receipt.scope_unit)
+            self._remove_container(receipt)
+            _forget_isolation(receipt.scope_unit)
+            _remove_invocation_transient_files(self._job_state_root, invocation_id)
+            self._remove_raw_logs(invocation_id)
+            observation = self._observe(receipt)
+            remaining = []
+            if observation is not None:
+                remaining.append(RootlessResourceKind.CONTAINER)
+            if not _systemd_unit_is_quiescent(receipt.scope_unit):
+                remaining.append(RootlessResourceKind.CONTAINMENT_SCOPE)
+            return RootlessIsolationCleanup(
+                invocation_id=invocation_id,
+                observation_digest=canonical_digest(
+                    {"owner": receipt.owner, "remaining": remaining},
+                    domain="rootless-cleanup-observation-v2",
+                ),
+                remaining_resources=tuple(remaining),
+            )
 
     def execute_isolation_preflight(
         self,
@@ -652,6 +817,8 @@ class RootlessContainerExecutor:
                     os.close(descriptor)
             cleanup_error: Exception | None = None
             for invocation_id in invocation_ids:
+                if not self._job_directory(invocation_id).exists():
+                    continue
                 try:
                     self.abandon(invocation_id)
                 except Exception as error:
@@ -678,6 +845,390 @@ class RootlessContainerExecutor:
         self.cancel(handle)
         raise ExecutorUnavailable("rootless preflight did not settle")
 
+    @contextmanager
+    def _guard(self) -> Iterator[None]:
+        with self._lock:
+            descriptor = os.open(
+                self._job_state_root / ".provider.lock",
+                os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+            try:
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.getuid()
+                    or stat.S_IMODE(metadata.st_mode) != 0o600
+                    or metadata.st_nlink != 1
+                ):
+                    raise ExecutorUnavailable("rootless provider lock is unsafe")
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                os.close(descriptor)
+
+    def _job_directory(self, invocation_id: str) -> Path:
+        return self._job_state_root / _IDENTIFIER_ADAPTER.validate_python(invocation_id)
+
+    def _load_invocation(self, invocation_id: str) -> _InvocationReceipt:
+        content = read_private(self._job_directory(invocation_id) / "invocation.json")
+        receipt = _InvocationReceipt.model_validate_json(content)
+        if receipt.plan.invocation_id != invocation_id or canonical_bytes(receipt) != content:
+            raise ExecutorUnavailable("durable invocation identity is corrupt")
+        self._validate_environment(receipt.environment)
+        if receipt.storage is None:
+            if receipt.plan.driver_digest != ISOLATION_PROBE_IMPLEMENTATION_DIGEST:
+                raise ExecutorUnavailable("ordinary invocation has no bounded storage receipt")
+        elif (
+            receipt.storage.run_id != receipt.plan.run_id
+            or receipt.storage.environment_spec_digest != receipt.environment.digest
+            or receipt.storage.executor_id != self.executor_id
+            or receipt.storage.invocation_id != invocation_id
+        ):
+            raise ExecutorUnavailable("durable invocation storage binding is corrupt")
+        return receipt
+
+    def _invocation_for(self, handle: JobHandle) -> _InvocationReceipt:
+        receipt = self._load_invocation(handle.job_id)
+        if receipt.handle != handle:
+            raise UnknownJob("job handle is not owned by this executor")
+        return receipt
+
+    def _require_concurrency_slot(self, environment: EnvironmentSpec) -> None:
+        count = 0
+        for path in self._job_state_root.iterdir():
+            if path.name.startswith(".") or not path.is_dir():
+                continue
+            receipt = self._load_invocation(path.name)
+            if receipt.environment.digest != environment.digest:
+                continue
+            if self._state(receipt).state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
+                count += 1
+        if count >= environment.resources.max_concurrency:
+            raise ExecutorUnavailable("executor environment concurrency limit is exhausted")
+
+    def _observe(self, receipt: _InvocationReceipt) -> _ContainerObservation | None:
+        existing = self._run_podman("container", "exists", receipt.container_name)
+        if existing.returncode == 1:
+            return None
+        if existing.returncode != 0:
+            raise ExecutorUnavailable("container state is unavailable")
+        inspected = self._run_podman("container", "inspect", receipt.container_name)
+        if inspected.returncode != 0:
+            raise ExecutorUnavailable("container state changed during inspection")
+        try:
+            value, = json.loads(inspected.stdout)
+            labels = value["Config"]["Labels"]
+            if any(labels.get(key) != expected for key, expected in receipt.labels.items()):
+                raise ValueError("container labels do not match this run and invocation")
+            container_id = value["Id"]
+            if (
+                not isinstance(container_id, str)
+                or re.fullmatch(r"[0-9a-f]{64}", container_id) is None
+            ):
+                raise ValueError("container has no complete identity")
+            captured_id = self._read_container_receipt(receipt.plan.invocation_id)
+            if captured_id is not None and captured_id != container_id:
+                raise ValueError("container identity differs from its creation receipt")
+            identity_path = self._job_directory(receipt.plan.invocation_id) / "container.id"
+            if identity_path.exists():
+                if read_private(identity_path) != container_id.encode("ascii"):
+                    raise ValueError("container differs from its durable identity")
+            else:
+                write_private(identity_path, container_id.encode("ascii"))
+            state = value["State"]
+            observation = _ContainerObservation(
+                container_id=container_id,
+                status=_ContainerStatus(state["Status"]),
+                running=state["Running"],
+                exit_code=state["ExitCode"],
+                error=state["Error"],
+                oom_killed=state["OOMKilled"],
+                started_at=datetime.fromisoformat(state["StartedAt"]),
+                finished_at=datetime.fromisoformat(state["FinishedAt"]),
+                process_cgroup=_process_cgroup(state["Pid"]),
+            )
+            if observation.process_cgroup is not None:
+                if receipt.scope_unit not in PurePosixPath(observation.process_cgroup).parts:
+                    raise ValueError("container process is outside its invocation scope")
+                write_private(
+                    self._job_directory(receipt.plan.invocation_id) / "scope.json",
+                    canonical_bytes(_ScopeAttachment(
+                        container_id=container_id, cgroup_path=observation.process_cgroup,
+                    )),
+                )
+            return observation
+        except (KeyError, TypeError, ValueError):
+            raise ExecutorUnavailable(
+                "container observation does not prove invocation ownership"
+            ) from None
+
+    def _state(self, receipt: _InvocationReceipt) -> JobState:
+        directory = self._job_directory(receipt.plan.invocation_id)
+        terminal_path = directory / "terminal.json"
+        if terminal_path.exists():
+            content = read_private(terminal_path)
+            state = JobState.model_validate_json(content)
+            if (
+                state.handle != receipt.handle or canonical_bytes(state) != content
+                or state.state in {JobStateKind.QUEUED, JobStateKind.RUNNING}
+            ):
+                raise ExecutorUnavailable("durable terminal observation is corrupt")
+            observed = self._observe(receipt)
+            if not _systemd_unit_is_quiescent(receipt.scope_unit) or (
+                observed is not None and observed.active
+                and not self._scope_terminated(receipt, observed)
+            ):
+                raise ExecutorUnavailable("terminal invocation has active container state")
+            return state
+        observation = self._observe(receipt)
+        stop_path = directory / "stop.json"
+        stop = (
+            ExecutionFailureKind(json.loads(read_private(stop_path)))
+            if stop_path.exists() else None
+        )
+        if stop not in {None, ExecutionFailureKind.TIMEOUT, ExecutionFailureKind.CANCELLED}:
+            raise ExecutorUnavailable("durable stop request is invalid")
+        scope_quiescent = _systemd_unit_is_quiescent(receipt.scope_unit)
+        scope_state, _ = _systemd_unit_state(receipt.scope_unit)
+        if stop is None and scope_state == "failed" and (
+            _systemd_unit_result(receipt.scope_unit) == "timeout"
+        ):
+            stop = ExecutionFailureKind.TIMEOUT
+            write_private(stop_path, canonical_bytes(stop))
+        if observation is not None and observation.status in {
+            _ContainerStatus.CONFIGURED, _ContainerStatus.CREATED,
+        }:
+            if stop is None:
+                return JobState(
+                    handle=receipt.handle,
+                    state=(JobStateKind.QUEUED if scope_quiescent
+                           else JobStateKind.RUNNING),
+                )
+            state = JobState(
+                handle=receipt.handle,
+                state=(JobStateKind.TIMED_OUT if stop is ExecutionFailureKind.TIMEOUT
+                       else JobStateKind.CANCELLED),
+                failure=stop,
+            )
+        elif observation is not None and observation.active:
+            if scope_quiescent:
+                if stop is not None and self._scope_terminated(receipt, observation):
+                    # The scope kills conmon with the payload. Its deadline and
+                    # empty kernel cgroup prove termination even when Podman's
+                    # cached state has no final exit receipt. Keep that code absent.
+                    state = JobState(
+                        handle=receipt.handle,
+                        state=(JobStateKind.TIMED_OUT if stop is ExecutionFailureKind.TIMEOUT
+                               else JobStateKind.CANCELLED),
+                        failure=stop,
+                    )
+                else:
+                    state = JobState(
+                        handle=receipt.handle, state=JobStateKind.LOST,
+                        failure=ExecutionFailureKind.INFRASTRUCTURE,
+                    )
+                write_private(terminal_path, canonical_bytes(state))
+                return state
+            if stop is not None:
+                self._stop_container(receipt)
+                return self._state(receipt)
+            return JobState(handle=receipt.handle, state=JobStateKind.RUNNING)
+        elif not scope_quiescent:
+            return JobState(handle=receipt.handle, state=JobStateKind.RUNNING)
+        elif observation is None or observation.status not in {
+            _ContainerStatus.EXITED, _ContainerStatus.STOPPED,
+        } or (observation.exit_code < 0 and stop is None) or observation.finished_at.year < 1970:
+            state = JobState(
+                handle=receipt.handle, state=JobStateKind.LOST,
+                failure=ExecutionFailureKind.INFRASTRUCTURE,
+            )
+        elif stop is not None:
+            state = JobState(
+                handle=receipt.handle,
+                state=(JobStateKind.TIMED_OUT if stop is ExecutionFailureKind.TIMEOUT
+                       else JobStateKind.CANCELLED),
+                exit_code=observation.exit_code,
+                failure=stop,
+            )
+        elif observation.error or observation.oom_killed:
+            state = JobState(
+                handle=receipt.handle, state=JobStateKind.FAILED,
+                exit_code=observation.exit_code, failure=ExecutionFailureKind.INFRASTRUCTURE,
+            )
+        else:
+            state = JobState(
+                handle=receipt.handle,
+                state=JobStateKind.COMPLETED if observation.exit_code == 0 else JobStateKind.FAILED,
+                exit_code=observation.exit_code,
+                failure=None if observation.exit_code == 0 else ExecutionFailureKind.CANDIDATE,
+            )
+        write_private(terminal_path, canonical_bytes(state))
+        return state
+
+    def _start_container(self, receipt: _InvocationReceipt) -> None:
+        """The scope retains deadline evidence; Podman owns the actual job state."""
+
+        if not _systemd_unit_is_quiescent(receipt.scope_unit):
+            return
+        _forget_isolation(receipt.scope_unit)
+        runtime = self._capability.runtime
+        assert runtime is not None
+        descriptor = _open_runtime_descriptor(self._runtime.engine_path, runtime.executable_digest)
+        try:
+            command = _systemd_scope_command(
+                receipt.scope_unit,
+                (
+                    os.fspath(LOCAL_ENV_PATH), "--argv0=/usr/bin/podman",
+                    f"/proc/self/fd/{descriptor}", "start", "--attach", receipt.container_name,
+                ),
+                wall_seconds=receipt.environment.resources.wall_seconds,
+                delegate=True,
+            )
+            process = subprocess.Popen(
+                command,
+                env=_systemd_launch_environment(self._runtime.host_environment),
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                pass_fds=(descriptor,), close_fds=True, start_new_session=True, umask=0o077,
+            )
+        except OSError:
+            raise ExecutorUnavailable("container start control is unavailable") from None
+        finally:
+            os.close(descriptor)
+        # Reaping is process-local housekeeping, never a job-state authority.
+        threading.Thread(target=process.wait, daemon=True).start()
+        deadline = time.monotonic() + _CONTROL_PLANE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            observation = self._observe(receipt)
+            if observation is not None and observation.started_at.year >= 1970:
+                return
+            if process.poll() is not None:
+                raise ExecutorUnavailable("container start requires recovery")
+            time.sleep(_QUIESCENCE_POLL_SECONDS)
+        raise ExecutorUnavailable("container start acknowledgement is unavailable")
+
+    def _stop_container(self, receipt: _InvocationReceipt) -> None:
+        _terminate_isolation(receipt.scope_unit)
+        observation = self._observe(receipt)
+        if (
+            observation is None or not observation.active
+            or self._scope_terminated(receipt, observation)
+        ):
+            return
+        if observation.status in {_ContainerStatus.RUNNING, _ContainerStatus.PAUSED}:
+            stopped = self._run_podman("kill", "--signal=KILL", observation.container_id)
+            if stopped.returncode != 0:
+                current = self._observe(receipt)
+                if current is not None and current.active:
+                    raise ExecutorUnavailable("container cancellation requires recovery")
+        deadline = time.monotonic() + _QUIESCENCE_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            observation = self._observe(receipt)
+            if (
+                observation is None or not observation.active
+                or self._scope_terminated(receipt, observation)
+            ):
+                return
+            time.sleep(_QUIESCENCE_POLL_SECONDS)
+        raise ExecutorUnavailable("container cancellation did not become quiescent")
+
+    def _validate_collection_storage(self, receipt: _InvocationReceipt) -> None:
+        if receipt.storage is None:
+            _require_private_directory(receipt.workspace)
+            _require_private_directory(receipt.artifact_directory)
+            return
+        lease = self._require_storage_lease(
+            receipt.plan, environment=receipt.environment,
+            workspace=receipt.workspace, artifact_directory=receipt.artifact_directory,
+        )
+        if (
+            lease.receipt.run_id != receipt.plan.run_id
+            or lease.receipt.storage_instance_digest != receipt.storage.storage_instance_digest
+        ):
+            raise CollectionError("recovered workspace differs from its original storage")
+
+    def _capture_logs(self, receipt: _InvocationReceipt) -> tuple[Path, Path]:
+        directory = self._job_directory(receipt.plan.invocation_id)
+        paths = (directory / "stdout.bin", directory / "stderr.bin")
+        streams: list[IO[bytes]] = []
+        try:
+            for path in paths:
+                descriptor = os.open(
+                    path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                )
+                metadata = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                    or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600
+                ):
+                    os.close(descriptor)
+                    raise CollectionError("container log destination is unsafe")
+                os.ftruncate(descriptor, 0)
+                streams.append(os.fdopen(descriptor, "wb"))
+            observation = self._observe(receipt)
+            if observation is None or (
+                observation.active and not self._scope_terminated(receipt, observation)
+            ):
+                raise CollectionError("container logs have no quiescent runtime source")
+            result = self._run_podman(
+                "logs", observation.container_id, output_files=(streams[0], streams[1]),
+            )
+            if result.returncode != 0:
+                raise CollectionError("container logs are unavailable")
+            for stream in streams:
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            for stream in streams:
+                stream.close()
+        return paths
+
+    def _scope_terminated(
+        self, receipt: _InvocationReceipt, observation: _ContainerObservation,
+    ) -> bool:
+        path = self._job_directory(receipt.plan.invocation_id) / "scope.json"
+        if not path.exists() or not _systemd_unit_is_quiescent(receipt.scope_unit):
+            return False
+        attachment = _ScopeAttachment.model_validate_json(read_private(path))
+        cgroup = PurePosixPath(attachment.cgroup_path)
+        if (
+            attachment.container_id != observation.container_id or not cgroup.is_absolute()
+            or ".." in cgroup.parts or receipt.scope_unit not in cgroup.parts
+        ):
+            raise ExecutorUnavailable("container scope attachment is invalid")
+        scope_parts = cgroup.parts[1:cgroup.parts.index(receipt.scope_unit) + 1]
+        scope_root = Path("/sys/fs/cgroup").joinpath(*scope_parts)
+        try:
+            content = (scope_root / "cgroup.events").read_text(encoding="ascii")
+            events = dict(line.split() for line in content.splitlines())
+        except FileNotFoundError:
+            return True
+        return events.get("populated") == "0"
+
+    def _remove_raw_logs(self, invocation_id: str) -> None:
+        directory = _open_owned_directory(self._job_directory(invocation_id))
+        try:
+            for name in ("stdout.bin", "stderr.bin"):
+                try:
+                    descriptor = os.open(
+                        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                        dir_fd=directory,
+                    )
+                except FileNotFoundError:
+                    continue
+                try:
+                    metadata = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
+                        or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600
+                    ):
+                        raise ExecutorUnavailable("rootless raw log cannot be removed safely")
+                    os.unlink(name, dir_fd=directory)
+                finally:
+                    os.close(descriptor)
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
     def _validate_environment(self, environment: EnvironmentSpec) -> RootlessLocalExecutor:
         executor = environment.executor
         runtime = self._capability.runtime
@@ -692,6 +1243,7 @@ class RootlessContainerExecutor:
             or executor.image_digest not in self._capability.image_digests
             or not isinstance(environment.network, NoNetwork)
             or not rootless_resources_supported(environment.resources)
+            or environment.artifact_policy != self._artifact_store.policy
         ):
             raise ExecutorUnavailable("environment does not bind this rootless executor")
         return executor
@@ -708,6 +1260,7 @@ class RootlessContainerExecutor:
             lease = self._storage_leases.get(plan.invocation_id)
         if (
             lease is None
+            or lease.receipt.run_id != plan.run_id
             or lease.receipt.environment_spec_digest != environment.digest
             or lease.receipt.executor_id != self.executor_id
             or lease.receipt.executor_implementation_digest != self._implementation_digest
@@ -830,32 +1383,17 @@ class RootlessContainerExecutor:
             "commands": commands,
         }
 
-    def _remove_container(self, invocation_id: str) -> None:
-        name = _container_name(self.executor_id, invocation_id)
-        expected_owner = _container_owner(self.executor_id, invocation_id)
-        exists = self._run_podman("container", "exists", name)
-        if exists.returncode == 1:
-            self._remove_container_receipt(invocation_id)
+    def _remove_container(self, receipt: _InvocationReceipt) -> None:
+        observation = self._observe(receipt)
+        if observation is None:
             return
-        if exists.returncode != 0:
-            raise ExecutorUnavailable("container recovery state is unavailable")
-        inspected = self._run_podman(
-            "container",
-            "inspect",
-            "--format",
-            f'{{{{ index .Config.Labels "{_CONTAINER_OWNER_LABEL}" }}}}',
-            name,
-        )
-        if inspected.returncode != 0 or inspected.stdout.strip() != expected_owner:
-            raise ExecutorUnavailable("container recovery ownership does not match")
-        removed = self._run_podman("rm", "--force", "--time=0", name)
+        removed = self._run_podman("rm", "--force", "--time=0", observation.container_id)
         if removed.returncode != 0:
             raise ExecutorUnavailable("container recovery could not remove the invocation")
         deadline = time.monotonic() + _QUIESCENCE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            exists = self._run_podman("container", "exists", name)
+            exists = self._run_podman("container", "exists", receipt.container_name)
             if exists.returncode == 1:
-                self._remove_container_receipt(invocation_id)
                 return
             if exists.returncode != 0:
                 raise ExecutorUnavailable("container recovery state is unavailable")
@@ -863,8 +1401,7 @@ class RootlessContainerExecutor:
         raise ExecutorUnavailable("container recovery did not become quiescent")
 
     def _container_receipt_path(self, invocation_id: str) -> Path:
-        normalized = _IDENTIFIER_ADAPTER.validate_python(invocation_id)
-        return self._manager.job_state_root / f"{normalized}.cid"
+        return self._job_directory(invocation_id) / "container.cid"
 
     def _create_container(
         self,
@@ -906,16 +1443,19 @@ class RootlessContainerExecutor:
             raise ExecutorUnavailable("container creation control is unavailable") from None
         if completed.returncode != 0:
             raise ExecutorUnavailable("container creation was rejected")
-        self._verify_container_receipt(invocation_id)
+        if self._observe(self._load_invocation(invocation_id)) is None:
+            raise ExecutorUnavailable("created container has no durable observation")
         return parent_launch_digest
 
-    def _verify_container_receipt(self, invocation_id: str) -> None:
+    def _read_container_receipt(self, invocation_id: str) -> str | None:
         receipt = self._container_receipt_path(invocation_id)
         _require_private_directory(receipt.parent)
         try:
             descriptor = os.open(
                 receipt, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
             )
+        except FileNotFoundError:
+            return None
         except OSError:
             raise ExecutorUnavailable("container creation produced no receipt") from None
         try:
@@ -943,38 +1483,11 @@ class RootlessContainerExecutor:
             os.fsync(parent)
         finally:
             os.close(parent)
-        expected_owner = _container_owner(self.executor_id, invocation_id)
-        inspected = self._run_podman(
-            "container",
-            "inspect",
-            "--format",
-            f'{{{{.Id}}}} {{{{ index .Config.Labels "{_CONTAINER_OWNER_LABEL}" }}}}',
-            _container_name(self.executor_id, invocation_id),
-        )
-        if (
-            inspected.returncode != 0
-            or inspected.stdout.strip() != f"{container_id} {expected_owner}"
-        ):
-            raise ExecutorUnavailable("container receipt does not prove invocation ownership")
+        return container_id
 
-    def _remove_container_receipt(self, invocation_id: str) -> None:
-        receipt = self._container_receipt_path(invocation_id)
-        try:
-            metadata = receipt.lstat()
-        except FileNotFoundError:
-            return
-        except OSError:
-            raise ExecutorUnavailable("container receipt cannot be inspected") from None
-        if (
-            receipt.is_symlink()
-            or not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) & 0o077
-        ):
-            raise ExecutorUnavailable("container receipt cannot be removed safely")
-        receipt.unlink()
-
-    def _run_podman(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+    def _run_podman(
+        self, *arguments: str, output_files: tuple[IO[bytes], IO[bytes]] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         descriptor: int | None = None
         try:
             runtime = self._capability.runtime
@@ -993,8 +1506,8 @@ class RootlessContainerExecutor:
                 ),
                 check=False,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE if output_files is None else output_files[0],
+                stderr=subprocess.DEVNULL if output_files is None else output_files[1],
                 text=True,
                 env=self._runtime.host_environment,
                 pass_fds=(descriptor,),
@@ -1005,6 +1518,20 @@ class RootlessContainerExecutor:
         finally:
             if descriptor is not None:
                 os.close(descriptor)
+
+
+def _process_cgroup(process_id: int) -> str | None:
+    """Observe a live process only; PIDs are never persisted as operation identity."""
+
+    if type(process_id) is not int or process_id < 0:
+        raise ValueError("container process identity is invalid")
+    if process_id == 0:
+        return None
+    try:
+        content = Path(f"/proc/{process_id}/cgroup").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return None
+    return next((line[3:] for line in content.splitlines() if line.startswith("0::")), None)
 
 
 def _installation_matches(
@@ -1145,21 +1672,6 @@ def _require_private_directory(path: Path) -> None:
 
 def _content_digest(content: bytes) -> Digest:
     return f"sha256:{hashlib.sha256(content).hexdigest()}"
-
-
-def _container_name(executor_id: str, invocation_id: str) -> str:
-    identity = canonical_digest(
-        {"executor_id": executor_id, "invocation_id": invocation_id},
-        domain="executor-container-name-v1",
-    ).removeprefix("sha256:")
-    return f"edagym-{identity}"
-
-
-def _container_owner(executor_id: str, invocation_id: str) -> str:
-    return canonical_digest(
-        {"executor_id": executor_id, "invocation_id": invocation_id},
-        domain="executor-container-owner-v1",
-    )
 
 
 def _isolation_probe_scope(role: IsolationProbeRole) -> FilesystemScope:

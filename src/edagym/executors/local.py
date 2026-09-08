@@ -345,67 +345,15 @@ class _ProcessManager:
                 job.transient_files = ()
             if validation_failed:
                 raise CollectionError("tool execution closure changed during execution")
-            _seal_private_tree(job.workspace_descriptor)
-            _seal_private_tree(job.artifact_directory_descriptor)
-            diagnostic = _disclosure_for(job.environment, ArtifactClass.DIAGNOSTIC)
-            stdout = self.artifact_store.put_file(
-                job.stdout_path,
-                artifact_class=ArtifactClass.DIAGNOSTIC,
-                sensitivity=diagnostic.sensitivity,
-                visibility=diagnostic.visibility,
-                redistribution=diagnostic.redistribution,
-            )
-            stderr = self.artifact_store.put_file(
-                job.stderr_path,
-                artifact_class=ArtifactClass.DIAGNOSTIC,
-                sensitivity=diagnostic.sensitivity,
-                visibility=diagnostic.visibility,
-                redistribution=diagnostic.redistribution,
-            )
-            outputs = []
-            for declaration in job.plan.outputs:
-                try:
-                    descriptor = _open_relative_file(
-                        job.workspace_descriptor,
-                        declaration.path,
-                    )
-                except FileNotFoundError:
-                    if declaration.required:
-                        raise CollectionError(
-                            f"required output {declaration.logical_id!r} is missing"
-                        ) from None
-                    continue
-                except OSError as error:
-                    raise CollectionError(
-                        f"output {declaration.logical_id!r} cannot be opened safely"
-                    ) from error
-                try:
-                    disclosure = _disclosure_for(
-                        job.environment,
-                        declaration.artifact_class,
-                    )
-                    blob = self.artifact_store.put_file_descriptor(
-                        descriptor,
-                        artifact_class=declaration.artifact_class,
-                        sensitivity=disclosure.sensitivity,
-                        visibility=disclosure.visibility,
-                        redistribution=disclosure.redistribution,
-                    )
-                finally:
-                    os.close(descriptor)
-                outputs.append(
-                    CollectedOutput(
-                        logical_id=declaration.logical_id,
-                        blob=blob,
-                        media_type=declaration.media_type,
-                        artifact_class=declaration.artifact_class,
-                    )
-                )
-            job.collected = ExecutionResult(
+            job.collected = _collect_execution_result(
+                plan=job.plan,
+                environment=job.environment,
+                artifact_store=self.artifact_store,
+                workspace_descriptor=job.workspace_descriptor,
+                artifact_directory_descriptor=job.artifact_directory_descriptor,
+                stdout_path=job.stdout_path,
+                stderr_path=job.stderr_path,
                 state=state,
-                stdout=stdout,
-                stderr=stderr,
-                outputs=tuple(outputs),
             )
             job.stdout_path.unlink()
             job.stderr_path.unlink()
@@ -590,7 +538,8 @@ class BrokeredHostExecutor:
         _validate_scope(plan, scope)
         _require_owned_directory(artifact_directory)
         asset_snapshots = _bind_asset_closure(
-            self._manager,
+            source_policy=self._manager.asset_source_policy,
+            protected_paths=(self._manager.artifact_store.root, self._manager.job_state_root),
             environment=environment,
             asset_paths=asset_paths,
             scope=scope,
@@ -662,7 +611,7 @@ class BrokeredHostExecutor:
         try:
             _revalidate_bound_assets(
                 asset_snapshots,
-                self._manager,
+                protected_paths=(self._manager.artifact_store.root, self._manager.job_state_root),
                 writable_paths=(workspace, artifact_directory),
             )
             if not all(validator() for validator in post_execution_validators):
@@ -911,20 +860,20 @@ def _validate_scope(plan: InvocationPlan, scope: FilesystemScope) -> None:
 
 
 def _bind_asset_closure(
-    manager: _ProcessManager,
     *,
+    source_policy: AssetSourcePolicy,
+    protected_paths: tuple[Path, ...],
     environment: EnvironmentSpec,
     asset_paths: Mapping[str, Path],
     scope: FilesystemScope,
     writable_paths: tuple[Path, ...],
 ) -> Mapping[str, AssetSnapshot]:
-    protected_paths = (manager.artifact_store.root, manager.job_state_root)
     try:
         return validate_asset_closure(
             environment,
             asset_paths,
             scope,
-            source_policy=manager.asset_source_policy,
+            source_policy=source_policy,
             protected_paths=protected_paths,
             writable_paths=writable_paths,
         )
@@ -934,14 +883,14 @@ def _bind_asset_closure(
 
 def _revalidate_bound_assets(
     snapshots: Mapping[str, AssetSnapshot],
-    manager: _ProcessManager,
     *,
+    protected_paths: tuple[Path, ...],
     writable_paths: tuple[Path, ...],
 ) -> None:
     try:
         revalidate_asset_closure(
             snapshots,
-            protected_paths=(manager.artifact_store.root, manager.job_state_root),
+            protected_paths=protected_paths,
             writable_paths=writable_paths,
         )
     except AssetValidationError:
@@ -1166,6 +1115,70 @@ def _remove_abandoned_raw_state(root: Path, invocation_id: str) -> None:
         if raw_descriptor is not None:
             os.close(raw_descriptor)
         os.close(root_descriptor)
+
+
+def _collect_execution_result(
+    *,
+    plan: InvocationPlan,
+    environment: EnvironmentSpec,
+    artifact_store: ContentAddressedStore,
+    workspace_descriptor: int,
+    artifact_directory_descriptor: int,
+    stdout_path: Path,
+    stderr_path: Path,
+    state: JobState,
+) -> ExecutionResult:
+    """Capture quiescent output through the same path and disclosure boundary."""
+
+    _seal_private_tree(workspace_descriptor)
+    _seal_private_tree(artifact_directory_descriptor)
+    diagnostic = _disclosure_for(environment, ArtifactClass.DIAGNOSTIC)
+    streams = tuple(
+        artifact_store.put_file(
+            path,
+            artifact_class=ArtifactClass.DIAGNOSTIC,
+            sensitivity=diagnostic.sensitivity,
+            visibility=diagnostic.visibility,
+            redistribution=diagnostic.redistribution,
+        )
+        for path in (stdout_path, stderr_path)
+    )
+    outputs = []
+    for declaration in plan.outputs:
+        try:
+            descriptor = _open_relative_file(workspace_descriptor, declaration.path)
+        except FileNotFoundError:
+            if declaration.required and state.state is JobStateKind.COMPLETED:
+                raise CollectionError(
+                    f"required output {declaration.logical_id!r} is missing"
+                ) from None
+            continue
+        except OSError as error:
+            raise CollectionError(
+                f"output {declaration.logical_id!r} cannot be opened safely"
+            ) from error
+        try:
+            disclosure = _disclosure_for(environment, declaration.artifact_class)
+            blob = artifact_store.put_file_descriptor(
+                descriptor,
+                artifact_class=declaration.artifact_class,
+                sensitivity=disclosure.sensitivity,
+                visibility=disclosure.visibility,
+                redistribution=disclosure.redistribution,
+            )
+        finally:
+            os.close(descriptor)
+        outputs.append(
+            CollectedOutput(
+                logical_id=declaration.logical_id,
+                blob=blob,
+                media_type=declaration.media_type,
+                artifact_class=declaration.artifact_class,
+            )
+        )
+    return ExecutionResult(
+        state=state, stdout=streams[0], stderr=streams[1], outputs=tuple(outputs),
+    )
 
 
 def _file_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
@@ -1434,6 +1447,7 @@ def _systemd_scope_command(
     command: tuple[str, ...],
     *,
     wall_seconds: int,
+    delegate: bool = False,
 ) -> tuple[str, ...]:
     return (
         os.fspath(_SYSTEMD_RUN_PATH),
@@ -1444,6 +1458,7 @@ def _systemd_scope_command(
         "--property=KillMode=control-group",
         f"--property=RuntimeMaxSec={wall_seconds}s",
         "--property=TimeoutStopSec=5s",
+        *(("--property=Delegate=yes", "--property=KillSignal=SIGKILL") if delegate else ()),
         "--",
         os.fspath(_ENV_PATH),
         "--unset=XDG_RUNTIME_DIR",

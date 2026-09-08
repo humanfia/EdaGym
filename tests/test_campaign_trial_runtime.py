@@ -558,6 +558,7 @@ class _Evaluator:
     def prepare(self, context: EvaluationContext) -> InvocationPlan:
         return InvocationPlan(
             invocation_id=context.job_id,
+            run_id=context.run_id,
             capability=context.assignment.capability,
             tool_id=context.assignment.tool_id,
             driver_digest=context.assignment.driver_digest,

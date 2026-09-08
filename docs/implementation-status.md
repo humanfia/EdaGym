@@ -22,10 +22,13 @@ This branch is an implementation checkpoint, not a completed release.
   KLayout runtime dependency.
 - Encrypted private storage for raw EDA diagnostics and evidence, with an
   owner-only key retained across controller restarts.
+- Run-bound rootless execution with durable launch, container identity, terminal,
+  and CAS result receipts. A delegated user scope owns each operation's deadline;
+  collection and scoped cleanup survive controller loss.
 
 ## Validation
 
-The full suite reports **318 passed** in 332.78 seconds (exit 0). Retained CLI
+The full suite reports **320 passed** in 368.37 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
@@ -37,6 +40,16 @@ and cgroup limits of 250 millicores, 128 MiB memory, and 32 processes. Icarus
 compilation and simulation use the same resolved installation and preserve
 successful and failing simulation exit statuses. Concurrent private CAS openers
 share a durable encryption key; reopening after key loss refuses replacement.
+
+Actual controller SIGKILL audits recover running, collected, and created
+containers, including creation with lost cidfiles. They also recover cancellation
+and deadline expiry, retain partial diagnostics, and reread the same CAS result
+after cleanup. Unknown runtime exit codes remain absent even when a reliable
+timeout or cancellation cause exists. Concurrent runs reject foreign handles;
+cleaning one preserves the other, and retained IDs reject replacement containers
+with copied labels. No task-owned containers or filesystem mounts remain after
+validation. The guest wire contract was updated and formatting checked; no VM,
+Slurm, or guest-agent deployment was exercised.
 
 Fresh-controller audits reproduced both frozen environments, rejected changed
 library content and framework source, and accepted restored library content.

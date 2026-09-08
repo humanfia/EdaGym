@@ -28,6 +28,11 @@ class PodmanCommand(StrEnum):
     CREATE = "create"
 
 
+class PodmanContainment(StrEnum):
+    RUNTIME = "runtime"
+    DELEGATED_SCOPE = "delegated_scope"
+
+
 ROOTLESS_CONTROL_TARGETS = MappingProxyType(
     {
         RootlessControlFile.COMPOSITE_RECIPE: "/run/edagym-control/recipe.json",
@@ -69,6 +74,8 @@ def rootless_podman_command(
     command_kind: PodmanCommand = PodmanCommand.RUN,
     cidfile: Path | None = None,
     private_staging: bool = False,
+    log_max_bytes: int | None = None,
+    containment: PodmanContainment = PodmanContainment.RUNTIME,
 ) -> tuple[str, ...]:
     """Derive the sole rootless container command from resolved policy."""
 
@@ -93,7 +100,6 @@ def rootless_podman_command(
         f"--pids-limit={resources.pids}",
         f"--memory={resources.memory_bytes}",
         f"--cpus={cpu_limit}",
-        f"--timeout={resources.wall_seconds}",
         "--ulimit=core=0:0",
         f"--ulimit=fsize={resources.disk_bytes}:{resources.disk_bytes}",
         _volume_argument(
@@ -103,6 +109,10 @@ def rootless_podman_command(
             extra_options=("Z",) if private_staging else (),
         ),
     ]
+    if containment is PodmanContainment.DELEGATED_SCOPE:
+        command.append("--cgroups=split")
+    else:
+        command.append(f"--timeout={resources.wall_seconds}")
     if temporary_directory is None:
         command.append("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m")
     else:
@@ -125,6 +135,10 @@ def rootless_podman_command(
         )
     if interactive:
         command.append("--interactive")
+    if log_max_bytes is not None:
+        if log_max_bytes <= 0:
+            raise ValueError("container log retention requires a positive byte limit")
+        command.extend(("--log-driver=k8s-file", f"--log-opt=max-size={log_max_bytes}"))
     if cidfile is not None:
         if not cidfile.is_absolute() or any(
             character in os.fspath(cidfile) for character in "\x00\n\r"

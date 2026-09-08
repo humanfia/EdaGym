@@ -123,6 +123,7 @@ def _invocation() -> InvocationPlan:
     )
     return InvocationPlan(
         invocation_id="vm_probe",
+        run_id=digest("vm-probe-run"),
         capability=tool.capability,
         tool_id=tool.tool_id,
         driver_digest=tool.driver_digest,

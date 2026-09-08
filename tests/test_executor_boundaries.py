@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import secrets
+import signal
 import subprocess
 import sys
 import time
+from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,8 +17,9 @@ import pytest
 
 from edagym.config import initialize_config, resolve_profile
 from edagym.config.execution import project_environment
-from edagym.config.model import ConfigView, EdaGymConfig
+from edagym.config.model import ConfigView, EdaGymConfig, PrivateConfigSnapshot
 from edagym.config.qualification import resolve_profile_tools
+from edagym.config.resolve import resolve_snapshot
 from edagym.drivers.catalog import BACKENDS
 from edagym.drivers.probe import probe_backend
 from edagym.drivers.rootless_image import (
@@ -177,6 +182,7 @@ def _rootless_runtime(
 
 def _configured_rootless_runtime(
     tmp_path: Path, tool_id: str, logical_tool_id: str, view: ConfigView,
+    *, wall_seconds: int = 15,
 ) -> tuple[EnvironmentSpec, ResolvedInstallation, RootlessContainerCapability]:
     environment, installation, capability = _rootless_runtime(tool_id)
     document = initialize_config(tmp_path / "config.toml", tmp_path / "state").model_dump(
@@ -202,7 +208,7 @@ def _configured_rootless_runtime(
     document["profiles"][0][view.value] = {"runtime_id": "tools", "tool_ids": [logical_tool_id]}
     document["profiles"][0]["resources"] = {
         "cpu_millicores": 250, "memory_bytes": 128 * 1024**2,
-        "process_count": 32, "wall_seconds": 15,
+        "process_count": 32, "wall_seconds": wall_seconds,
     }
     document["profiles"][0]["storage"] = {
         "max_bytes": 64 * 1024**2, "output_max_bytes": 1024**2,
@@ -222,6 +228,146 @@ def _configured_rootless_runtime(
 def _rootless_environment() -> tuple[EnvironmentSpec, str]:
     environment, installation, _ = _rootless_runtime()
     return environment, installation.definition.driver_digest
+
+
+def _open_recovery_executor(
+    root: Path, snapshot: Path,
+) -> tuple[RootlessContainerExecutor, EnvironmentSpec, ContentAddressedStore]:
+    pair = resolve_snapshot(PrivateConfigSnapshot.model_validate_json(snapshot.read_bytes()))
+    resolutions = resolve_profile_tools(pair)
+    environment = project_environment(pair, ConfigView.EVALUATOR, resolutions)
+    resolution, = resolutions
+    installation, capability = resolution.installation, resolution.capability
+    assert installation is not None and capability is not None
+    store = ContentAddressedStore.open_private(root / "cas", policy=environment.artifact_policy)
+    executor = RootlessContainerExecutor(
+        executor_id=environment.executor.executor_id,
+        implementation_digest=environment.executor.implementation_digest,
+        capability=capability, tool_installations={installation.tool_id: installation},
+        storage_provider=RootlessStorageProvider(maximum_quota_bytes=environment.resources.disk_bytes),
+        asset_source_policy=load_system_asset_source_policy(), artifact_store=store,
+        job_state_root=root / "jobs",
+    )
+    return executor, environment, store
+
+
+def _rootless_recovery_controller(
+    root: Path, snapshot: Path, plan_json: str, run_id: str, ready: Connection,
+) -> None:
+    executor, environment, _ = _open_recovery_executor(root, snapshot)
+    plan = InvocationPlan.model_validate_json(plan_json)
+    lease = executor.create_storage(
+        environment=environment, runtime_root=root / "storage",
+        run_id=run_id, invocation_id=plan.invocation_id,
+    )
+    (lease.workspace / "probe.sv").write_text(
+        'module probe; integer gate, output_file; initial begin\n'
+        '  $display("simulation-started"); $fflush();\n'
+        '  gate = 0; while (gate == 0) begin\n'
+        '    gate = $fopen("continue", "r"); #100;\n'
+        '  end\n'
+        '  $fclose(gate); output_file = $fopen("result.txt", "w");\n'
+        '  $fwrite(output_file, "durable-output"); $fclose(output_file);\n'
+        '  $display("simulation-finished"); $finish;\n'
+        'end endmodule\n',
+        encoding="ascii",
+    )
+    handle = executor.launch(
+        plan, environment=environment, workspace=lease.workspace,
+        artifact_directory=lease.artifact_directory, asset_paths={},
+        scope=FilesystemScope.EVALUATOR,
+    )
+    ready.send(handle.model_dump_json())
+    while True:
+        time.sleep(1)
+
+
+@pytest.mark.parametrize("deadline", [False, True], ids=["tool-completes", "deadline-expires"])
+def test_rootless_execution_survives_controller_sigkill(tmp_path: Path, deadline: bool) -> None:
+    environment, _, _ = _configured_rootless_runtime(
+        tmp_path, "iverilog", "simulation", ConfigView.EVALUATOR,
+        wall_seconds=2 if deadline else 15,
+    )
+    snapshot = (tmp_path / "state" / "qualifications" / "snapshots"
+                / f"{environment.identity.provenance[0][7:]}.json")
+    run_id = digest(secrets.token_hex(16))
+    binding = environment.tool_bindings[0]
+    plan = InvocationPlan(
+        invocation_id="recoverable_simulation", capability=binding.capability,
+        run_id=run_id,
+        tool_id=binding.tool_id, driver_digest=binding.driver_digest,
+        view=InvocationView.EVALUATOR, executable="iverilog",
+        input_manifest_digest=digest("controller-loss-input"),
+        recipe=tuple(
+            ToolRecipeCommand(
+                tool_id=binding.tool_id, capability=binding.capability,
+                driver_digest=binding.driver_digest, executable=executable, arguments=arguments,
+            )
+            for executable, arguments in (
+                ("iverilog", ("-g2012", "-s", "probe", "-o", "probe.vvp", "probe.sv")),
+                ("vvp", ("probe.vvp",)),
+            )
+        ),
+        outputs=(
+            OutputDeclaration(logical_id=COMPOSITE_REPORT_LOGICAL_ID, path=COMPOSITE_REPORT_PATH,
+                media_type="application/json", artifact_class=ArtifactClass.EVIDENCE),
+            OutputDeclaration(logical_id="result", path="result.txt", media_type="text/plain",
+                artifact_class=ArtifactClass.EVIDENCE),
+        ),
+    )
+    (tmp_path / "storage").mkdir(mode=0o700)
+    context = multiprocessing.get_context("spawn")
+    received, ready = context.Pipe(duplex=False)
+    controller = context.Process(
+        target=_rootless_recovery_controller,
+        args=(tmp_path, snapshot, plan.model_dump_json(), run_id, ready),
+    )
+    controller.start()
+    ready.close()
+    try:
+        assert received.poll(20), "controller did not acknowledge the container launch"
+        handle = JobHandle.model_validate_json(received.recv())
+        controller.kill()
+        controller.join(10)
+        assert controller.exitcode == -signal.SIGKILL
+    finally:
+        if controller.is_alive():
+            controller.kill()
+            controller.join(10)
+        received.close()
+        controller.close()
+    if deadline:
+        time.sleep(environment.resources.wall_seconds + 1)
+    executor, recovered_environment, store = _open_recovery_executor(tmp_path, snapshot)
+    assert recovered_environment == environment
+    lease = executor.recover_storage(
+        environment=environment, runtime_root=tmp_path / "storage",
+        run_id=run_id, invocation_id=plan.invocation_id,
+    )
+    assert lease is not None
+    try:
+        if not deadline:
+            assert executor.launch(
+                plan, environment=environment, workspace=lease.workspace,
+                artifact_directory=lease.artifact_directory, asset_paths={},
+                scope=FilesystemScope.EVALUATOR,
+            ) == handle
+            (lease.workspace / "continue").touch()
+        expected = JobStateKind.TIMED_OUT if deadline else JobStateKind.COMPLETED
+        assert _wait(executor, handle) is expected
+        result = executor.collect(handle)
+        assert b"simulation-started" in store.read_bytes(result.stdout, maximum_bytes=8192)
+        if deadline:
+            assert result.state.failure is ExecutionFailureKind.TIMEOUT
+        else:
+            output = next(item for item in result.outputs if item.logical_id == "result")
+            assert store.read_bytes(output.blob, maximum_bytes=128) == b"durable-output"
+    finally:
+        executor.abandon(plan.invocation_id)
+        lease.close()
+    reconstructed, _, _ = _open_recovery_executor(tmp_path, snapshot)
+    assert reconstructed.collect(handle) == result
+    assert not reconstructed.cleanup(plan.invocation_id).remaining_resources
 
 
 @pytest.mark.skipif(not Path("/usr/bin/podman").exists(), reason="Podman is unavailable")
@@ -267,6 +413,7 @@ def test_image_compiler_and_runtime_preserve_simulation_exit_status(tmp_path: Pa
         )
         plan = InvocationPlan(
             invocation_id=invocation_id, capability=binding.capability,
+            run_id=lease.receipt.run_id,
             tool_id=binding.tool_id, driver_digest=binding.driver_digest,
             view=InvocationView.EVALUATOR, executable=binding.locator.executable,
             input_manifest_digest=digest(source), recipe=commands,
@@ -360,6 +507,7 @@ def test_brokered_executor_scrubs_ambient_environment(
     )
     plan = InvocationPlan(
         invocation_id="sealed_probe",
+        run_id=digest("sealed-probe-run"),
         capability=Capability.RTL_SIMULATION,
         tool_id="python_probe",
         driver_digest=driver_digest,
@@ -468,6 +616,7 @@ def test_brokered_wall_deadline_terminates_the_scope_without_controller_polling(
     handle = executor.launch(
         InvocationPlan(
             invocation_id="independent_deadline",
+            run_id=digest("brokered-deadline-run"),
             capability=tool.capability,
             tool_id=tool.tool_id,
             driver_digest=tool.driver_digest,
@@ -552,6 +701,7 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
     checker.chmod(0o700)
     plan = InvocationPlan(
         invocation_id=invocation_id,
+        run_id=lease.receipt.run_id,
         capability=binding.capability,
         tool_id=binding.tool_id,
         driver_digest=binding.driver_digest,
@@ -601,7 +751,7 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
         result = executor.collect(handle)
         output = next(item for item in result.outputs if item.logical_id == "result")
         assert store.read_bytes(output.blob, maximum_bytes=32) == b"container-ok"
-        receipt = jobs / f"{invocation_id}.cid"
+        receipt = jobs / invocation_id / "container.id"
         container_id = receipt.read_text(encoding="ascii")
         retained = subprocess.run(
             ["/usr/bin/podman", "inspect", "--format", "{{.State.Status}}", container_id],
@@ -621,11 +771,9 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
         assert image_runtime is not None
         assert entrypoint.stdout.strip() == image_runtime.supervisor_entrypoint
         assert Path(image_runtime.supervisor_entrypoint).name == "python3.12"
-        assert executor.collect(handle) == result
     finally:
         executor.abandon(invocation_id)
         lease.close()
-    assert not receipt.exists()
     removed = subprocess.run(
         ["/usr/bin/podman", "container", "exists", container_id],
         check=False,
@@ -679,6 +827,7 @@ def test_output_collection_never_follows_workspace_links(tmp_path: Path) -> None
     )
     plan = InvocationPlan(
         invocation_id="linked_output_probe",
+        run_id=digest("linked-output-run"),
         capability=Capability.RTL_SIMULATION,
         tool_id="python_link_probe",
         driver_digest=driver_digest,

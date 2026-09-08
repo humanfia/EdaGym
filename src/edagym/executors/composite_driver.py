@@ -5,13 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import selectors
 import stat
 import subprocess
 import sys
-import tempfile
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO
 
 _CHUNK_SIZE = 1024 * 1024
 
@@ -109,33 +108,29 @@ def _execute_one(raw: dict[str, object]) -> dict[str, object]:
     elif not Path(executable).is_absolute():
         raise ValueError("resolved tool executable must be absolute")
 
-    with tempfile.TemporaryDirectory(prefix=".edagym-command-", dir=".") as temporary:
-        stdout_path = Path(temporary) / "stdout.bin"
-        stderr_path = Path(temporary) / "stderr.bin"
-        try:
-            with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-                completed = subprocess.run(
-                    (executable, *arguments),
-                    stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
-                    env=environment,
-                    check=False,
-                    close_fds=True,
-                    pass_fds=(() if executable_descriptor is None else (executable_descriptor,)),
-                )
-            exit_code: int | None = completed.returncode
-            failure: str | None = None
-        except OSError:
-            stdout_path.touch(exist_ok=True)
-            stderr_path.touch(exist_ok=True)
-            exit_code = None
-            failure = "spawn_failed"
-        finally:
-            if executable_descriptor is not None:
-                os.close(executable_descriptor)
-        stdout_digest, stdout_size = _copy_and_digest(stdout_path, sys.stdout.buffer)
-        stderr_digest, stderr_size = _copy_and_digest(stderr_path, sys.stderr.buffer)
+    try:
+        process = subprocess.Popen(
+            (executable, *arguments),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            close_fds=True,
+            pass_fds=(() if executable_descriptor is None else (executable_descriptor,)),
+        )
+    except OSError:
+        exit_code: int | None = None
+        failure: str | None = "spawn_failed"
+        stdout_digest = stderr_digest = f"sha256:{hashlib.sha256(b'').hexdigest()}"
+        stdout_size = stderr_size = 0
+    else:
+        with process:
+            (stdout_digest, stdout_size), (stderr_digest, stderr_size) = _stream_output(process)
+            exit_code = process.wait()
+            failure = None
+    finally:
+        if executable_descriptor is not None:
+            os.close(executable_descriptor)
     return {
         "identity_digest": identity_digest,
         "exit_code": exit_code,
@@ -178,16 +173,31 @@ def _open_workspace_executable(value: str) -> int:
         os.close(parent)
 
 
-def _copy_and_digest(path: Path, destination: BinaryIO) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        while chunk := stream.read(_CHUNK_SIZE):
-            digest.update(chunk)
-            size += len(chunk)
-            destination.write(chunk)
-    destination.flush()
-    return f"sha256:{digest.hexdigest()}", size
+def _stream_output(process: subprocess.Popen[bytes]) -> tuple[tuple[str, int], tuple[str, int]]:
+    """Retain partial diagnostics even when the command or supervisor is killed."""
+
+    assert process.stdout is not None and process.stderr is not None
+    destinations = (sys.stdout.buffer, sys.stderr.buffer)
+    digests = (hashlib.sha256(), hashlib.sha256())
+    sizes = [0, 0]
+    with selectors.DefaultSelector() as selector:
+        for index, stream in enumerate((process.stdout, process.stderr)):
+            selector.register(stream, selectors.EVENT_READ, index)
+        while selector.get_map():
+            for key, _ in selector.select():
+                index = key.data
+                content = os.read(key.fd, _CHUNK_SIZE)
+                if not content:
+                    selector.unregister(key.fileobj)
+                    continue
+                digests[index].update(content)
+                sizes[index] += len(content)
+                destinations[index].write(content)
+                destinations[index].flush()
+    return (
+        (f"sha256:{digests[0].hexdigest()}", sizes[0]),
+        (f"sha256:{digests[1].hexdigest()}", sizes[1]),
+    )
 
 
 def _write_report(relative: str, report: dict[str, object]) -> None:

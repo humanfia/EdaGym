@@ -307,6 +307,7 @@ def _container_controller(root_text: str, ready: Connection) -> None:
     executor.launch(
         InvocationPlan(
             invocation_id=invocation_id,
+            run_id=lease.receipt.run_id,
             capability=binding.capability,
             tool_id=binding.tool_id,
             driver_digest=installation.definition.driver_digest,
@@ -444,6 +445,7 @@ def _participant_tool_controller(root_text: str, ready: Connection) -> None:
     )
     plan = InvocationPlan(
         invocation_id=invocation_id,
+        run_id=runtime.journal.header.run_id,
         capability=binding.capability,
         tool_id=binding.tool_id,
         driver_digest=binding.driver_digest,
@@ -1343,6 +1345,7 @@ def test_resume_does_not_mutate_state_when_executor_cannot_prove_quiescence(
         executor.launch(
             InvocationPlan(
                 invocation_id="unrecoverable_job",
+                run_id=storage.receipt.run_id,
                 capability=binding.capability,
                 tool_id=binding.tool_id,
                 driver_digest=binding.driver_digest,

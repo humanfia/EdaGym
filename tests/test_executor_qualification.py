@@ -132,6 +132,7 @@ def _qualification(
     for scenario, state_kind, exit_code, failure in scenarios:
         plan = InvocationPlan(
             invocation_id=f"vm_{scenario.value}",
+            run_id=digest("vm-lifecycle-qualification"),
             capability=tool.capability,
             tool_id=tool.tool_id,
             driver_digest=tool.driver_digest,

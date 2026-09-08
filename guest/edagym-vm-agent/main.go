@@ -106,6 +106,7 @@ type outputDeclaration struct {
 
 type invocationPlan struct {
 	InvocationID string              `json:"invocation_id"`
+	RunID        string              `json:"run_id"`
 	Capability   string              `json:"capability"`
 	ToolID       string              `json:"tool_id"`
 	DriverDigest string              `json:"driver_digest"`
@@ -346,7 +347,7 @@ func decodeLaunch(content []byte) (launchRequest, error) {
 	if err := strictDecode(wire.Plan, &plan); err != nil {
 		return launchRequest{}, err
 	}
-	if domainDigest("invocation-plan-v1", wire.Plan) != wire.InvocationDigest {
+	if domainDigest("invocation-plan-v2", wire.Plan) != wire.InvocationDigest {
 		return launchRequest{}, errors.New("invocation plan digest is invalid")
 	}
 	return launchRequest{
@@ -603,6 +604,7 @@ func validLaunch(request launchRequest) bool {
 		!digestPattern.MatchString(request.EnvironmentDigest) ||
 		!digestPattern.MatchString(request.Plan.DriverDigest) ||
 		!digestPattern.MatchString(request.Plan.InputDigest) ||
+		!digestPattern.MatchString(request.Plan.RunID) ||
 		!digestPattern.MatchString(request.RequestDigest) ||
 		!executablePattern.MatchString(request.Plan.Executable) ||
 		request.WallSeconds <= 0 || request.OutputLimitBytes < 4096 ||

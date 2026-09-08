@@ -74,6 +74,8 @@ class EnvironmentEntry(StrictModel):
 
 
 class OutputDeclaration(StrictModel):
+    """An expected output; required declarations must exist after successful execution."""
+
     logical_id: Identifier
     path: str
     media_type: Annotated[str, Field(min_length=1, max_length=127)]
@@ -146,7 +148,10 @@ RecipeCommand = Annotated[
 
 
 class InvocationPlan(StrictModel):
+    """A run-owned operation whose digest also binds every executor handle."""
+
     invocation_id: Identifier
+    run_id: Digest
     capability: Capability
     tool_id: Identifier
     driver_digest: Digest
@@ -218,7 +223,7 @@ class InvocationPlan(StrictModel):
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self, domain="invocation-plan-v1")
+        return canonical_digest(self, domain="invocation-plan-v2")
 
 
 class JobHandle(StrictModel):

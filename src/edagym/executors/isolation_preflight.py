@@ -125,6 +125,10 @@ def isolation_probe_plan(
 
     return InvocationPlan(
         invocation_id=invocation_id,
+        run_id=canonical_digest(
+            {"environment": environment_spec_digest, "invocation": invocation_id, "role": role},
+            domain="executor-isolation-probe-run-v1",
+        ),
         capability=Capability.RTL_LINT,
         tool_id="edagym_isolation_probe",
         driver_digest=ISOLATION_PROBE_IMPLEMENTATION_DIGEST,

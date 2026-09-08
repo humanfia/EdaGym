@@ -166,6 +166,7 @@ class FlowEvaluatorRuntime(EvaluatorRuntime):
         )
         return InvocationPlan(
             invocation_id=context.job_id,
+            run_id=context.run_id,
             capability=self._primary.capability,
             tool_id=self._primary.tool_id,
             driver_digest=self._primary.driver_digest,

@@ -201,6 +201,27 @@ The runtime derives stop decisions from journal facts and hard budgets. It
 keeps terminal reason separate from evaluation outcome so timeout, license,
 infrastructure, candidate, and security failures remain distinguishable.
 
+Rootless invocation plans bind their run identity in the v2 invocation digest;
+handles therefore cannot alias equal operation names in different runs. A
+private launch receipt precedes Podman creation. Container identity and labels
+bind the plan, run, and frozen environment, and a retained container ID prevents
+cleanup from adopting a replacement with copied labels.
+
+Rootless payloads and conmon occupy the invocation's delegated systemd scope.
+That scope owns the wall deadline. Kernel cgroup membership is captured while
+the payload is alive, so recovery can prove that the complete scope is empty
+even if conmon died before updating Podman's cached state. A known timeout or
+cancel may have no exit code; a missing container without a reliable outcome
+remains an infrastructure failure. The composite supervisor streams both
+diagnostic channels so interrupted commands retain their partial output.
+
+The executor publishes a canonical terminal observation and then a complete
+CAS result receipt. Collection can be retried across controller loss. The
+caller must commit that result to its journal before releasing the container
+and storage. Cleanup retains result and identity receipts, allowing later
+reads to verify the same CAS closure. This executor protocol is available;
+integration with the configuration-driven RunEngine remains in progress.
+
 ## Paid campaign accounting
 
 `CampaignSpec` freezes the complete paid-evaluation envelope. Token limits are
