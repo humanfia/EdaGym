@@ -45,7 +45,12 @@ intent contracts. A missing tool or qualification is reported as unavailable.
 For a configured user image, generate a queue repair instance with `task
 generate --family rtl_verification_repair --difficulty single_transaction
 --seed <32-hex-digits> --profile <profile>`. Qualify its returned instance ID with
-`task qualify --instance <instance-id> --profile <profile> --session <session>`.
+`task qualify --instance <instance-id> --profile <profile> --session <session>
+--run-id <qualification-run-id>`. Repeating this command with the same run ID
+resumes missing canaries against its frozen inputs and returns the same published
+result. `run resume <qualification-run-id>` also resumes an existing
+qualification run. A reused qualification ID must match its original task,
+configuration snapshot, and session.
 Use the qualified instance ID returned by that command in the browser's
 **Open instance** form or in `run start`. Each command takes the same global
 `--config` option. The browser can edit submission files, invoke granted tools,

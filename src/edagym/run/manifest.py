@@ -20,11 +20,18 @@ class RunPurpose(StrEnum):
     QUALIFICATION = "qualification"
 
 
+class QualificationBinding(StrictModel):
+    participant_view_digest: Digest
+    evaluator_view_digest: Digest
+    independent_evidence_digest: Digest
+
+
 class RunManifest(StrictModel):
     """One immutable binding for task, views, session, harness, and budgets."""
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     purpose: RunPurpose = RunPurpose.TASK
+    qualification: QualificationBinding | None = None
     run_id: Identifier
     task_instance_digest: Digest
     task_spec_digest: Digest
@@ -56,6 +63,8 @@ class RunManifest(StrictModel):
 
     @model_validator(mode="after")
     def validate_environments(self) -> Self:
+        if (self.purpose is RunPurpose.QUALIFICATION) != (self.qualification is not None):
+            raise ValueError("qualification runs require their frozen evidence inputs")
         if (self.participant is None) != (self.evaluator is None):
             raise ValueError("a run freezes both execution views together")
         if any(
@@ -69,7 +78,7 @@ class RunManifest(StrictModel):
     @property
     def digest(self) -> Digest:
         return canonical_digest(
-            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v3"
+            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v4"
         )
 
     @classmethod
@@ -88,6 +97,7 @@ class RunManifest(StrictModel):
         participant: EnvironmentSpec | None = None,
         evaluator: EnvironmentSpec | None = None,
         purpose: RunPurpose = RunPurpose.TASK,
+        qualification: QualificationBinding | None = None,
     ) -> RunManifest:
         """Mechanically derive a manifest without copying private path values."""
 
@@ -102,6 +112,7 @@ class RunManifest(StrictModel):
             raise ValueError("run session is absent from the frozen configuration")
         return cls(
             purpose=purpose,
+            qualification=qualification,
             run_id=run_id,
             task_instance_digest=task.digest,
             task_spec_digest=task_spec_digest,

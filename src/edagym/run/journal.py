@@ -20,7 +20,7 @@ from edagym.run.journal_storage import (
     read_file,
     require_directory,
 )
-from edagym.run.manifest import RunManifest
+from edagym.run.manifest import RunManifest, RunPurpose
 from edagym.run.model import (
     CancelRequestedEvent,
     CandidatePayload,
@@ -34,6 +34,7 @@ from edagym.run.model import (
     OperationRunningEvent,
     OperationState,
     OperationTerminalEvent,
+    QualificationCompletedEvent,
     RunCancelledEvent,
     RunCommit,
     RunCompletedEvent,
@@ -61,6 +62,7 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
     candidates: list[CandidatePayload] = []
     evaluations: list[EvaluationPayload] = []
     cancel_requested = False
+    qualification_instance_id = None
     operations: dict[str, OperationState] = {}
     event_ids: set[str] = set()
     intent_keys: list[str] = []
@@ -208,7 +210,19 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
                 ):
                     raise InvalidTransition("evaluation operation does not consume its candidate")
                 evaluations.append(event.payload)
+            elif isinstance(event, QualificationCompletedEvent):
+                if manifest.purpose is not RunPurpose.QUALIFICATION:
+                    raise InvalidTransition(
+                        "only qualification runs can publish qualified instances"
+                    )
+                phase, terminal = EnginePhase.TERMINAL, "qualification_finished"
+                qualification_instance_id = event.payload.instance_id
             elif isinstance(event, RunCancelledEvent | RunCompletedEvent):
+                if (
+                    isinstance(event, RunCompletedEvent)
+                    and manifest.purpose is RunPurpose.QUALIFICATION
+                ):
+                    raise InvalidTransition("qualification termination must publish its evidence")
                 phase, terminal = EnginePhase.TERMINAL, event.payload.reason
     return RunState(
         projection=RunProjection(
@@ -223,6 +237,7 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             next_sequence=len(events),
             evaluations=tuple(evaluations),
             cancel_requested=cancel_requested,
+            qualification_instance_id=qualification_instance_id,
         ),
         events=tuple(events),
         operations=tuple(operations.values()),

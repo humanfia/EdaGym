@@ -51,6 +51,7 @@ class EventKind(StrEnum):
     OPERATION_RUNNING = "operation_running"
     OPERATION_TERMINAL = "operation_terminal"
     EVALUATION_COMPLETED = "evaluation_completed"
+    QUALIFICATION_COMPLETED = "qualification_completed"
     RUN_CANCELLED = "run_cancelled"
     CANCEL_REQUESTED = "cancel_requested"
     RUN_COMPLETED = "run_completed"
@@ -228,6 +229,11 @@ class EvaluationPayload(StrictModel):
     operation_ids: tuple[Identifier, ...] = Field(min_length=1)
 
 
+class QualificationCompletedPayload(StrictModel):
+    instance_id: Identifier
+    evidence_digest: Digest
+
+
 class RunPreparedEvent(EventBase):
     kind: Literal[EventKind.RUN_PREPARED] = EventKind.RUN_PREPARED
     payload: PreparedPayload
@@ -283,6 +289,11 @@ class EvaluationCompletedEvent(EventBase):
     payload: EvaluationPayload
 
 
+class QualificationCompletedEvent(EventBase):
+    kind: Literal[EventKind.QUALIFICATION_COMPLETED] = EventKind.QUALIFICATION_COMPLETED
+    payload: QualificationCompletedPayload
+
+
 class RunCancelledEvent(EventBase):
     kind: Literal[EventKind.RUN_CANCELLED] = EventKind.RUN_CANCELLED
     payload: ReasonPayload
@@ -310,6 +321,7 @@ RunEvent = Annotated[
     | OperationRunningEvent
     | OperationTerminalEvent
     | EvaluationCompletedEvent
+    | QualificationCompletedEvent
     | CancelRequestedEvent
     | RunCancelledEvent
     | RunCompletedEvent,
@@ -320,6 +332,15 @@ RUN_EVENT: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)
 
 class RunCommit(JournalCommit[RunEvent]):
     """An atomic group of manifest-bound run facts."""
+
+    @model_validator(mode="after")
+    def validate_publication(self) -> Self:
+        if (
+            any(isinstance(event, QualificationCompletedEvent) for event in self.events)
+            and len(self.events) != 1
+        ):
+            raise ValueError("qualification publication requires its own atomic commit")
+        return self
 
 
 class RunRecord(StrictModel):
@@ -342,6 +363,22 @@ class RunRecord(StrictModel):
     @property
     def events(self) -> tuple[RunEvent, ...]:
         return tuple(event for commit in self.commits for event in commit.events)
+
+    @property
+    def integrity_digest(self) -> Digest:
+        from edagym.run.journal import journal_anchor
+
+        return self.commits[-1].record_digest if self.commits else journal_anchor(self.manifest)
+
+    def prefix(self, integrity_digest: Digest) -> RunRecord:
+        from edagym.run.journal import journal_anchor
+
+        if integrity_digest == journal_anchor(self.manifest):
+            return RunRecord(manifest=self.manifest)
+        for position, commit in enumerate(self.commits):
+            if commit.record_digest == integrity_digest:
+                return RunRecord(manifest=self.manifest, commits=self.commits[: position + 1])
+        raise ValueError("requested journal prefix is absent from this run record")
 
 
 class OperationState(StrictModel):
@@ -368,6 +405,7 @@ class RunProjection(StrictModel):
     next_sequence: int = Field(strict=True, ge=0)
     evaluations: tuple[EvaluationPayload, ...] = ()
     cancel_requested: bool = False
+    qualification_instance_id: Identifier | None = None
 
 
 class RunState(StrictModel):

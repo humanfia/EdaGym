@@ -13,7 +13,7 @@ This branch is an implementation checkpoint, not a completed release.
   with durable private closure evidence.
 - Profile-derived execution environments with declared tool grants, scoped
   library mount declarations, resource limits, and artifact policy.
-- Run manifest v3 freezes the observed participant and evaluator environments,
+- Run manifest v4 freezes the observed participant and evaluator environments,
   including framework source identity. Resume verifies both against the original
   private snapshot and rejects tool, library, or implementation drift.
 - Benchmark specifications, schedule and reporting foundations, and external
@@ -39,6 +39,13 @@ This branch is an implementation checkpoint, not a completed release.
 - Configured queue repair qualification executes its declared reference and
   mutants, validates generated expectations with an independent FIFO checker,
   and binds both view receipts and the resulting run/CAS evidence to admission.
+- Qualification runs freeze their view and independent-oracle evidence before
+  executing canaries. Resume schedules missing candidates, reuses recorded
+  operations, and publishes the resulting instance in one terminal journal
+  commit after its evidence files are durable. The qualification receipt binds
+  the preceding journal prefix, avoiding a circular digest dependency. Published
+  runs can reconstruct missing derived receipts and instance documents; ordinary
+  task resume revalidates the retained qualification before advancing.
 - RunEngine executes participant tools, freezes edits and candidates, evaluates
   candidate-only synthesis followed by private netlist simulation, and replays
   operation results and workspace checkpoints. The CLI can qualify generated
@@ -47,11 +54,15 @@ This branch is an implementation checkpoint, not a completed release.
 
 ## Validation
 
-The full suite reports **323 passed** in 580.25 seconds (exit 0). Retained CLI
+The full suite reports **324 passed** in 639.08 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
 release evidence must cover the corresponding frozen trial and task bindings.
+After moving publication-group validation to the atomic commit owner, the final
+configured-run, CLI, and schema checks report **7 passed** in 258.26 seconds
+(exit 0). A direct check confirms that mixed publication groups are rejected
+before writing and valid existing publication groups retain their identity.
 
 Ruff, strict mypy (213 source files), generated schema consistency, and
 `git diff --check` pass. Actual rootless synthesis uses configured tool identity
@@ -113,14 +124,22 @@ timed-out, and completed results respectively. Repeated resume added no executio
 or journal facts, and scoped cleanup completed. These audits do not cover every
 interruption point in task qualification or every missing-receipt case.
 
+Two qualification SIGKILL audits interrupted execution between canaries and
+after derived evidence files were durable but before publication. Recovery
+preserved existing completed operations, finished only missing canaries, and
+published a stable result. Operation counts were 2 to 10 and 10 to 10,
+respectively. Repeated qualification and reconstruction of a deleted derived
+instance document added no journal facts. A retained real-tool check rejects
+ordinary task resume when its qualification receipt is missing, then verifies
+that the source qualification run reconstructs it without new execution.
+
 ## Remaining integration
 
-- Complete exact-toolset filesystem exclusion qualification and integrate view
-  receipts into run admission and recovery.
-- Complete interrupted task-qualification recovery, including remaining canaries
-  and final evidence publication. Exercise the broader concurrent-run and
-  corruption matrix, and finish typed termination/fencing when operation receipts
-  or writable storage are missing.
+- Complete exact-toolset filesystem exclusion qualification.
+- Integrate interruptions during view qualification before a task run manifest
+  exists. Exercise the broader concurrent-run and corruption matrix, and finish
+  typed termination/fencing when operation receipts or writable storage are
+  missing.
 - Complete participant feedback and artifact presentation beyond the current
   outcome/event view, and broaden the rendered browser interaction checks.
 - Migrate the remaining release-trial controllers and projections to RunEngine.

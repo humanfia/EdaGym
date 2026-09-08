@@ -19,7 +19,11 @@ from edagym.config.execution import ExecutionPolicyError, project_environment
 from edagym.config.model import ConfigView, PrivateConfigSnapshot
 from edagym.config.qualification import ConfiguredToolResolution, resolve_profile_tools
 from edagym.config.resolve import ResolvedEnvironmentPair, resolve_snapshot
-from edagym.config.view_qualification import qualify_view, verify_view_receipt
+from edagym.config.view_qualification import (
+    ViewQualificationReceipt,
+    qualify_view,
+    verify_view_receipt,
+)
 from edagym.evaluation import rtl_queue
 from edagym.evaluation.model import OutcomeKind
 from edagym.executors.asset_policy import load_system_asset_source_policy
@@ -37,7 +41,7 @@ from edagym.run.artifact_model import ArtifactManifest, BlobRef, CommittedManife
 from edagym.run.artifacts import ContentAddressedStore, manifest_tree
 from edagym.run.journal import RunJournal
 from edagym.run.journal_storage import JournalError, locked_file, write_exclusive
-from edagym.run.manifest import RunManifest, RunPurpose
+from edagym.run.manifest import QualificationBinding, RunManifest, RunPurpose
 from edagym.run.materialization import populate_disposable_empty_directory
 from edagym.run.model import (
     RUN_EVENT,
@@ -54,6 +58,7 @@ from edagym.run.model import (
     InteractionIntent,
     OperationState,
     Principal,
+    QualificationCompletedEvent,
     RunEvent,
     RunInterface,
     RunProjection,
@@ -146,6 +151,7 @@ class RunEngine:
         run_id: str | None = None,
         creation_intent_digest: Digest | None = None,
         purpose: RunPurpose = RunPurpose.TASK,
+        qualification: QualificationBinding | None = None,
     ) -> RunManifest:
         return RunManifest.from_snapshot(
             run_id=run_id or f"run_{secrets.token_hex(16)}",
@@ -171,6 +177,7 @@ class RunEngine:
             participant=participant,
             evaluator=evaluator,
             purpose=purpose,
+            qualification=qualification,
         )
 
     def _create_run(
@@ -229,6 +236,20 @@ class RunEngine:
         with journal.locked():
             generated = self._generated_task(journal)
             self._bindings(journal)
+            qualification = generated.instance.qualification
+            if journal.manifest.purpose is RunPurpose.QUALIFICATION:
+                self._qualification_inputs(journal, generated)
+            elif (
+                journal.manifest.participant is not None
+                and qualification is not None
+                and qualification.status is QualificationStatus.QUALIFIED
+            ):
+                self._require_task_qualification(
+                    generated,
+                    journal.snapshot(),
+                    journal.manifest.participant,
+                    journal.manifest.evaluator,
+                )
             if not journal.read():
                 qualification = generated.instance.qualification
                 reason = None
@@ -240,13 +261,6 @@ class RunEngine:
                         reason = "task_qualification_required"
                     elif journal.manifest.participant is None:
                         reason = "frozen_view_unavailable"
-                    else:
-                        self._require_task_qualification(
-                            generated,
-                            journal.snapshot(),
-                            journal.manifest.participant,
-                            journal.manifest.evaluator,
-                        )
                 self._initialize_run(journal, principal, reason)
             for operation in journal.state().operations:
                 if operation.terminal is None:
@@ -256,6 +270,11 @@ class RunEngine:
             state = journal.state()
             if state.projection.phase is EnginePhase.RUNNING and state.projection.cancel_requested:
                 self._commit_event(journal, EventKind.RUN_CANCELLED, {"reason": "explicit_cancel"})
+            elif (
+                journal.manifest.purpose is RunPurpose.QUALIFICATION
+                and state.projection.phase is EnginePhase.RUNNING
+            ) or state.projection.qualification_instance_id is not None:
+                self._continue_qualification(journal, generated)
             elif state.projection.phase is EnginePhase.RUNNING:
                 for candidate in state.candidates:
                     self._evaluate_candidate(journal, candidate.candidate_id)
@@ -1013,8 +1032,10 @@ class RunEngine:
         snapshot: PrivateConfigSnapshot,
         session_id: str,
         principal: Principal,
+        *,
+        run_id: str | None = None,
     ) -> GeneratedTask:
-        """Execute every declared canary through the same run journal and executor."""
+        """Execute or resume the declared canaries under one immutable run identity."""
         self._require_implementation()
         if snapshot.configuration.sites[0].state_root != self.state_root:
             raise EngineError("snapshot belongs to another private state root")
@@ -1026,6 +1047,24 @@ class RunEngine:
                 }
             ),
         )
+        if run_id is not None:
+            self._authorize(run_id, principal)
+            if (self.runs_root / run_id).exists():
+                journal = self._journal_for(run_id, principal)
+                manifest = journal.manifest
+                if (
+                    manifest.purpose is not RunPurpose.QUALIFICATION
+                    or manifest.task_instance_digest != generated.instance.digest
+                    or manifest.private_config_snapshot_digest != snapshot.digest
+                    or manifest.session_id != session_id
+                ):
+                    raise EngineError("qualification retry differs from its frozen run")
+                result = self.resume(run_id, principal)
+                if result.qualification_instance_id is None:
+                    raise EngineError("qualification run has no completed result")
+                return TaskFactory().load(self.state_root, result.qualification_instance_id)
+        if not isinstance(generated.task.qualification, FlowQualificationSpec):
+            raise EngineError("task does not declare flow qualification canaries")
         TaskFactory().persist(generated, self.state_root)
         pair = resolve_snapshot(snapshot)
         resolutions = resolve_profile_tools(pair)
@@ -1033,60 +1072,158 @@ class RunEngine:
         views = tuple(qualify_view(pair, view, resolutions) for view in ConfigView)
         for environment, receipt in zip(environments, views, strict=True):
             verify_view_receipt(pair, environment, receipt)
-        contract = generated.task.qualification
-        if not isinstance(contract, FlowQualificationSpec):
-            raise EngineError("task does not declare flow qualification canaries")
         oracle = rtl_queue.check_oracle(
             rtl_queue.QueueOracleContract.model_validate_json(
                 generated.contents["verifier/oracle.json"]
             ),
             generated.contents["verifier/vectors.txt"],
         )
+        oracle_root = private_directory(self.state_root / "qualifications" / "oracles", create=True)
+        write_private(oracle_root / f"{oracle.digest[7:]}.json", canonical_bytes(oracle))
         manifest = self._manifest(
             generated,
             snapshot,
             session_id,
             principal,
+            run_id=run_id,
             participant=environments[0],
             evaluator=environments[1],
             purpose=RunPurpose.QUALIFICATION,
+            qualification=QualificationBinding(
+                participant_view_digest=views[0].digest,
+                evaluator_view_digest=views[1].digest,
+                independent_evidence_digest=oracle.digest,
+            ),
         )
         self._create_run(manifest, principal, snapshot=snapshot, unavailable_reason=None)
         journal = self._journal_for(manifest.run_id, principal)
-        resources = {item.resource_id: item for item in generated.task.resources}
         with journal.locked():
-            for resource_id in (
+            return self._continue_qualification(journal, generated)
+
+    def _qualification_inputs(
+        self, journal: RunJournal, generated: GeneratedTask
+    ) -> tuple[
+        tuple[ViewQualificationReceipt, ...],
+        rtl_queue.QueueOracleEvidence,
+    ]:
+        binding = journal.manifest.qualification
+        if binding is None:
+            raise EngineError("qualification run has no frozen evidence inputs")
+        root = self.state_root / "qualifications"
+        views = tuple(
+            ViewQualificationReceipt.model_validate_json(
+                read_private(root / "views" / f"{digest[7:]}.json")
+            )
+            for digest in (binding.participant_view_digest, binding.evaluator_view_digest)
+        )
+        oracle = rtl_queue.QueueOracleEvidence.model_validate_json(
+            read_private(root / "oracles" / f"{binding.independent_evidence_digest[7:]}.json")
+        )
+        if (
+            tuple(item.digest for item in views)
+            != (binding.participant_view_digest, binding.evaluator_view_digest)
+            or tuple(item.view for item in views) != tuple(ConfigView)
+            or oracle.digest != binding.independent_evidence_digest
+        ):
+            raise EngineError("qualification inputs differ from the frozen manifest")
+        expected = rtl_queue.check_oracle(
+            rtl_queue.QueueOracleContract.model_validate_json(
+                generated.contents["verifier/oracle.json"]
+            ),
+            generated.contents["verifier/vectors.txt"],
+        )
+        if oracle != expected:
+            raise EngineError("qualification oracle differs from its declared task")
+        pair = resolve_snapshot(journal.snapshot())
+        for environment, receipt in zip(
+            (journal.manifest.participant, journal.manifest.evaluator), views, strict=True
+        ):
+            if environment is None:
+                raise EngineError("qualification run has no frozen execution view")
+            verify_view_receipt(pair, environment, receipt)
+        return views, oracle
+
+    def _continue_qualification(
+        self, journal: RunJournal, generated: GeneratedTask
+    ) -> GeneratedTask:
+        views, oracle = self._qualification_inputs(journal, generated)
+        contract = generated.task.qualification
+        if not isinstance(contract, FlowQualificationSpec):
+            raise EngineError("task does not declare flow qualification canaries")
+        state = journal.state()
+        publication = (
+            state.events[-1]
+            if state.events and isinstance(state.events[-1], QualificationCompletedEvent)
+            else None
+        )
+        if publication is None:
+            if (
+                state.projection.phase is not EnginePhase.RUNNING
+                or state.projection.cancel_requested
+            ):
+                raise EngineError("qualification run cannot continue after cancellation")
+            resources = {item.resource_id: item for item in generated.task.resources}
+            required = (
                 contract.feasibility_witness_resource,
                 *contract.negative_candidate_resources,
-            ):
+            )
+            if any(item.candidate_id not in required for item in state.candidates):
+                raise EngineError("qualification run contains an undeclared candidate")
+            for resource_id in required:
                 submission = self._commit_files(
                     journal,
                     InvocationView.EVALUATOR,
                     {"dut.sv": generated.contents[resources[resource_id].path]},
                 )
-                self._commit_event(
-                    journal,
-                    EventKind.CANDIDATE_SUBMITTED,
-                    {"candidate_id": resource_id, "submission": submission},
-                    visibility=Visibility.VERIFIER,
+                existing = next(
+                    (
+                        item
+                        for item in journal.state().candidates
+                        if item.candidate_id == resource_id
+                    ),
+                    None,
                 )
-                self._evaluate_candidate(journal, resource_id)
-            self._commit_event(
-                journal, EventKind.RUN_COMPLETED, {"reason": "qualification_finished"}
-            )
-            evidence = qualification_from_run(
-                generated.instance, generated.task, journal.record(), views, oracle
-            )
-        root = private_directory(self.state_root / "qualifications" / "tasks", create=True)
-        name = canonical_digest(evidence.qualification, domain="task-qualification-evidence-v1")[7:]
-        write_private(root / f"{name}.json", canonical_bytes(evidence))
+                if existing is None:
+                    self._commit_event(
+                        journal,
+                        EventKind.CANDIDATE_SUBMITTED,
+                        {"candidate_id": resource_id, "submission": submission},
+                        visibility=Visibility.VERIFIER,
+                    )
+                elif existing.submission != submission:
+                    raise EngineError("qualification candidate differs from its declared source")
+                if self._evaluate_candidate(journal, resource_id) is None:
+                    if journal.state().projection.phase is EnginePhase.RUNNING:
+                        self._commit_event(
+                            journal, EventKind.RUN_CANCELLED, {"reason": "explicit_cancel"}
+                        )
+                    raise EngineError("qualification run was cancelled")
+            record = journal.record()
+        else:
+            complete = journal.record()
+            record = complete.prefix(complete.commits[-1].previous_record_digest)
+        evidence = qualification_from_run(generated.instance, generated.task, record, views, oracle)
         qualified = replace(
             generated,
             instance=generated.instance.model_copy(
                 update={"qualification": evidence.qualification}
             ),
         )
+        if publication is not None and (
+            publication.payload.instance_id != qualified.instance_id
+            or publication.payload.evidence_digest != evidence.digest
+        ):
+            raise EngineError("qualification publication differs from its journal evidence")
+        root = private_directory(self.state_root / "qualifications" / "tasks", create=True)
+        name = canonical_digest(evidence.qualification, domain="task-qualification-evidence-v1")[7:]
+        write_private(root / f"{name}.json", canonical_bytes(evidence))
         TaskFactory().persist(qualified, self.state_root)
+        if publication is None:
+            self._commit_event(
+                journal,
+                EventKind.QUALIFICATION_COMPLETED,
+                {"instance_id": qualified.instance_id, "evidence_digest": evidence.digest},
+            )
         return qualified
 
     def _require_task_qualification(
@@ -1115,31 +1252,25 @@ class RunEngine:
             source.manifest.evaluator,
         ) != (participant, evaluator):
             raise EngineError("task qualification run has different view bindings")
-        record = source.record()
-        if canonical_digest(record, domain="run-record-v2") != evidence.run_record_digest:
-            raise EngineError("task qualification run evidence is corrupt")
+        complete = source.record()
+        if not complete.events or not isinstance(complete.events[-1], QualificationCompletedEvent):
+            raise EngineError("task qualification has not published its result")
+        publication = complete.events[-1]
+        if (
+            publication.payload.instance_id != generated.instance_id
+            or publication.payload.evidence_digest != evidence.digest
+        ):
+            raise EngineError("task qualification publication is corrupt")
+        record = complete.prefix(evidence.journal_head_digest)
         original = self._generated_task(source)
+        views, oracle = self._qualification_inputs(source, original)
         if original.task != generated.task or original.contents != generated.contents:
             raise EngineError("qualified task differs from its executed canaries")
-        oracle = rtl_queue.check_oracle(
-            rtl_queue.QueueOracleContract.model_validate_json(
-                generated.contents["verifier/oracle.json"]
-            ),
-            generated.contents["verifier/vectors.txt"],
-        )
         if (
-            oracle != evidence.oracle
-            or qualification_from_run(
-                original.instance, original.task, record, evidence.views, oracle
-            )
+            qualification_from_run(original.instance, original.task, record, views, oracle)
             != evidence
         ):
             raise EngineError("task qualification does not replay from its execution facts")
-        pair = resolve_snapshot(snapshot)
-        if tuple(item.view for item in evidence.views) != tuple(ConfigView):
-            raise EngineError("task qualification does not cover both filesystem views")
-        for environment, receipt in zip((participant, evaluator), evidence.views, strict=True):
-            verify_view_receipt(pair, environment, receipt)
         store = self._store(source, InvocationView.EVALUATOR)
         resources = {item.resource_id: item for item in generated.task.resources}
         state = source.state()

@@ -10,10 +10,13 @@ import httpx
 import pytest
 
 from edagym.authoring.factory import GeneratedTask, GenerationRequest, TaskFactory
+from edagym.authoring.qualification import QualificationRunEvidence
+from edagym.canonical import canonical_digest
 from edagym.config import initialize_config, resolve_profile
 from edagym.config.model import EdaGymConfig, PrivateConfigSnapshot
 from edagym.evaluation.model import OutcomeKind
 from edagym.executors.model import ExecutionFailureKind
+from edagym.policy.runtime_storage import PrivateStorageError
 from edagym.run.journal import RunJournal
 from edagym.run.model import (
     EditPayload,
@@ -260,3 +263,37 @@ def test_http_cancel_reaches_a_running_tool(
             assert app.engine.gc(run_id, app.principal)
 
     asyncio.run(exercise())
+
+
+def test_resume_requires_published_qualification_and_recovers_derived_evidence(
+    configured_task: tuple[EdaGymConfig, PrivateConfigSnapshot, GeneratedTask],
+) -> None:
+    config, snapshot, qualified = configured_task
+    state_root = snapshot.configuration.sites[0].state_root
+    engine = RunEngine(state_root)
+    principal = Principal(principal_id=config.web.principal_id)
+    run = engine.prepare_task(qualified, snapshot, config.sessions[0].session_id, principal)
+    journal = RunJournal.open(state_root / "runs" / run.run_id)
+    before = journal.record()
+    name = canonical_digest(
+        qualified.instance.qualification, domain="task-qualification-evidence-v1"
+    )[7:]
+    receipt = state_root / "qualifications" / "tasks" / f"{name}.json"
+    content = receipt.read_bytes()
+    evidence = QualificationRunEvidence.model_validate_json(content)
+    source = RunJournal.open(state_root / "runs" / evidence.run_id)
+    publication = source.record()
+    receipt.unlink()
+    try:
+        with pytest.raises(PrivateStorageError):
+            engine.resume(run.run_id, principal)
+        assert journal.record() == before
+        engine.resume(evidence.run_id, principal)
+        assert receipt.read_bytes() == content
+        assert source.record() == publication
+        assert engine.resume(run.run_id, principal) == run
+    finally:
+        if not receipt.exists():
+            engine.resume(evidence.run_id, principal)
+        engine.cancel(run.run_id, principal)
+        engine.gc(run.run_id, principal)

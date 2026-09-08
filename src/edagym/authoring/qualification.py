@@ -9,7 +9,9 @@ from edagym.config.view_qualification import ViewQualificationReceipt
 from edagym.evaluation.model import OutcomeKind
 from edagym.evaluation.rtl_queue import QueueOracleEvidence
 from edagym.run.journal import replay
+from edagym.run.manifest import QualificationBinding, RunPurpose
 from edagym.run.model import (
+    EnginePhase,
     OperationPreparedEvent,
     OperationRunningEvent,
     OperationTerminalEvent,
@@ -145,7 +147,7 @@ class QualificationRunEvidence(StrictModel):
     """Task admission binds its actual run, views, and independent oracle check."""
 
     run_id: Identifier
-    run_record_digest: Digest
+    journal_head_digest: Digest
     snapshot_digest: Digest
     views: tuple[ViewQualificationReceipt, ...]
     oracle: QueueOracleEvidence
@@ -153,7 +155,7 @@ class QualificationRunEvidence(StrictModel):
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="task-qualification-run-evidence-v1")
+        return canonical_digest(self, domain="task-qualification-run-evidence-v2")
 
 
 def qualification_from_run(
@@ -165,7 +167,22 @@ def qualification_from_run(
 ) -> QualificationRunEvidence:
     if record.manifest.task_instance_digest != instance.digest:
         raise ValueError("qualification run binds another task instance")
+    if (
+        record.manifest.purpose is not RunPurpose.QUALIFICATION
+        or len(views) != 2
+        or record.manifest.qualification
+        != QualificationBinding(
+            participant_view_digest=views[0].digest,
+            evaluator_view_digest=views[1].digest,
+            independent_evidence_digest=oracle.digest,
+        )
+    ):
+        raise ValueError("qualification inputs differ from the frozen run binding")
     projection = replay(record.manifest, record.events).projection
+    if projection.phase is not EnginePhase.RUNNING or projection.cancel_requested:
+        raise ValueError(
+            "qualification evidence requires the completed canary prefix before publication"
+        )
     resources = {item.resource_id: item for item in task.resources}
     observations = tuple(
         TaskCanaryObservation(
@@ -202,7 +219,7 @@ def qualification_from_run(
         for item in observations
         if item.candidate_resource_id == task.qualification.feasibility_witness_resource
     )
-    record_digest = canonical_digest(record, domain="run-record-v2")
+    head = record.integrity_digest
     qualification = qualify_from_canaries(
         instance,
         task,
@@ -211,13 +228,13 @@ def qualification_from_run(
         independent_evidence_digests=(oracle.digest,),
         reference_evidence_digest=reference.evidence_digest,
         verifier_evidence_digest=canonical_digest(
-            {"verifier": instance.verifier_bundle_digest, "run_record": record_digest},
+            {"verifier": instance.verifier_bundle_digest, "journal_head": head},
             domain="task-verifier-run-evidence-v1",
         ),
     )
     return QualificationRunEvidence(
         run_id=record.manifest.run_id,
-        run_record_digest=record_digest,
+        journal_head_digest=head,
         snapshot_digest=record.manifest.private_config_snapshot_digest,
         views=views,
         oracle=oracle,

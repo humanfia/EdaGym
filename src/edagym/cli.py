@@ -548,6 +548,7 @@ def _add_task_commands(commands: argparse._SubParsersAction[_ArgumentParser]) ->
     source.add_argument("--catalog-root", type=Path)
     source.add_argument("--flow")
     source.add_argument("--instance")
+    qualify.add_argument("--run-id", help="reuse this configured qualification run identity")
     qualify.add_argument("--profile")
     qualify.add_argument("--session", default="human")
     qualify.add_argument("--environment", type=Path)
@@ -1054,6 +1055,7 @@ def _task_qualify(arguments: argparse.Namespace) -> int:
             pair.snapshot,
             arguments.session,
             Principal(principal_id=config.web.principal_id),
+            run_id=arguments.run_id,
         )
         _emit(
             {
