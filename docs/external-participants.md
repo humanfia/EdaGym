@@ -35,6 +35,39 @@ This ephemeral adapter rejects training sessions instead of claiming resume
 semantics it does not implement. Metered campaigns continue to use the
 Responses-compatible participant boundary.
 
+## Native Responses relay
+
+`NativeResponsesRelay` exposes one short-lived trial capability on a private
+Unix socket. It accepts only the fixed Responses path, requires its issued
+bearer token, and rejects requests after the absolute deadline supplied by the
+controller. The caller derives that deadline and the model, effort, service tier,
+and request limits from its frozen run. The relay does not issue upstream access:
+its sender must already have passed `ResponsesBroker` admission.
+
+`NativeResponsesRequest` preserves native message histories, namespace tools,
+and custom tool calls. It fixes the declared model controls, caps output tokens,
+requires stateless streaming, and rejects provider-hosted tools and unsupported
+request fields. Ordinary Responses requests and native streams use the same
+reservation, dispatch, and settlement implementation. Multiple relays can share
+that accounting owner. No token counter lives in the relay.
+
+The transport currently buffers each bounded stream before forwarding it. One
+recognized terminal event with exact provider usage is required. Unknown events,
+incomplete streams, missing usage, and inconsistent terminal receipts are
+failures. Observed rejected response bodies remain private evidence; their
+presence is not asserted to be a valid provider result. Dispatched requests with
+unknown usage retain the conservative charge established by the budget owner.
+Authorization headers are not supplied to transcript observers. The relay refuses
+its capability token in a normalized request body before invoking an observer or
+the provider. Upstream authorization is added only inside the sender. Native
+process-output admission remains part of the unfinished run-event integration.
+
+This transport has been exercised with a native CLI and synthetic provider
+responses inside a network-disabled container. It is not yet the configured
+RunEngine campaign launcher. Messages-wire support, native execution closure
+admission, and the unified run-event adapter remain required before native cells
+can be declared available for scored campaigns.
+
 ## Credential-free campaign preflight
 
 `SyntheticPreflightLauncher` accepts only the sealed rootless-container

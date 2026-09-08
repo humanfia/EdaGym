@@ -5,9 +5,9 @@ from __future__ import annotations
 import http.client
 import json
 import ssl
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from types import TracebackType
-from typing import Any, Protocol, Self, SupportsIndex
+from typing import TYPE_CHECKING, Any, Protocol, Self, SupportsIndex
 from urllib.parse import urlsplit
 
 from pydantic import TypeAdapter, ValidationError
@@ -18,10 +18,12 @@ from edagym.providers.model import (
     FunctionCall,
     FunctionCallStatus,
     OutputText,
+    ProviderContentType,
     ProviderProfile,
     ProviderUsage,
     ReasoningSummary,
     Refusal,
+    RequestTokenClaim,
     ResolvedProviderConfig,
     ResponsesRequest,
     ResponsesResult,
@@ -47,6 +49,9 @@ from edagym.security.credentials import (
 )
 from edagym.security.runtime_surface import RuntimeSurfaceManifest
 from edagym.specs.common import Digest, Identifier, Sensitivity, ServiceTierLabel
+
+if TYPE_CHECKING:
+    from edagym.providers.native_responses import NativeResponsesRequest, NativeResponsesResult
 
 _SERVICE_TIER = TypeAdapter(ServiceTierLabel)
 _BROKER_AUTHORITY = object()
@@ -104,7 +109,21 @@ class ProviderTransport(Protocol):
         """Perform exactly one request to the profile's fixed HTTPS origin."""
 
 
-class ResponsesExchangeObserver(Protocol):
+class ProviderCompletion(Protocol):
+    @property
+    def reported_model(self) -> str: ...
+
+    @property
+    def reported_service_tier(self) -> str | None: ...
+
+    @property
+    def status(self) -> ResponseStatus: ...
+
+    @property
+    def usage(self) -> ProviderUsage | None: ...
+
+
+class ProviderExchangeObserver[Completion: ProviderCompletion](Protocol):
     """Controller-side sink for confidential request and response evidence."""
 
     def request_reserved(
@@ -122,8 +141,16 @@ class ResponsesExchangeObserver(Protocol):
         self,
         *,
         response_body: bytes,
-        result: ResponsesResult,
+        result: Completion,
     ) -> None: ...
+
+    def response_rejected(self, *, response_body: bytes) -> None:
+        """Retain an observed body without asserting a valid provider result."""
+
+        ...
+
+
+ResponsesExchangeObserver = ProviderExchangeObserver[ResponsesResult]
 
 
 class DirectHttpsTransport:
@@ -473,27 +500,79 @@ class ResponsesCampaign:
         request: ResponsesRequest,
         observer: ResponsesExchangeObserver | None = None,
     ) -> ResponsesResult:
+        def decode(raw: RawHttpResponse) -> ResponsesResult:
+            media_type = raw.headers.get("content-type", "").split(";", 1)[0].strip().casefold()
+            if media_type != ProviderContentType.JSON:
+                raise ProviderProtocolError("provider success response is not JSON")
+            result = _decode_result(raw.body)
+            _validate_tool_calls(request, result)
+            return result
+
+        return self._metered_request(
+            trial_id=trial_id,
+            request_key=request_key,
+            requested_model=request.model,
+            claim=request.token_claim,
+            body=request._wire_body(),
+            response_type=ProviderContentType.JSON,
+            decode=decode,
+            observer=observer,
+        )
+
+    def request_native(
+        self,
+        *,
+        trial_id: Identifier,
+        request_key: Identifier,
+        request: NativeResponsesRequest,
+        observer: ProviderExchangeObserver[NativeResponsesResult],
+    ) -> NativeResponsesResult:
+        """Account for a native streaming request through the same reservation owner."""
+
+        from edagym.providers.native_responses import decode_native_response
+
+        return self._metered_request(
+            trial_id=trial_id,
+            request_key=request_key,
+            requested_model=request.model,
+            claim=request.token_claim,
+            body=request.wire_body,
+            response_type=ProviderContentType.EVENT_STREAM,
+            decode=decode_native_response,
+            observer=observer,
+        )
+
+    def _metered_request[Completion: ProviderCompletion](
+        self,
+        *,
+        trial_id: Identifier,
+        request_key: Identifier,
+        requested_model: str,
+        claim: RequestTokenClaim,
+        body: bytes,
+        response_type: ProviderContentType,
+        decode: Callable[[RawHttpResponse], Completion],
+        observer: ProviderExchangeObserver[Completion] | None,
+    ) -> Completion:
         if self._closed:
             raise ProviderProtocolError("provider campaign is closed")
         if self._bound_trial_id is not None and trial_id != self._bound_trial_id:
             raise ProviderProtocolError("provider sender is bound to another campaign trial")
         if self._bound_trial_id is not None and observer is None:
             raise ProviderProtocolError("campaign provider requests require a run journal observer")
-        claim = request.token_claim
-        body = request._wire_body()
         if len(body) > MAX_PROVIDER_TRANSCRIPT_REQUEST_BYTES:
             raise ProviderProtocolError("serialized request exceeds the wire byte limit")
         reservation = self._budget.reserve_provider_attempt(
             trial_id=trial_id,
             request_key=request_key,
-            requested_model=request.model,
+            requested_model=requested_model,
             token_claim=claim,
             security_binding=self._security_binding,
         )
         try:
             headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
+                "Accept": response_type.value,
+                "Content-Type": ProviderContentType.JSON.value,
             }
             self._access.credential.authorize(
                 headers,
@@ -513,6 +592,7 @@ class ResponsesCampaign:
             raise
 
         reservation.mark_dispatched()
+        raw: RawHttpResponse | None = None
         try:
             raw = self._transport.exchange(
                 profile=self._configuration.profile,
@@ -521,14 +601,13 @@ class ResponsesCampaign:
             )
             if not 200 <= raw.status < 300:
                 raise ProviderHttpError(raw.status)
-            if not raw.headers.get("content-type", "").casefold().startswith(
-                "application/json"
-            ):
-                raise ProviderProtocolError("provider success response is not JSON")
-            result = _decode_result(raw.body)
-            _validate_tool_calls(request, result)
+            result = decode(raw)
         except BaseException as error:
-            reservation.settle_failed(failure_condition=_retry_condition(error))
+            try:
+                if raw is not None and observer is not None:
+                    observer.response_rejected(response_body=raw.body)
+            finally:
+                reservation.settle_failed(failure_condition=_retry_condition(error))
             raise
         if observer is not None:
             try:

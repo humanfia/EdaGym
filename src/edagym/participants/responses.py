@@ -766,6 +766,20 @@ class _JournalExchangeRecorder:
         self._journal.transact_events(events)
         self._started = True
 
+    def response_rejected(self, *, response_body: bytes) -> None:
+        record = self._store_transcript(response_body, ProviderTranscriptRole.RESPONSE)
+        self._journal.transact(
+            lambda state: ArtifactRecordedEvent(
+                run_id=state.run_id,
+                sequence=state.next_sequence,
+                event_id=self._event_id_factory(),
+                timestamp=self._clock(),
+                producer=ProducerKind.CONTROLLER,
+                visibility=Visibility.AUTHOR,
+                payload=ArtifactRecordedPayload(record=record),
+            )
+        )
+
     def response_received(
         self,
         *,

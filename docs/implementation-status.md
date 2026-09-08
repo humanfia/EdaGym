@@ -215,6 +215,46 @@ rejected by the frozen implementation identity check; it is not passing evidence
 This is a configuration prerequisite for stage F. It does not implement native
 execution, relay grants, or the RunEngine campaign consumer.
 
+## Native Responses transport and isolated CLI probes
+
+The Responses sender now has one shared pre-dispatch reservation and settlement
+path for ordinary JSON responses and native event streams. The native request
+boundary preserves namespace/custom tools, freezes model controls, caps output,
+and rejects hosted tools. The Unix relay adds a scoped bearer capability, an
+absolute admission deadline, a fixed endpoint, and descriptor-owned socket
+cleanup that also works beneath long private state paths. The stream decoder
+requires exact terminal usage and rejects unsupported or incomplete receipts.
+Observed rejected bodies are retained through the private response observer.
+
+Credential-free experiments ran both installed native CLIs in network-disabled
+containers with individual executable mounts, fresh homes, and a Unix-socket
+fake provider. Both executed a synthetic command while host paths, host ambient
+secrets, and external networking remained unavailable. The Codex executable
+closure needed its code-mode companion. The Claude Code probe also observed an
+auxiliary title request: top-level episode usage omitted it while per-model usage
+included it. The relay must account for such calls at the request boundary.
+
+The native Codex experiment was then routed through the implemented relay and
+shared sender with synthetic credentials and a bounded probe ledger. Two upstream
+requests completed and their synthetic usage matched the ledger. With the request
+cap reduced to one, the second request was refused before reaching the upstream;
+the first request's charge remained committed. These are protocol and accounting
+experiments, not real model capability canaries or benchmark scores.
+
+The full regression suite passed 332 tests in 757.44 seconds (exit 0). A later
+private probe identified that a CLI could copy its relay capability into request
+content. The relay now refuses that value in the normalized body before the
+observer or provider is called, and its refusal reasons use a closed enum. Only
+the relay and its test changed after the full run; all seven affected checks
+passed again in 9.55 seconds (exit 0). Ruff, strict mypy over 216 source files,
+generated schema consistency, and diff checks passed. No test-owned containers
+or mounts remained after validation.
+
+Messages transport, configured native executable admission, credential-source
+selection, and the RunEngine campaign/event joins remain unfinished. The existing
+campaign dispatcher still refuses native cells. The relay experiments do not
+waive that gate or establish native campaign qualification.
+
 ## Remaining integration
 
 - Complete exact-toolset filesystem exclusion qualification.

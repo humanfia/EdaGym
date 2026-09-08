@@ -849,6 +849,9 @@ class _RecordingExchangeObserver:
         assert canary_evidence.receipt.digest == security_binding.canary_receipt_digest
         self.request_body = request_body
 
+    def response_rejected(self, *, response_body: bytes) -> None:
+        self.response_body = response_body
+
     def response_received(
         self,
         *,

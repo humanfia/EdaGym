@@ -98,6 +98,11 @@ class WireProtocol(StrEnum):
     RESPONSES = "responses"
 
 
+class ProviderContentType(StrEnum):
+    JSON = "application/json"
+    EVENT_STREAM = "text/event-stream"
+
+
 class ProviderProfile(StrictModel):
     """Non-secret identity and fixed network target for one provider."""
 
