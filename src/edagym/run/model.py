@@ -14,8 +14,8 @@ from edagym.evaluation.model import ScoringDecision, StageResult
 from edagym.participant_tool_protocol import (
     participant_tool_invocation_id,
 )
+from edagym.run.artifact_model import ArtifactRecord
 from edagym.specs.common import (
-    ArtifactClass,
     Capability,
     Digest,
     Identifier,
@@ -23,10 +23,8 @@ from edagym.specs.common import (
     JcsPositiveInt,
     ModelLabel,
     ProviderResponseStatus,
-    Redistribution,
     SchemaVersion,
     Seed128Hex,
-    Sensitivity,
     ServiceTierLabel,
     StrictModel,
     Visibility,
@@ -138,32 +136,6 @@ class LicenseDenialReason(StrEnum):
     FEATURE_UNAVAILABLE = "feature_unavailable"
     INVALID_LEASE = "invalid_lease"
     PROVIDER_FAILURE = "provider_failure"
-
-
-class BlobRef(StrictModel):
-    digest: Digest
-    size_bytes: Annotated[int, Field(strict=True, ge=0)]
-
-
-class ArtifactRecord(StrictModel):
-    logical_id: Identifier
-    blob: BlobRef
-    media_type: Annotated[str, Field(min_length=1, max_length=127)]
-    artifact_class: ArtifactClass
-    sensitivity: Sensitivity
-    visibility: Visibility
-    redistribution: Redistribution
-
-    @model_validator(mode="after")
-    def validate_persistence_policy(self) -> Self:
-        if self.sensitivity is Sensitivity.SECRET:
-            raise ValueError("secret artifacts cannot be persisted")
-        if self.visibility is Visibility.PUBLIC and (
-            self.sensitivity is not Sensitivity.PUBLIC
-            or self.redistribution is not Redistribution.ALLOWED
-        ):
-            raise ValueError("public artifacts must be public and redistributable")
-        return self
 
 
 class TaskRunBinding(StrictModel):
@@ -339,9 +311,7 @@ class RunBinding(StrictModel):
             RunPurpose.SYNTHETIC_PREFLIGHT,
         }
         if campaign_purpose != (self.campaign is not None):
-            raise ValueError(
-                "campaign trials and synthetic preflights require a campaign binding"
-            )
+            raise ValueError("campaign trials and synthetic preflights require a campaign binding")
         return self
 
     @field_validator("evaluators")
@@ -975,9 +945,7 @@ class ParticipantIncarnationLifecycle(StrictModel):
     def validate_projection(self) -> Self:
         if (self.initial_started_sequence is None) != (not self.incarnations):
             raise ValueError("participant lifecycle start sequence differs from its generations")
-        if (self.pending_termination is None) != (
-            self.pending_termination_sequence is None
-        ):
+        if (self.pending_termination is None) != (self.pending_termination_sequence is None):
             raise ValueError("pending participant termination requires its event sequence")
         if len(self.recoveries) + 1 != len(self.incarnations) and self.incarnations:
             raise ValueError("participant lifecycle recoveries do not connect every generation")
@@ -1072,17 +1040,11 @@ class RunRecord(StrictModel):
                             "provider request bytes must be committed with their request fact"
                         )
                     if (
-                        payload.security_evidence_artifact_id
-                        not in referenced_canary_evidence
-                        and payload.security_evidence_artifact_id
-                        not in recorded_artifacts
+                        payload.security_evidence_artifact_id not in referenced_canary_evidence
+                        and payload.security_evidence_artifact_id not in recorded_artifacts
                     ):
-                        raise ValueError(
-                            "first provider request must commit its canary evidence"
-                        )
-                    referenced_canary_evidence.add(
-                        payload.security_evidence_artifact_id
-                    )
+                        raise ValueError("first provider request must commit its canary evidence")
+                    referenced_canary_evidence.add(payload.security_evidence_artifact_id)
                 expected_sequence += 1
             expected_digest = commit.record_digest
         return self

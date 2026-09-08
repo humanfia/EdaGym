@@ -11,7 +11,12 @@ from typing import Protocol
 from edagym.evaluation.model import StageResult
 from edagym.executors.model import ExecutionResult, InvocationPlan
 from edagym.resolution import StageDriverAssignment
-from edagym.run.model import ArtifactRecord, CandidateState
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
+from edagym.run.model import (
+    CandidateState,
+)
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import ReleaseManifest, TaskInstance
 from edagym.specs.session import SessionSpec

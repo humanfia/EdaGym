@@ -10,10 +10,13 @@ from uuid import UUID
 
 from edagym.evaluation.model import InfrastructureFailureOutcome, StageResult
 from edagym.evaluation.promotion import outcome_promotes
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ArtifactIntegrityError,
-    ArtifactManifest,
     CheckpointMarker,
     ContentAddressedStore,
     manifest_paths,
@@ -22,7 +25,6 @@ from edagym.run.artifacts import (
 )
 from edagym.run.journal import EventConflict, RunJournal, active_license_leases
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CheckpointCommittedEvent,

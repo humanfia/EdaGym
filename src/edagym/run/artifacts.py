@@ -31,7 +31,13 @@ from edagym.policy.secrets import (
     RESTRICTED_CONTENT_RULES,
     ContentRuleScanner,
 )
-from edagym.run.model import ArtifactRecord, BlobRef
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+    BlobRef,
+    CommittedManifest,
+    ManifestEntry,
+)
 from edagym.specs.common import (
     ArtifactClass,
     CanonicalDecimal,
@@ -70,9 +76,7 @@ _ENCRYPTION_KEY_BYTES = 32
 PRIVATE_ARTIFACT_KEY_PROVIDER_ID: Identifier = "edagym_private_cas"
 ARTIFACT_MANIFEST_MEDIA_TYPE = "application/vnd.edagym.artifact-manifest+json"
 SANITIZED_MEASUREMENTS_MEDIA_TYPE = "application/vnd.edagym.measurements+json"
-RAW_MEASUREMENT_LINKS_MEDIA_TYPE = (
-    "application/vnd.edagym.raw-measurement-links+json"
-)
+RAW_MEASUREMENT_LINKS_MEDIA_TYPE = "application/vnd.edagym.raw-measurement-links+json"
 
 
 def candidate_snapshot_artifact_id(run_id: Digest, candidate_id: Identifier) -> Identifier:
@@ -178,61 +182,6 @@ class StoreMetadata(StrictModel):
         return self
 
 
-class ManifestEntry(StrictModel):
-    path: str
-    blob: BlobRef
-    mode: Literal[0o644, 0o755]
-
-    @field_validator("path")
-    @classmethod
-    def normalize_path(cls, value: str) -> str:
-        return validate_relative_path(value)
-
-
-class ArtifactManifest(StrictModel):
-    schema_version: SchemaVersion = 1
-    artifact_class: ArtifactClass
-    sensitivity: Sensitivity
-    visibility: Visibility
-    redistribution: Redistribution
-    entries: tuple[ManifestEntry, ...]
-
-    @field_validator("entries")
-    @classmethod
-    def normalize_entries(cls, value: tuple[ManifestEntry, ...]) -> tuple[ManifestEntry, ...]:
-        return tuple(sorted(value, key=lambda item: item.path))
-
-    @model_validator(mode="after")
-    def validate_manifest(self) -> Self:
-        paths = [entry.path for entry in self.entries]
-        if not paths or len(paths) != len(set(paths)):
-            raise ValueError("artifact manifest paths must be unique and non-empty")
-        path_objects = [PurePosixPath(path) for path in paths]
-        for position, path in enumerate(path_objects):
-            if any(
-                path in other.parents or other in path.parents
-                for other in path_objects[position + 1 :]
-            ):
-                raise ValueError("artifact manifest paths cannot be file-prefix conflicts")
-        if self.sensitivity is Sensitivity.SECRET:
-            raise ValueError("secret data cannot be committed to artifact storage")
-        if self.visibility is Visibility.PUBLIC and (
-            self.sensitivity is not Sensitivity.PUBLIC
-            or self.redistribution is not Redistribution.ALLOWED
-        ):
-            raise ValueError("public manifests require public, redistributable content")
-        return self
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(self, domain="artifact-manifest-v1")
-
-
-class CommittedManifest(StrictModel):
-    semantic_digest: Digest
-    blob: BlobRef
-
-
 class CheckpointMarker(StrictModel):
     schema_version: SchemaVersion = 1
     checkpoint_kind: Literal[
@@ -286,9 +235,8 @@ class SanitizedMeasurement(StrictModel):
 
     @model_validator(mode="after")
     def validate_sample_seeds(self) -> Self:
-        if (
-            len(self.sample_seeds) != len(self.samples)
-            or len(self.sample_seeds) != len(set(self.sample_seeds))
+        if len(self.sample_seeds) != len(self.samples) or len(self.sample_seeds) != len(
+            set(self.sample_seeds)
         ):
             raise ValueError("sanitized samples require unique one-to-one seeds")
         return self
@@ -360,11 +308,7 @@ class ContentAddressedStore:
         root = parent / root.name
         key_path = parent / f"{root.name}.key"
         if not key_path.exists():
-            if (
-                root.exists()
-                and any(private_directory(root).iterdir())
-                and not key_path.exists()
-            ):
+            if root.exists() and any(private_directory(root).iterdir()) and not key_path.exists():
                 raise ArtifactPolicyViolation("an existing private CAS cannot replace its key")
             try:
                 write_private(key_path, os.urandom(_ENCRYPTION_KEY_BYTES))
@@ -941,9 +885,7 @@ class ContentAddressedStore:
     ) -> None:
         credential_scanner.update(chunk)
         if credential_scanner.matched_rule_ids:
-            raise ArtifactPolicyViolation(
-                "artifact content violates the credential policy"
-            )
+            raise ArtifactPolicyViolation("artifact content violates the credential policy")
         restricted_scanner.update(chunk)
         if restricted_scanner.matched_rule_ids and not restricted_content_allowed:
             raise ArtifactPolicyViolation(
@@ -951,9 +893,7 @@ class ContentAddressedStore:
             )
 
     def _retention_rule(self, artifact_class: ArtifactClass) -> ArtifactRetentionRule:
-        return next(
-            rule for rule in self.policy.rules if rule.artifact_class is artifact_class
-        )
+        return next(rule for rule in self.policy.rules if rule.artifact_class is artifact_class)
 
     def _start_envelope(self, stream: IO[bytes]) -> AEADEncryptionContext | None:
         if self._encryption_key is None:
@@ -1091,8 +1031,7 @@ class ContentAddressedStore:
         except (json.JSONDecodeError, ValidationError) as error:
             raise ArtifactIntegrityError("committed manifest is invalid") from error
         if canonical_bytes(manifest) != content or (
-            expected_semantic_digest is not None
-            and manifest.digest != expected_semantic_digest
+            expected_semantic_digest is not None and manifest.digest != expected_semantic_digest
         ):
             raise ArtifactIntegrityError("committed manifest identity is inconsistent")
         for entry in manifest.entries:
@@ -1241,10 +1180,14 @@ def manifest_paths(
 
     normalized = tuple(sorted(validate_relative_path(path) for path in paths))
     path_objects = tuple(PurePosixPath(path) for path in normalized)
-    if not normalized or len(normalized) != len(set(normalized)) or any(
-        left in right.parents or right in left.parents
-        for position, left in enumerate(path_objects)
-        for right in path_objects[position + 1 :]
+    if (
+        not normalized
+        or len(normalized) != len(set(normalized))
+        or any(
+            left in right.parents or right in left.parents
+            for position, left in enumerate(path_objects)
+            for right in path_objects[position + 1 :]
+        )
     ):
         raise ValueError("selected artifact paths must be unique and non-overlapping")
     source_descriptor = _open_owned_directory_path(source)
@@ -1411,12 +1354,8 @@ def _source_tree_identity(
             )
             try:
                 if _file_identity(os.fstat(child_descriptor)) != _file_identity(metadata):
-                    raise ArtifactIntegrityError(
-                        "artifact tree entry changed while it was opened"
-                    )
-                identities.extend(
-                    _source_tree_identity(child_descriptor, prefix=relative)
-                )
+                    raise ArtifactIntegrityError("artifact tree entry changed while it was opened")
+                identities.extend(_source_tree_identity(child_descriptor, prefix=relative))
             finally:
                 os.close(child_descriptor)
             continue
@@ -1455,9 +1394,7 @@ def _manifest_entries_from_directory(
             )
             try:
                 if _file_identity(os.fstat(child_descriptor)) != _file_identity(metadata):
-                    raise ArtifactIntegrityError(
-                        "artifact tree entry changed while it was opened"
-                    )
+                    raise ArtifactIntegrityError("artifact tree entry changed while it was opened")
                 entries.extend(
                     _manifest_entries_from_directory(
                         store,

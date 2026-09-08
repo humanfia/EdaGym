@@ -12,6 +12,9 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ArtifactStoreError,
@@ -20,7 +23,6 @@ from edagym.run.artifacts import (
 )
 from edagym.run.journal import JournalError, replay
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     CandidateSubmittedEvent,
     CheckpointCommittedEvent,

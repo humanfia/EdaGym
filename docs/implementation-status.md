@@ -22,6 +22,9 @@ This branch is an implementation checkpoint, not a completed release.
   KLayout runtime dependency.
 - Encrypted private storage for raw EDA diagnostics and evidence, with an
   owner-only key retained across controller restarts.
+- Content references and immutable artifact manifests have one model owner,
+  independent of journal events and executor types. Their disclosure rules
+  derive from the existing environment policy model.
 - Run-bound rootless execution with durable launch, container identity, terminal,
   and CAS result receipts. A delegated user scope owns each operation's deadline;
   collection and scoped cleanup survive controller loss.
@@ -34,13 +37,13 @@ This branch is an implementation checkpoint, not a completed release.
 
 ## Validation
 
-The full suite reports **321 passed** in 373.90 seconds (exit 0). Retained CLI
+The full suite reports **321 passed** in 371.02 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
 release evidence must cover the corresponding frozen trial and task bindings.
 
-Ruff, strict mypy (207 source files), generated schema consistency, and
+Ruff, strict mypy (208 source files), generated schema consistency, and
 `git diff --check` pass. Actual rootless synthesis uses configured tool identity
 and cgroup limits of 250 millicores, 128 MiB memory, and 32 processes. Icarus
 compilation and simulation use the same resolved installation and preserve

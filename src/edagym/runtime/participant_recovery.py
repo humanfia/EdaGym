@@ -15,8 +15,10 @@ from edagym.participants.execution import (
     close_interrupted_controller_tools,
     recover_interrupted_executor_tools,
 )
-from edagym.run.artifacts import (
+from edagym.run.artifact_model import (
     ArtifactManifest,
+)
+from edagym.run.artifacts import (
     CheckpointMarker,
     ContentAddressedStore,
     manifest_tree,

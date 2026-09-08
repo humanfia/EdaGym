@@ -10,12 +10,14 @@ import stat
 from pathlib import Path, PurePosixPath
 from typing import IO, Literal
 
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ManifestEntry,
+)
 from edagym.run.artifacts import (
     ArtifactIntegrityError,
-    ArtifactManifest,
     ArtifactStoreError,
     ContentAddressedStore,
-    ManifestEntry,
 )
 
 _CHUNK_SIZE = 1024 * 1024

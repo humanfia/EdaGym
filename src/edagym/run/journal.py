@@ -29,9 +29,11 @@ from edagym.evaluation.promotion import (
 )
 from edagym.evaluation.scoring import build_candidate_score, measurement_sample_seeds
 from edagym.participant_tool_protocol import EXECUTOR_PARTICIPANT_TOOL_NAME
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import SANITIZED_MEASUREMENTS_MEDIA_TYPE
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     CandidateScoringState,
     CandidateStageResult,

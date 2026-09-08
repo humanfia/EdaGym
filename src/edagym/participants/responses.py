@@ -40,10 +40,12 @@ from edagym.providers.model import (
     ToolValueKind,
 )
 from edagym.providers.responses import ResponsesExchangeObserver
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.run.journal import RunJournal
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     HarnessRunActor,

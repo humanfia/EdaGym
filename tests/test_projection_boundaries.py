@@ -22,18 +22,20 @@ from edagym.projections import (
     project_nemo_record,
 )
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+    BlobRef,
+    ManifestEntry,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
-    ArtifactManifest,
     ContentAddressedStore,
-    ManifestEntry,
 )
 from edagym.run.journal import RunJournal
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
-    BlobRef,
     CandidateSubmittedEvent,
     CandidateSubmittedPayload,
     CheckpointCommittedEvent,

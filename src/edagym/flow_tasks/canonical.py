@@ -24,14 +24,21 @@ from edagym.flow_tasks.model import (
     RegexNumberRule,
     ToolCommand,
 )
-from edagym.run.artifacts import (
-    ARTIFACT_MANIFEST_MEDIA_TYPE,
+from edagym.run.artifact_model import (
     ArtifactManifest,
-    ContentAddressedStore,
+    ArtifactRecord,
+    BlobRef,
     ManifestEntry,
 )
+from edagym.run.artifacts import (
+    ARTIFACT_MANIFEST_MEDIA_TYPE,
+    ContentAddressedStore,
+)
 from edagym.run.journal import replay
-from edagym.run.model import ArtifactRecord, BlobRef, RunRecord, StopReason
+from edagym.run.model import (
+    RunRecord,
+    StopReason,
+)
 from edagym.specs.common import ArtifactClass
 from edagym.specs.environment import (
     BrokeredHostToolExecutor,

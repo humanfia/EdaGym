@@ -29,8 +29,10 @@ from edagym.drivers.qualification import (
     QualificationOutcome,
 )
 from edagym.drivers.rootless_image import RootlessImageConfiguration
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import ContentAddressedStore, artifact_policy_digest
-from edagym.run.model import ArtifactRecord
 from edagym.specs.common import ArtifactClass
 from edagym.specs.environment import EnvironmentSpec, FilesystemScope, ImageToolLocator
 

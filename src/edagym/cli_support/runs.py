@@ -25,6 +25,9 @@ from edagym.participants.controller import CandidateSnapshot, ParticipantControl
 from edagym.participants.execution import participant_dispatch_lock
 from edagym.participants.model import ParticipantIntent, ParticipantView, SubmitCandidateIntent
 from edagym.resolution import ResolutionError, resolve_run
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ArtifactStoreError,
@@ -45,7 +48,6 @@ from edagym.run.journal import (
     unresolved_tool_requests,
 )
 from edagym.run.model import (
-    ArtifactRecord,
     EvaluationCompletedEvent,
     EvaluationStartedEvent,
     HumanRunActor,

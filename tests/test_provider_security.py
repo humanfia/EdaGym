@@ -111,9 +111,11 @@ from edagym.providers.trial_security import (
     runtime_surface_binding_for_trial,
 )
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore, EncryptionKey
 from edagym.run.model import (
-    BlobRef,
     CampaignTrialRunBinding,
     ParticipantIncarnationBinding,
     ParticipantIncarnationStartedEvent,

@@ -15,16 +15,18 @@ from edagym.executors.model import JobStateKind as ExecutorJobStateKind
 from edagym.participants.workspace import ToolObservationOutcome
 from edagym.providers.campaign_budget import CampaignResources
 from edagym.providers.campaign_runner import TrialRunOutcome
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+    BlobRef,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
-    ArtifactManifest,
     ContentAddressedStore,
 )
 from edagym.run.journal import participant_tool_dispatches, participant_tool_usage, replay
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
-    BlobRef,
     CandidateSubmittedEvent,
     ControlTransferredEvent,
     InteractionDirection,

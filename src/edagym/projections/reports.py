@@ -40,11 +40,13 @@ from edagym.projections.model import (
     LeaderboardStageOutcome,
     ParticipationKind,
 )
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import SANITIZED_MEASUREMENTS_MEDIA_TYPE
 from edagym.run.journal import RunJournal
 from edagym.run.model import (
     COMPARABLE_TRIAL_STOP_REASONS,
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ControlTransferredEvent,
     EvaluationCompletedEvent,

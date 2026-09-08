@@ -35,10 +35,12 @@ from edagym.participants.model import (
     SubmitCandidateIntent,
     TransferControlIntent,
 )
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import ARTIFACT_MANIFEST_MEDIA_TYPE
 from edagym.run.journal import InvalidTransition, RunJournal, replay
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CandidateSubmittedEvent,

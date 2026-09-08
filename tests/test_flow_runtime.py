@@ -49,8 +49,10 @@ from edagym.flow_tasks.model import (
 )
 from edagym.flow_tasks.qualification import qualify_flow_release
 from edagym.flow_tasks.runtime import CompositeCommandReport
-from edagym.run.artifacts import (
+from edagym.run.artifact_model import (
     ArtifactManifest,
+)
+from edagym.run.artifacts import (
     ArtifactStoreError,
     ContentAddressedStore,
 )

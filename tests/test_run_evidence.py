@@ -28,17 +28,21 @@ from edagym.evaluation import (
 )
 from edagym.evaluation.scoring import measurement_sample_seeds
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+    BlobRef,
+    ManifestEntry,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     PRIVATE_ARTIFACT_KEY_PROVIDER_ID,
     ArtifactIntegrityError,
-    ArtifactManifest,
     ArtifactPolicyViolation,
     ArtifactQuotaExceeded,
     ArtifactStoreError,
     ContentAddressedStore,
     EncryptionKey,
-    ManifestEntry,
     RetainedArtifact,
     manifest_tree,
 )
@@ -57,10 +61,8 @@ from edagym.run.journal import (
     replay,
 )
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
-    BlobRef,
     CandidateSubmittedEvent,
     CandidateSubmittedPayload,
     EvaluationCompletedEvent,

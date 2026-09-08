@@ -13,11 +13,13 @@ import pytest
 
 from edagym.canonical import canonical_bytes
 from edagym.executors.capabilities import ProviderAvailability, probe_local_containment
-from edagym.run.model import (
+from edagym.run.artifact_model import (
     ArtifactRecord,
+    BlobRef,
+)
+from edagym.run.model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
-    BlobRef,
     HarnessRunActor,
     ProducerKind,
     ProviderRequestStartedEvent,

@@ -101,8 +101,11 @@ from edagym.executors.asset_identity import capture_asset_identity
 from edagym.executors.asset_policy import load_system_asset_source_policy
 from edagym.executors.assets import AssetSnapshot
 from edagym.executors.licenses import LeaseState, LicenseLease
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore, EncryptionKey
-from edagym.run.model import ArtifactRecord, BlobRef
 from edagym.specs.common import (
     ArtifactClass,
     Capability,

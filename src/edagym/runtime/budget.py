@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
-    ArtifactManifest,
     ContentAddressedStore,
 )
 from edagym.run.journal import (
@@ -18,7 +21,6 @@ from edagym.run.journal import (
     replay,
 )
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     EvaluationStartedEvent,
     JobStateChangedEvent,

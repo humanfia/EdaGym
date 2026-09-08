@@ -67,12 +67,15 @@ from edagym.participants.execution import (
 )
 from edagym.participants.model import SubmitCandidateIntent
 from edagym.resolution import ResolvedRunPlan, StageDriverAssignment, resolve_run
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     RAW_MEASUREMENT_LINKS_MEDIA_TYPE,
     SANITIZED_MEASUREMENTS_MEDIA_TYPE,
     ArtifactIntegrityError,
-    ArtifactManifest,
     ArtifactPolicyViolation,
     ArtifactQuotaExceeded,
     CheckpointMarker,
@@ -97,7 +100,6 @@ from edagym.run.journal import (
 )
 from edagym.run.materialization import populate_disposable_empty_directory
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CampaignTrialRunBinding,

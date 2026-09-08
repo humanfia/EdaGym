@@ -43,11 +43,13 @@ from edagym.drivers.qualification_verification import (
     _verify_projected_log,
     verify_backend_qualification_source,
 )
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import (
     ContentAddressedStore,
     EncryptionKey,
 )
-from edagym.run.model import ArtifactRecord
 from edagym.specs.common import (
     ArtifactClass,
     Capability,

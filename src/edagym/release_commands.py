@@ -27,8 +27,10 @@ from edagym.policy.repository import (
     RepositorySnapshot,
     bind_repository_snapshot,
 )
+from edagym.run.artifact_model import (
+    BlobRef,
+)
 from edagym.run.artifacts import ArtifactStoreError, ContentAddressedStore
-from edagym.run.model import BlobRef
 from edagym.specs.common import (
     ArtifactClass,
     Digest,

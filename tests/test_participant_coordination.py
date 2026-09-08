@@ -30,11 +30,13 @@ from edagym.participants import (
 )
 from edagym.projections.model import ParticipationKind
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+    BlobRef,
+)
 from edagym.run.artifacts import ARTIFACT_MANIFEST_MEDIA_TYPE
 from edagym.run.journal import RunJournal
 from edagym.run.model import (
-    ArtifactRecord,
-    BlobRef,
     CandidateSubmittedEvent,
     CandidateSubmittedPayload,
     EvaluationCompletedEvent,

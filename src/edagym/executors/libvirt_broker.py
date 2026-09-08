@@ -69,8 +69,10 @@ from edagym.executors.vm_protocol import (
     VmTreeEntryKind,
     encode_vm_message,
 )
+from edagym.run.artifact_model import (
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import BlobRef
 from edagym.specs.common import ArtifactClass, Digest, Identifier, SchemaVersion, StrictModel
 from edagym.specs.environment import (
     ArtifactDisclosure,

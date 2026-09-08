@@ -110,16 +110,18 @@ from edagym.providers.trial_workspace import (
     require_private_directory,
 )
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.run.journal import (
     RunJournal,
     participant_tool_usage,
 )
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
-    BlobRef,
     InteractionDirection,
     InteractionRecordedEvent,
     LicenseDenialReason,

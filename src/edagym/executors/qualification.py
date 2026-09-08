@@ -22,8 +22,10 @@ from edagym.executors.model import (
     JobStateKind,
 )
 from edagym.executors.vm import VmIsolationCleanup
+from edagym.run.artifact_model import (
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore, artifact_policy_digest
-from edagym.run.model import BlobRef
 from edagym.specs.common import (
     ArtifactClass,
     Digest,

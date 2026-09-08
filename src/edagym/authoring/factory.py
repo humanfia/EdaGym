@@ -15,8 +15,10 @@ from edagym.authoring.rtl_repair import DIFFICULTIES, FAMILY, content_digest, ge
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.config.resolve import ResolvedSite
 from edagym.policy.runtime_storage import private_directory, read_private, write_private
+from edagym.run.artifact_model import (
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import BlobRef
 from edagym.specs.common import (
     ArtifactClass,
     Identifier,

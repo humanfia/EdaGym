@@ -48,10 +48,12 @@ from edagym.providers.model import (
 )
 from edagym.providers.responses import ResponsesExchangeObserver
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import ContentAddressedStore, EncryptionKey
 from edagym.run.journal import InvalidTransition, RunJournal
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CampaignTrialRunBinding,

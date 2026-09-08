@@ -9,7 +9,9 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.run.model import BlobRef
+from edagym.run.artifact_model import (
+    BlobRef,
+)
 from edagym.specs.common import ArtifactClass, Capability, Digest, Identifier, StrictModel
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")

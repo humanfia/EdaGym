@@ -53,7 +53,12 @@ from edagym.participants.operation_runtime import (
     materialize_participant_operation_inputs,
     participant_operation_input_digest,
 )
-from edagym.run.artifacts import ArtifactManifest, ContentAddressedStore
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+)
+from edagym.run.artifacts import (
+    ContentAddressedStore,
+)
 from edagym.run.journal import (
     InvalidTransition,
     RunJournal,

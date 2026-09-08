@@ -68,8 +68,11 @@ from edagym.drivers.qualification_resources import QualificationResourceGrant
 from edagym.drivers.rootless_image import RootlessImageConfiguration
 from edagym.drivers.site_container import site_container_license_environment
 from edagym.executors.assets import AssetSnapshot
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+    BlobRef,
+)
 from edagym.run.artifacts import ContentAddressedStore, RetainedArtifact
-from edagym.run.model import ArtifactRecord, BlobRef
 from edagym.specs.common import (
     ArtifactClass,
     Capability,

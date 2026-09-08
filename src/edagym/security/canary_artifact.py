@@ -9,8 +9,10 @@ from typing import Self
 from pydantic import TypeAdapter, ValidationError, model_validator
 
 from edagym.canonical import canonical_bytes, canonical_digest
+from edagym.run.artifact_model import (
+    ArtifactRecord,
+)
 from edagym.run.artifacts import ArtifactStoreError, ContentAddressedStore
-from edagym.run.model import ArtifactRecord
 from edagym.security.canary import CanaryPolicy, CanaryReceipt
 from edagym.security.runtime_surface import RuntimeSurfaceManifest
 from edagym.specs.common import (

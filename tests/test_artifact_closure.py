@@ -9,17 +9,19 @@ from uuid import UUID
 import pytest
 
 from edagym.resolution import resolve_run
+from edagym.run.artifact_model import (
+    ArtifactManifest,
+    ArtifactRecord,
+    ManifestEntry,
+)
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
-    ArtifactManifest,
     ContentAddressedStore,
     EncryptionKey,
-    ManifestEntry,
     artifact_policy_digest,
     candidate_snapshot_artifact_id,
 )
 from edagym.run.model import (
-    ArtifactRecord,
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CampaignTrialRunBinding,
