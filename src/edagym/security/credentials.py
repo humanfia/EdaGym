@@ -14,9 +14,12 @@ from typing import Any, Protocol, SupportsIndex
 from urllib.parse import urlsplit
 
 from edagym.providers.model import (
+    MessagesWire,
+    ProviderAuthorization,
     ProviderDefaults,
     ProviderProfile,
     ResolvedProviderConfig,
+    WireProtocol,
 )
 from edagym.security.canary import (
     CanaryAttestation,
@@ -163,17 +166,26 @@ class CredentialLease:
         self._lock = Lock()
         self._closed = False
 
-    def authorize(self, headers: MutableMapping[str, str], *, profile_digest: Digest) -> None:
-        """Add authorization only for the profile captured with this lease."""
+    def authorize(self, headers: MutableMapping[str, str], *, profile: ProviderProfile) -> None:
+        """Project protocol and credential headers from the bound provider identity."""
 
         with self._lock:
             if self._closed:
                 raise CredentialSecurityError("credential lease is closed")
-            if profile_digest != self._profile_digest:
+            if profile.digest != self._profile_digest:
                 raise CredentialSecurityError("credential lease profile binding does not match")
-            if any(name.casefold() == "authorization" for name in headers):
-                raise CredentialSecurityError("authorization header is already present")
-            headers["Authorization"] = "Bearer " + self._value.decode("utf-8")
+            if any(
+                name.casefold() in {"authorization", "x-api-key", "anthropic-version"}
+                for name in headers
+            ):
+                raise CredentialSecurityError("provider identity header is already present")
+            value = self._value.decode("utf-8")
+            if profile.wire.authorization is ProviderAuthorization.BEARER:
+                headers["Authorization"] = "Bearer " + value
+            else:
+                headers["x-api-key"] = value
+            if isinstance(profile.wire, MessagesWire):
+                headers["anthropic-version"] = profile.wire.api_version
 
     def close(self) -> None:
         with self._lock:
@@ -244,6 +256,8 @@ class CodexCredentialSource:
     def __init__(self, *, trusted_profile: ProviderProfile) -> None:
         if type(trusted_profile) is not ProviderProfile:
             raise TypeError("credential sources require one explicit trusted provider profile")
+        if trusted_profile.wire_protocol is not WireProtocol.RESPONSES:
+            raise CredentialFormatError("Codex credentials require a Responses provider profile")
         self._trusted_profile = trusted_profile
 
     def inspect_profile(self) -> ResolvedProviderConfig:
@@ -332,9 +346,7 @@ def _read_owned_private_file(directory_fd: int, name: str, *, uid: int) -> bytea
     try:
         fd = os.open(name, _OPEN_FLAGS, dir_fd=directory_fd)
     except OSError:
-        raise CredentialSecurityError(
-            "credential file is not a non-symlink regular file"
-        ) from None
+        raise CredentialSecurityError("credential file is not a non-symlink regular file") from None
     try:
         before = os.fstat(fd)
         mode = stat.S_IMODE(before.st_mode)
@@ -409,9 +421,7 @@ def _decode_config_v1(
         or supports_websockets is not False
     ):
         raise CredentialFormatError("selected provider does not match the supported wire contract")
-    if base_url is not None and _responses_api_base(base_url) != _trusted_api_base(
-        trusted_profile
-    ):
+    if base_url is not None and _responses_api_base(base_url) != _trusted_api_base(trusted_profile):
         raise CredentialFormatError("selected provider base does not match its trusted identity")
     model = decoded.get("model")
     reasoning = decoded.get("model_reasoning_effort")
@@ -453,7 +463,7 @@ def _responses_api_base(value: str) -> str:
         profile = ProviderProfile(
             logical_id="config_probe",
             origin=f"{parsed.scheme}://{parsed.netloc}",
-            responses_path=f"{path}/responses",
+            request_path=f"{path}/responses",
         )
     except ValueError:
         raise CredentialFormatError("selected provider base is invalid") from None
@@ -462,9 +472,9 @@ def _responses_api_base(value: str) -> str:
 
 def _trusted_api_base(profile: ProviderProfile) -> str:
     suffix = "/responses"
-    if not profile.responses_path.endswith(suffix):
+    if not profile.request_path.endswith(suffix):
         raise CredentialFormatError("trusted provider does not expose a Responses API base")
-    return f"{profile.origin}{profile.responses_path.removesuffix(suffix)}"
+    return f"{profile.origin}{profile.request_path.removesuffix(suffix)}"
 
 
 def _decode_auth_v1(raw: bytes | bytearray, *, profile_digest: Digest) -> CredentialLease:

@@ -321,7 +321,7 @@ def discover_authenticated_provider_models(
         headers = {"Accept": "application/json"}
         access.credential.authorize(
             headers,
-            profile_digest=configuration.profile.digest,
+            profile=configuration.profile,
         )
         response = (transport or DirectHttpsTransport()).retrieve_models(
             profile=configuration.profile,

@@ -51,7 +51,7 @@ def _configuration(*, models_path: str | None) -> ResolvedProviderConfig:
         profile=ProviderProfile(
             logical_id="declared.gateway",
             origin="https://gateway.test",
-            responses_path="/v1/responses",
+            request_path="/v1/responses",
             models_path=models_path,
         ),
         defaults=ProviderDefaults(requested_model="default-route"),

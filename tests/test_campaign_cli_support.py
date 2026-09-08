@@ -90,7 +90,7 @@ def test_campaign_discovery_command_requires_one_canonical_document(tmp_path: Pa
         profile=ProviderProfile(
             logical_id="declared.gateway",
             origin="https://gateway.test",
-            responses_path="/v1/responses",
+            request_path="/v1/responses",
         ),
         defaults=ProviderDefaults(requested_model="route-frontier"),
     )
@@ -179,7 +179,9 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
     release = release_manifest(task, instance, environment)
     configuration = ResolvedProviderConfig(
         selected_provider_label="test_gateway",
-        profile=ProviderProfile(logical_id="test.gateway", origin="https://gateway.test"),
+        profile=ProviderProfile(
+            logical_id="test.gateway", origin="https://gateway.test", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(
             requested_model=_ROUTE,
             reasoning_effort="high",

@@ -1,4 +1,4 @@
-"""Typed, secret-free contracts for Responses-compatible providers."""
+"""Typed, secret-free provider identities and request contracts."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from edagym.specs.common import (
     JcsNonNegativeInt,
     JcsPositiveInt,
     ProviderResponseStatus,
-    SchemaVersion,
     Sensitivity,
     ServiceTierLabel,
     StrictModel,
@@ -90,12 +89,28 @@ def _https_origin(value: str) -> str:
     return f"https://{host}{port}"
 
 
-class ProviderKind(StrEnum):
-    RESPONSES_GATEWAY = "responses_compatible_gateway"
-
-
 class WireProtocol(StrEnum):
     RESPONSES = "responses"
+    MESSAGES = "messages"
+
+
+class ProviderAuthorization(StrEnum):
+    BEARER = "bearer"
+    API_KEY = "x_api_key"
+
+
+class ResponsesWire(StrictModel):
+    protocol: Literal[WireProtocol.RESPONSES] = WireProtocol.RESPONSES
+    authorization: Literal[ProviderAuthorization.BEARER] = ProviderAuthorization.BEARER
+
+
+class MessagesWire(StrictModel):
+    protocol: Literal[WireProtocol.MESSAGES] = WireProtocol.MESSAGES
+    authorization: ProviderAuthorization
+    api_version: Literal["2023-06-01"] = "2023-06-01"
+
+
+ProviderWire = Annotated[ResponsesWire | MessagesWire, Field(discriminator="protocol")]
 
 
 class ProviderContentType(StrEnum):
@@ -106,26 +121,22 @@ class ProviderContentType(StrEnum):
 class ProviderProfile(StrictModel):
     """Non-secret identity and fixed network target for one provider."""
 
-    schema_version: SchemaVersion = 1
-    provider_kind: Literal[ProviderKind.RESPONSES_GATEWAY] = ProviderKind.RESPONSES_GATEWAY
+    schema_version: Literal[2] = 2
     logical_id: Identifier
     origin: str
-    responses_path: str = "/v1/responses"
+    request_path: str
     models_path: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
     )
-    wire_protocol: Literal[WireProtocol.RESPONSES] = WireProtocol.RESPONSES
-    authorization: Literal["bearer"] = "bearer"
-    supports_websockets: Literal[False] = False
-    response_storage: Literal[False] = False
+    wire: ProviderWire = Field(default_factory=ResponsesWire)
 
     @field_validator("origin")
     @classmethod
     def validate_origin(cls, value: str) -> str:
         return _https_origin(value)
 
-    @field_validator("responses_path", "models_path")
+    @field_validator("request_path", "models_path")
     @classmethod
     def validate_endpoint_path(cls, value: str | None) -> str | None:
         if value is None:
@@ -146,13 +157,17 @@ class ProviderProfile(StrictModel):
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="provider-profile-v1")
+        return canonical_digest(self, domain="provider-profile-v2")
+
+    @property
+    def wire_protocol(self) -> WireProtocol:
+        return self.wire.protocol
 
 
 RUST_CAT_PROFILE = ProviderProfile(
     logical_id="rust.cat",
     origin="https://rust.cat",
-    responses_path="/codex/v1/responses",
+    request_path="/codex/v1/responses",
 )
 
 
@@ -167,14 +182,14 @@ class ProviderDefaults(StrictModel):
 class ResolvedProviderConfig(StrictModel):
     """Secret-free interpretation of a trusted local provider configuration."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     selected_provider_label: ProviderConfigLabel
     profile: ProviderProfile
     defaults: ProviderDefaults
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="provider-config-projection-v1")
+        return canonical_digest(self, domain="provider-config-projection-v2")
 
 
 class InputRole(StrEnum):
@@ -382,14 +397,11 @@ class ResponsesRequest:
         continuation_outputs = tuple(
             item for item in inputs if isinstance(item, FunctionCallOutput)
         )
-        continuation_inputs = tuple(
-            item for item in inputs if isinstance(item, FunctionCallInput)
-        )
+        continuation_inputs = tuple(item for item in inputs if isinstance(item, FunctionCallInput))
         input_call_ids = [item.call_id for item in continuation_inputs]
         output_call_ids = [item.call_id for item in continuation_outputs]
-        if (
-            len(input_call_ids) != len(set(input_call_ids))
-            or len(output_call_ids) != len(set(output_call_ids))
+        if len(input_call_ids) != len(set(input_call_ids)) or len(output_call_ids) != len(
+            set(output_call_ids)
         ):
             raise ValueError("function call output identifiers must be unique")
         if set(input_call_ids) != set(output_call_ids):

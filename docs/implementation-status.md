@@ -255,6 +255,29 @@ selection, and the RunEngine campaign/event joins remain unfinished. The existin
 campaign dispatcher still refuses native cells. The relay experiments do not
 waive that gate or establish native campaign qualification.
 
+## Provider wire identity migration
+
+Provider profiles and resolved provider configurations now use version two.
+The profile owns one explicit request path and a closed Responses/Messages wire
+configuration. Credential authorization verifies that profile's digest and
+projects its authentication and API-version headers. Caller-supplied identity
+headers and incompatible Codex credential profiles are rejected. Responses
+requests refuse a mismatched protocol before reservation or dispatch.
+
+Generated campaign schemas and existing provider consumers use the new identity.
+Old profile documents and their attestations require regeneration and
+requalification; no legacy-field fallback is retained. Messages request and
+stream parsing, native relay integration, and configured credential-source
+selection remain unfinished. This migration does not enable native campaigns.
+
+The focused provider checks passed 33 tests in 14.64 seconds. The subsequent
+full suite passed 336 tests in 759.24 seconds (exit 0), with source, test, and
+schema identities unchanged during the run. Ruff, strict mypy over 216 source
+files, generated schema consistency, and diff checks passed. The new evidence
+uses real local TLS to verify profile-bound endpoints and credential headers,
+and verifies that protocol mismatch produces neither dispatch nor reservation.
+No test-owned containers or mounts remained after validation.
+
 ## Remaining integration
 
 - Complete exact-toolset filesystem exclusion qualification.

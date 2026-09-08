@@ -37,6 +37,26 @@ Responses-compatible participant boundary.
 
 ## Native Responses relay
 
+Provider identities use the version-two `ProviderProfile`: an explicit
+`request_path` and a closed `ResponsesWire` or `MessagesWire` configuration.
+`CredentialLease.authorize` verifies the complete profile digest before adding
+its credential headers. Responses uses Bearer authorization; Messages explicitly
+selects Bearer or `x-api-key` and pins `anthropic-version` to `2023-06-01`.
+Caller-supplied identity headers are refused. This follows the header contract in
+the [Messages API overview](https://platform.claude.com/docs/en/api/overview).
+
+The version-two profile and resolved-config digest domains replace version one.
+Old profile documents must be regenerated with `request_path` and `wire`; there
+is no legacy-field decoder. Existing attestations and campaign bindings must be
+requalified against the new identity. WebSocket and storage restrictions remain
+owned by the actual request adapters; duplicated always-false profile flags and
+the redundant provider-kind label have been removed.
+
+Messages identity and transport headers are supported, but a Messages request
+adapter is not yet connected. Existing Responses senders reject a mismatched
+wire protocol before reserving or dispatching. A Messages profile alone does
+not qualify a native harness or enable a Messages campaign.
+
 `NativeResponsesRelay` exposes one short-lived trial capability on a private
 Unix socket. It accepts only the fixed Responses path, requires its issued
 bearer token, and rejects requests after the absolute deadline supplied by the

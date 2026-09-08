@@ -28,6 +28,7 @@ from edagym.providers.model import (
     ResponsesRequest,
     ResponsesResult,
     ResponseStatus,
+    WireProtocol,
     immutable_headers,
 )
 from edagym.providers.provider_budget import (
@@ -182,7 +183,7 @@ class DirectHttpsTransport:
         return self._request(
             profile=profile,
             method="POST",
-            path=profile.responses_path,
+            path=profile.request_path,
             headers=headers,
             body=body,
             maximum_response_bytes=MAX_PROVIDER_TRANSCRIPT_RESPONSE_BYTES,
@@ -509,6 +510,7 @@ class ResponsesCampaign:
             return result
 
         return self._metered_request(
+            wire_protocol=WireProtocol.RESPONSES,
             trial_id=trial_id,
             request_key=request_key,
             requested_model=request.model,
@@ -532,6 +534,7 @@ class ResponsesCampaign:
         from edagym.providers.native_responses import decode_native_response
 
         return self._metered_request(
+            wire_protocol=WireProtocol.RESPONSES,
             trial_id=trial_id,
             request_key=request_key,
             requested_model=request.model,
@@ -545,6 +548,7 @@ class ResponsesCampaign:
     def _metered_request[Completion: ProviderCompletion](
         self,
         *,
+        wire_protocol: WireProtocol,
         trial_id: Identifier,
         request_key: Identifier,
         requested_model: str,
@@ -554,6 +558,8 @@ class ResponsesCampaign:
         decode: Callable[[RawHttpResponse], Completion],
         observer: ProviderExchangeObserver[Completion] | None,
     ) -> Completion:
+        if wire_protocol is not self._configuration.profile.wire_protocol:
+            raise ProviderProtocolError("request wire protocol differs from its provider profile")
         if self._closed:
             raise ProviderProtocolError("provider campaign is closed")
         if self._bound_trial_id is not None and trial_id != self._bound_trial_id:
@@ -576,7 +582,7 @@ class ResponsesCampaign:
             }
             self._access.credential.authorize(
                 headers,
-                profile_digest=self._configuration.profile.digest,
+                profile=self._configuration.profile,
             )
             if observer is not None:
                 observer.request_reserved(

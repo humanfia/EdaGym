@@ -118,7 +118,9 @@ def _model_set(*routes: ModelRoute) -> ModelSetManifest:
 def _provider_config() -> ResolvedProviderConfig:
     return ResolvedProviderConfig(
         selected_provider_label="test_gateway",
-        profile=ProviderProfile(logical_id="test.gateway", origin="https://gateway.test"),
+        profile=ProviderProfile(
+            logical_id="test.gateway", origin="https://gateway.test", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="test-default"),
     )
 

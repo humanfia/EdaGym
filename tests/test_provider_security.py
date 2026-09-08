@@ -382,7 +382,7 @@ def test_codex_source_binds_an_optional_base_to_the_explicit_trusted_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert RUST_CAT_PROFILE.responses_path == "/codex/v1/responses"
+    assert RUST_CAT_PROFILE.request_path == "/codex/v1/responses"
     with pytest.raises(TypeError, match="trusted_profile"):
         CodexCredentialSource()  # type: ignore[call-arg]
     home, _ = _codex_home(
@@ -413,7 +413,7 @@ def test_codex_source_binds_an_optional_base_to_the_explicit_trusted_profile(
     untrusted = ProviderProfile(
         logical_id="untrusted.gateway",
         origin="https://gateway.invalid",
-        responses_path="/api/v1/responses",
+        request_path="/api/v1/responses",
     )
     with pytest.raises(CredentialSecurityError, match="another provider"):
         CodexCredentialSource(trusted_profile=untrusted).acquire(
@@ -1123,7 +1123,9 @@ def test_canary_receipt_binds_a_path_free_terminal_runtime_manifest(
 ) -> None:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin="https://localhost:4443"),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     campaign_digest = _digest("manifest-campaign")
@@ -1168,7 +1170,9 @@ def test_canary_receipt_binds_a_path_free_terminal_runtime_manifest(
 def test_canary_rejects_a_grant_bound_to_another_marker(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin="https://localhost:4443"),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     campaign_digest = _digest("marker-binding-campaign")
@@ -1204,7 +1208,9 @@ def test_canary_rejects_and_zeroizes_a_changed_synthetic_credential(
 ) -> None:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin="https://localhost:4443"),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     campaign_digest = _digest("credential-file-campaign")
@@ -1243,7 +1249,9 @@ def test_canary_binding_and_budget_gate_run_before_network_or_credential_reuse(
 ) -> None:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin="https://localhost:4443"),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     campaign_digest = _digest("campaign")
@@ -1334,7 +1342,9 @@ def test_canary_binding_and_budget_gate_run_before_network_or_credential_reuse(
 def test_observer_failure_cancels_atomic_reservation_before_dispatch(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin="https://localhost:4443"),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     campaign_digest = _digest("observer-campaign")
@@ -1380,7 +1390,9 @@ def test_observer_failure_cancels_atomic_reservation_before_dispatch(tmp_path: P
 def test_scheduled_transport_settles_the_campaign_runner_ledger(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin="https://localhost:4443"),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     runner = _campaign_runner(configuration, tmp_path / "campaign-state")
@@ -1430,7 +1442,9 @@ def test_scheduled_transport_settles_the_campaign_runner_ledger(tmp_path: Path) 
 
 
 def test_forged_clean_canary_observations_cannot_issue_an_attestation(tmp_path: Path) -> None:
-    profile = ProviderProfile(logical_id="local.stub", origin="https://localhost:4443")
+    profile = ProviderProfile(
+        logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+    )
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
         profile=profile,
@@ -1493,7 +1507,9 @@ def test_forged_clean_canary_observations_cannot_issue_an_attestation(tmp_path: 
 
 
 def test_canary_finds_a_real_surface_leak_split_across_read_chunks(tmp_path: Path) -> None:
-    profile = ProviderProfile(logical_id="local.stub", origin="https://localhost:4443")
+    profile = ProviderProfile(
+        logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+    )
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
         profile=profile,
@@ -1536,7 +1552,9 @@ def test_canary_finds_a_real_surface_leak_split_across_read_chunks(tmp_path: Pat
 
 
 def test_canary_scans_encrypted_artifact_plaintext(tmp_path: Path) -> None:
-    profile = ProviderProfile(logical_id="local.stub", origin="https://localhost:4443")
+    profile = ProviderProfile(
+        logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
+    )
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
         profile=profile,
@@ -1640,7 +1658,9 @@ class _HttpsStub:
         if declared_response_bytes is not None and declared_response_bytes < len(response_body):
             raise ValueError("declared response length cannot truncate the supplied body")
         self.records: list[tuple[str, str | None, bytes]] = []
+        self.request_headers: list[dict[str, str]] = []
         records = self.records
+        request_headers = self.request_headers
         headers = response_headers or {}
         content_length = (
             len(response_body) if declared_response_bytes is None else declared_response_bytes
@@ -1651,6 +1671,9 @@ class _HttpsStub:
                 size = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(size)
                 records.append((self.path, self.headers.get("Authorization"), body))
+                request_headers.append(
+                    {name.casefold(): value for name, value in self.headers.items()}
+                )
                 self.send_response(status)
                 for name, value in headers.items():
                     self.send_header(name, value)
@@ -1723,7 +1746,9 @@ def _open_local_campaign(
 ) -> tuple[ResponsesCampaign, _StaticCredentialSource, BudgetLedger]:
     configuration = ResolvedProviderConfig(
         selected_provider_label="local_stub",
-        profile=ProviderProfile(logical_id="local.stub", origin=origin),
+        profile=ProviderProfile(
+            logical_id="local.stub", origin=origin, request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(requested_model="route.test"),
     )
     campaign_digest = _digest("local-campaign")

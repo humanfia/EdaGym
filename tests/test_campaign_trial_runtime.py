@@ -705,7 +705,9 @@ def _campaign_inputs(
     release = release_manifest(task, instance, environment)
     configuration = ResolvedProviderConfig(
         selected_provider_label="test_gateway",
-        profile=ProviderProfile(logical_id="test.gateway", origin="https://gateway.test"),
+        profile=ProviderProfile(
+            logical_id="test.gateway", origin="https://gateway.test", request_path="/v1/responses"
+        ),
         defaults=ProviderDefaults(
             requested_model="route.snapshot",
             reasoning_effort="high",
