@@ -25,6 +25,7 @@ from cryptography.x509.oid import NameOID
 
 import edagym.security.collector as collector_module
 import edagym.security.credentials as credential_module
+from edagym.benchmark.model import EpisodeBudget
 from edagym.executors.isolation_launch import (
     SyntheticPreflightExecutorReceipt,
     SyntheticPreflightParentReceipt,
@@ -50,7 +51,6 @@ from edagym.providers.budget import (
 from edagym.providers.campaign import (
     CampaignExecutionLimits,
     CampaignScope,
-    CampaignSpec,
     CampaignTokenLimits,
     CappedSpendLimit,
     FeatureSupport,
@@ -176,6 +176,7 @@ from edagym.specs.environment import ArtifactPolicy, EnvironmentSpec, ManagedEnc
 from edagym.specs.release import ReleaseManifest
 from edagym.specs.session import HarnessActor, SessionSpec
 from edagym.specs.task import TaskSpec
+from tests.campaign_fixtures import campaign_cells, campaign_header
 from tests.factories import (
     environment_spec,
     release_manifest,
@@ -317,9 +318,7 @@ def test_codex_source_rejects_unsafe_auth_and_decodes_only_the_top_level_field(
     assert resolved.selected_provider_label == "OpenAI"
 
     with pytest.raises(CredentialSecurityError):
-        source.acquire(
-            grant=_credential_access_grant(resolved, tmp_path / "unsafe-mode-preflight")
-        )
+        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "unsafe-mode-preflight"))
 
     auth.unlink()
     target = home / "private-auth"
@@ -327,26 +326,20 @@ def test_codex_source_rejects_unsafe_auth_and_decodes_only_the_top_level_field(
     target.chmod(0o600)
     auth.symlink_to(target)
     with pytest.raises(CredentialSecurityError):
-        source.acquire(
-            grant=_credential_access_grant(resolved, tmp_path / "symlink-preflight")
-        )
+        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "symlink-preflight"))
 
     auth.unlink()
     auth.write_text(json.dumps({"tokens": {"OPENAI_API_KEY": "stub"}}), encoding="utf-8")
     auth.chmod(0o600)
     with pytest.raises(CredentialFormatError):
-        source.acquire(
-            grant=_credential_access_grant(resolved, tmp_path / "nested-preflight")
-        )
+        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "nested-preflight"))
 
     auth.write_text(
         '{"OPENAI_API_KEY":"stub","OPENAI_API_KEY":"stub"}',
         encoding="utf-8",
     )
     with pytest.raises(CredentialFormatError):
-        source.acquire(
-            grant=_credential_access_grant(resolved, tmp_path / "duplicate-preflight")
-        )
+        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "duplicate-preflight"))
 
     auth.write_text(json.dumps({"OPENAI_API_KEY": "stub"}), encoding="utf-8")
     with source.acquire(
@@ -382,9 +375,7 @@ def test_codex_source_fails_closed_when_an_open_auth_path_is_replaced(
 
     monkeypatch.setattr(credential_module, "_read_stable_bytes", replace_after_open)
     with pytest.raises(CredentialSecurityError):
-        source.acquire(
-            grant=_credential_access_grant(resolved, tmp_path / "replacement-preflight")
-        )
+        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "replacement-preflight"))
 
 
 def test_codex_source_binds_an_optional_base_to_the_explicit_trusted_profile(
@@ -679,9 +670,7 @@ def _collector_from_paths(
                         boot_id_digest=_digest("preflight-boot"),
                     ),
                     workspace_identity_digest=_digest("preflight-workspace"),
-                    artifact_directory_identity_digest=_digest(
-                        "preflight-artifact-directory"
-                    ),
+                    artifact_directory_identity_digest=_digest("preflight-artifact-directory"),
                 )
             ),
         ),
@@ -796,9 +785,7 @@ def _synthetic_preflight_executor_receipt(
             probes=tuple(probes),
         ),
         parent_launch=SyntheticPreflightParentReceipt(
-            canary_launch_binding_digest=synthetic_preflight_canary_binding_digest(
-                canary_marker
-            ),
+            canary_launch_binding_digest=synthetic_preflight_canary_binding_digest(canary_marker),
             controller_boundary_digest=_digest("preflight-controller-boundary"),
             probes=tuple(parent_launches),
         ),
@@ -812,9 +799,10 @@ class _StaticCredentialSource:
 
     def acquire(self, *, grant: ProviderAccessGrant) -> ProviderAccessLease:
         self.calls += 1
-        assert grant._consume(
-            provider_profile_digest=self.configuration.profile.digest
-        ) == self.configuration.digest
+        assert (
+            grant._consume(provider_profile_digest=self.configuration.profile.digest)
+            == self.configuration.digest
+        )
         lease = CredentialLease(
             bytearray(b"stub"),
             profile_digest=self.configuration.profile.digest,
@@ -933,6 +921,15 @@ def _campaign_runner(
     task = task_spec()
     environment = environment_spec()
     release = release_manifest(task, task_instance(task), environment)
+    harness = MeteredProviderHarnessBinding(
+        harness_id="campaign-harness",
+        provider_profile_digest=configuration.profile.digest,
+        provider_config_digest=configuration.digest,
+        instruction_digest=_digest("campaign-prompt"),
+        tool_schema_digest=_digest("campaign-tools"),
+        scaffold_digest=_digest("campaign-scaffold"),
+        maximum_requests_per_action=4,
+    )
     campaign_task = CampaignTask(
         task_release_digest=release.digest,
         task_family=task.identity.family,
@@ -940,52 +937,32 @@ def _campaign_runner(
         role=CampaignTaskRole.RTL_GENERATION,
         device_capability=Capability.RTL_SIMULATION,
         environment_digest=environment.digest,
-        harness=MeteredProviderHarnessBinding(
-            harness_id="campaign-harness",
-            provider_profile_digest=configuration.profile.digest,
-            provider_config_digest=configuration.digest,
-            instruction_digest=_digest("campaign-prompt"),
-            tool_schema_digest=_digest("campaign-tools"),
-            scaffold_digest=_digest("campaign-scaffold"),
-            maximum_requests_per_action=4,
-        ),
         evaluator_stage_ids=tuple(stage.stage_id for stage in task.evaluation.stages),
+        task_instance_digest=release.task_instance_digest,
     )
-    campaign = CampaignSpec(
+    header = campaign_header(
         campaign_id="provider-campaign",
         scope=CampaignScope.EXPANDED_BREADTH,
-        model_set_digest=model_set.digest,
-        route_ids=(route.route_id,),
-        task_release_digests=(campaign_task.task_release_digest,),
-        environment_digests=(campaign_task.environment_digest,),
-        harness_digests=(campaign_task.harness_digest,),
-        prompt_digest=_digest("campaign-prompt"),
-        tool_schema_digest=_digest("campaign-tools"),
-        feedback_policy_digest=_digest("campaign-feedback"),
-        reasoning_efforts=("high",),
-        service_tier="fast",
-        paired_trial_seeds=(_seed(1),),
-        task_order_seed=_seed(2),
+        schedule_seed=_seed(2),
         retry_policy=RetryPolicy(max_request_attempts=1, backoff_milliseconds=0),
-        token_limits=CampaignTokenLimits(
+        provider_spend_limit=CappedSpendLimit(currency="USD", amount=Decimal("1")),
+        model_set=model_set,
+        provider_config=configuration,
+        tasks=(campaign_task,),
+        repetition_count=1,
+        cells=campaign_cells(
+            model_set=model_set,
+            harnesses=(harness,),
+            feedback_policy_digest=_digest("campaign-feedback"),
+        ),
+        episode_budget=EpisodeBudget(
+            max_experiments=8,
             max_requests=4,
-            max_requests_per_trial=4,
             max_input_tokens_per_request=100,
             max_output_tokens_per_request=100,
-            max_input_tokens_per_trial=400,
-            max_output_tokens_per_trial=400,
-            max_total_tokens_per_trial=800,
             max_input_tokens=400,
             max_output_tokens=400,
             max_total_tokens=800,
-        ),
-        execution_limits=CampaignExecutionLimits(
-            max_turns_per_trial=8,
-            max_tool_calls_per_trial=16,
-            max_wall_seconds_per_trial=600,
-            max_eda_compute_seconds_per_trial=300,
-            max_license_seconds_per_trial=120,
-            max_artifact_bytes_per_trial=1 << 20,
             max_turns=8,
             max_tool_calls=16,
             max_wall_seconds=600,
@@ -993,15 +970,19 @@ def _campaign_runner(
             max_license_seconds=120,
             max_artifact_bytes=1 << 20,
         ),
-        provider_spend_limit=CappedSpendLimit(currency="USD", amount=Decimal("1")),
+        token_limits=CampaignTokenLimits(
+            max_requests=4, max_input_tokens=400, max_output_tokens=400, max_total_tokens=800
+        ),
+        execution_limits=CampaignExecutionLimits(
+            max_turns=8,
+            max_tool_calls=16,
+            max_wall_seconds=600,
+            max_eda_compute_seconds=300,
+            max_license_seconds=120,
+            max_artifact_bytes=1 << 20,
+        ),
     )
-    return CampaignRunner(
-        campaign=campaign,
-        model_set=model_set,
-        tasks=(campaign_task,),
-        provider_config=configuration,
-        state_root=state_root,
-    )
+    return CampaignRunner(header=header, state_root=state_root)
 
 
 def _request(
@@ -1064,9 +1045,7 @@ def test_required_strict_tool_choice_has_one_wire_contract() -> None:
             "description": "Return the protocol probe.",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "value": {"type": "string", "description": "Probe value."}
-                },
+                "properties": {"value": {"type": "string", "description": "Probe value."}},
                 "required": ["value"],
                 "additionalProperties": False,
             },
@@ -1645,32 +1624,6 @@ def test_budget_reservations_are_atomic_under_concurrency() -> None:
     assert ledger.snapshot().reserved_requests == 0
 
 
-def test_campaign_limits_reject_claims_above_their_parent_budget() -> None:
-    token_limits = CampaignTokenLimits(
-        max_requests=16, max_requests_per_trial=4,
-        max_input_tokens_per_request=100, max_output_tokens_per_request=100,
-        max_input_tokens_per_trial=400, max_output_tokens_per_trial=400,
-        max_total_tokens_per_trial=800, max_input_tokens=1600,
-        max_output_tokens=1600, max_total_tokens=3200,
-    )
-    with pytest.raises(ValueError):
-        CampaignTokenLimits.model_validate(
-            {**token_limits.model_dump(), "max_input_tokens_per_request": 401}
-        )
-    execution_limits = CampaignExecutionLimits(
-        max_turns_per_trial=8, max_tool_calls_per_trial=32,
-        max_wall_seconds_per_trial=1200, max_eda_compute_seconds_per_trial=600,
-        max_license_seconds_per_trial=300, max_artifact_bytes_per_trial=1 << 28,
-        max_turns=24, max_tool_calls=96, max_wall_seconds=3600,
-        max_eda_compute_seconds=1800, max_license_seconds=900,
-        max_artifact_bytes=1 << 30,
-    )
-    with pytest.raises(ValueError):
-        CampaignExecutionLimits.model_validate(
-            {**execution_limits.model_dump(), "max_wall_seconds_per_trial": 3601}
-        )
-
-
 class _HttpsStub:
     def __init__(
         self,
@@ -1687,9 +1640,7 @@ class _HttpsStub:
         records = self.records
         headers = response_headers or {}
         content_length = (
-            len(response_body)
-            if declared_response_bytes is None
-            else declared_response_bytes
+            len(response_body) if declared_response_bytes is None else declared_response_bytes
         )
 
         class Handler(BaseHTTPRequestHandler):

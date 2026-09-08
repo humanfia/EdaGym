@@ -9,11 +9,9 @@ from typing import Self
 from pydantic import model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.providers.campaign import CampaignSpec
-from edagym.providers.campaign_schedule import CampaignSchedule
-from edagym.providers.numeric import JcsNonNegativeInt, JcsPositiveInt
+from edagym.providers.campaign_schedule import CampaignHeader
 from edagym.run.trial_model import StopReason
-from edagym.specs.common import Digest, StrictModel
+from edagym.specs.common import Digest, JcsNonNegativeInt, JcsPositiveInt, StrictModel
 
 
 class CampaignResources(StrictModel):
@@ -120,31 +118,25 @@ class CampaignBudgetProjection(StrictModel):
     per_request_output_token_limit: JcsPositiveInt
 
     @classmethod
-    def from_campaign(
-        cls,
-        campaign: CampaignSpec,
-        schedule: CampaignSchedule,
-    ) -> CampaignBudgetProjection:
-        global_limits = _campaign_limits(campaign, per_trial=False)
-        trial_limits = _campaign_limits(campaign, per_trial=True)
+    def from_header(cls, header: CampaignHeader) -> CampaignBudgetProjection:
+        global_limits = campaign_limits(header, per_trial=False)
+        trial_limits = campaign_limits(header, per_trial=True)
         return cls(
-            campaign_digest=campaign.digest,
-            schedule_digest=schedule.digest,
-            trial_count=len(schedule.trials),
+            campaign_digest=header.campaign.digest,
+            schedule_digest=header.schedule.digest,
+            trial_count=len(header.schedule.trials),
             global_limits=_resource_limits(global_limits),
             global_total_token_limit=global_limits[BudgetDimension.TOTAL_TOKENS],
             per_trial_limits=_resource_limits(trial_limits),
             per_trial_total_token_limit=trial_limits[BudgetDimension.TOTAL_TOKENS],
-            per_request_input_token_limit=campaign.token_limits.max_input_tokens_per_request,
-            per_request_output_token_limit=campaign.token_limits.max_output_tokens_per_request,
+            per_request_input_token_limit=header.benchmark.episode_budget.max_input_tokens_per_request,
+            per_request_output_token_limit=header.benchmark.episode_budget.max_output_tokens_per_request,
         )
 
     @model_validator(mode="after")
     def validate_token_limits(self) -> Self:
         for item in fields(_MutableResources):
-            if getattr(self.per_trial_limits, item.name) > getattr(
-                self.global_limits, item.name
-            ):
+            if getattr(self.per_trial_limits, item.name) > getattr(self.global_limits, item.name):
                 raise ValueError(f"per-trial {item.name} limit cannot exceed its campaign limit")
         if self.global_total_token_limit > self.global_limits.total_tokens:
             raise ValueError("global token total cannot exceed its directional limits")
@@ -180,25 +172,27 @@ def _resource_limits(limits: dict[BudgetDimension, int]) -> CampaignResources:
     )
 
 
-def _campaign_limits(
-    campaign: CampaignSpec,
+def campaign_limits(
+    header: CampaignHeader,
     *,
     per_trial: bool,
 ) -> dict[BudgetDimension, int]:
-    token = campaign.token_limits
-    execution = campaign.execution_limits
+    """Derive both budget scopes for projection and reservation replay."""
+    token = header.campaign.token_limits
+    execution = header.campaign.execution_limits
     if per_trial:
+        episode = header.benchmark.episode_budget
         return {
-            BudgetDimension.REQUESTS: token.max_requests_per_trial,
-            BudgetDimension.INPUT_TOKENS: token.max_input_tokens_per_trial,
-            BudgetDimension.OUTPUT_TOKENS: token.max_output_tokens_per_trial,
-            BudgetDimension.TOTAL_TOKENS: token.max_total_tokens_per_trial,
-            BudgetDimension.TURNS: execution.max_turns_per_trial,
-            BudgetDimension.TOOL_CALLS: execution.max_tool_calls_per_trial,
-            BudgetDimension.WALL_SECONDS: execution.max_wall_seconds_per_trial,
-            BudgetDimension.EDA_COMPUTE_SECONDS: execution.max_eda_compute_seconds_per_trial,
-            BudgetDimension.LICENSE_SECONDS: execution.max_license_seconds_per_trial,
-            BudgetDimension.ARTIFACT_BYTES: execution.max_artifact_bytes_per_trial,
+            BudgetDimension.REQUESTS: episode.max_requests,
+            BudgetDimension.INPUT_TOKENS: episode.max_input_tokens,
+            BudgetDimension.OUTPUT_TOKENS: episode.max_output_tokens,
+            BudgetDimension.TOTAL_TOKENS: episode.max_total_tokens,
+            BudgetDimension.TURNS: episode.max_turns,
+            BudgetDimension.TOOL_CALLS: episode.max_tool_calls,
+            BudgetDimension.WALL_SECONDS: episode.max_wall_seconds,
+            BudgetDimension.EDA_COMPUTE_SECONDS: episode.max_eda_compute_seconds,
+            BudgetDimension.LICENSE_SECONDS: episode.max_license_seconds,
+            BudgetDimension.ARTIFACT_BYTES: episode.max_artifact_bytes,
         }
     return {
         BudgetDimension.REQUESTS: token.max_requests,

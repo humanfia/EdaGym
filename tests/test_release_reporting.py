@@ -54,8 +54,8 @@ from edagym.providers.campaign import (
 )
 from edagym.providers.campaign_runner import (
     CountRatio,
-    ReportedServiceTierCount,
     ServiceTierAccounting,
+    ServiceTierCount,
 )
 from edagym.providers.campaign_schedule import CampaignTaskRole
 from edagym.providers.model import (
@@ -186,9 +186,7 @@ def _repository_identity() -> RepositorySnapshot:
 
 def _authoring() -> AuthoringCatalogEvidence:
     families = tuple(item.family for item in SAIL_RTL_FAMILIES)
-    instances = tuple(
-        (family, name) for family in families for name in ("base", "advanced")
-    )
+    instances = tuple((family, name) for family in families for name in ("base", "advanced"))
     return AuthoringCatalogEvidence(
         public_catalog_digest=PUBLIC_TASK_CATALOG.digest,
         catalog_attestation_digest=_digest("sail-catalog-attestation"),
@@ -199,9 +197,7 @@ def _authoring() -> AuthoringCatalogEvidence:
         provider_security_qualification_digest=_digest("sail-provider-security"),
         clean_room_attestation_digest=_digest("clean-room-attestation"),
         clean_room_auditor_descriptor_digest=_digest("clean-room-auditor-descriptor"),
-        clean_room_auditor_implementation_digest=_digest(
-            "clean-room-auditor-implementation"
-        ),
+        clean_room_auditor_implementation_digest=_digest("clean-room-auditor-implementation"),
         reference_tree_snapshot_digest=_digest("clean-room-reference-tree"),
         reference_inventory_digest=_digest("clean-room-reference-inventory"),
         human_review_aggregate_digest=_digest("clean-room-human-review"),
@@ -210,19 +206,14 @@ def _authoring() -> AuthoringCatalogEvidence:
         ),
         families=families,
         task_spec_digests=tuple(_digest(f"task-{family}") for family in families),
-        instance_digests=tuple(
-            _digest(f"instance-{family}-{name}") for family, name in instances
-        ),
-        release_digests=tuple(
-            _digest(f"release-{family}-{name}") for family, name in instances
-        ),
+        instance_digests=tuple(_digest(f"instance-{family}-{name}") for family, name in instances),
+        release_digests=tuple(_digest(f"release-{family}-{name}") for family, name in instances),
         release_environment_digests=(_digest("sail-release-environment"),),
         qualification_digests=tuple(
             _digest(f"qualification-{family}-{name}") for family, name in instances
         ),
         qualification_request_digests=tuple(
-            _digest(f"qualification-request-{family}-{name}")
-            for family, name in instances
+            _digest(f"qualification-request-{family}-{name}") for family, name in instances
         ),
         counts=EvidenceCounts(passed=40, failed=0, unavailable=0, total=40),
         status=ReleaseEvidenceStatus.PASSED,
@@ -236,9 +227,7 @@ def _backends() -> tuple[BackendQualificationEvidence, ...]:
             vendor=definition.vendor,
             driver_digest=definition.driver_digest,
             tool_version=f"{definition.tool_id}-release-version",
-            deployment_attestation_digest=_digest(
-                f"deployment-{definition.tool_id}"
-            ),
+            deployment_attestation_digest=_digest(f"deployment-{definition.tool_id}"),
             qualification_digest=_digest(f"qualification-{definition.tool_id}"),
             disposition=QualificationDisposition.CONFORMANT,
             capabilities=tuple(
@@ -333,20 +322,13 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
         else common_tasks
     )
     reasoning_efforts = (
-        ("low", "medium")
-        if scope is CampaignScope.REASONING_EFFORT_SENSITIVITY
-        else ("medium",)
+        ("low", "medium") if scope is CampaignScope.REASONING_EFFORT_SENSITIVITY else ("medium",)
     )
     paired_trial_seeds = (
-        ("1" * 32, "2" * 32, "3" * 32)
-        if scope is CampaignScope.COMMON_CORE
-        else ("1" * 32,)
+        ("1" * 32, "2" * 32, "3" * 32) if scope is CampaignScope.COMMON_CORE else ("1" * 32,)
     )
     trial_count = (
-        len(task_releases)
-        * len(route_ids)
-        * len(reasoning_efforts)
-        * len(paired_trial_seeds)
+        len(task_releases) * len(route_ids) * len(reasoning_efforts) * len(paired_trial_seeds)
     )
     end_to_end = (
         EndToEndSmokeEvidence(
@@ -366,28 +348,18 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
                     environment_spec_digest=_digest(f"smoke-environment-{index}"),
                     participant_actor_id="smoke_agent",
                     is_training=index == 0,
-                    artifact_closure_receipt_digest=_digest(
-                        f"smoke-artifact-closure-{index}"
-                    ),
+                    artifact_closure_receipt_digest=_digest(f"smoke-artifact-closure-{index}"),
                     recovery=(
                         ParticipantRecoveryEvidence(
                             run_record_digest=_digest("smoke-record-0"),
-                            artifact_closure_receipt_digest=_digest(
-                                "smoke-artifact-closure-0"
-                            ),
+                            artifact_closure_receipt_digest=_digest("smoke-artifact-closure-0"),
                             lifecycle_digest=_digest("smoke-recovery-lifecycle"),
                             checkpoint_id="checkpoint_after_feedback_0",
-                            checkpoint_manifest_digest=_digest(
-                                "smoke-checkpoint-manifest"
-                            ),
+                            checkpoint_manifest_digest=_digest("smoke-checkpoint-manifest"),
                             terminated_sequence=20,
                             restored_sequence=21,
-                            restored_incarnation_digest=_digest(
-                                "smoke-restored-incarnation"
-                            ),
-                            restored_manifest_digest=_digest(
-                                "smoke-checkpoint-manifest"
-                            ),
+                            restored_incarnation_digest=_digest("smoke-restored-incarnation"),
+                            restored_manifest_digest=_digest("smoke-checkpoint-manifest"),
                             post_restore_provider_request_id="smoke_resume_request",
                             post_restore_tool_invocation_id="smoke_resume_tool",
                             post_restore_candidate_id="candidate_improved_0",
@@ -474,10 +446,10 @@ def _campaign(scope: CampaignScope) -> CampaignEvidence:
         positive_usage_trial_count=trial_count,
         unknown_usage_attempt_count=0,
         service_tier_accounting=ServiceTierAccounting(
-            requested_service_tier="default",
+            requested_service_tiers=(ServiceTierCount(service_tier="default", count=trial_count),),
             provider_reported_service_tiers=(
-                ReportedServiceTierCount(
-                    provider_reported_service_tier="default",
+                ServiceTierCount(
+                    service_tier="default",
                     count=trial_count,
                 ),
             ),
@@ -587,9 +559,7 @@ def _participant_modes() -> ParticipantModeSuiteEvidence:
                 session=session_evidence,
                 mode=mode,
                 candidate_authority=CandidateAuthority.PARTICIPANT,
-                artifact_closure_receipt_digest=_digest(
-                    f"participant-artifact-closure-{index}"
-                ),
+                artifact_closure_receipt_digest=_digest(f"participant-artifact-closure-{index}"),
                 artifact_counts=(
                     ArtifactClassCount(artifact_class=ArtifactClass.CANDIDATE, count=1),
                     ArtifactClassCount(artifact_class=ArtifactClass.EVIDENCE, count=1),
@@ -601,9 +571,7 @@ def _participant_modes() -> ParticipantModeSuiteEvidence:
                     _digest("participant-course") if mode is ModeKind.COURSE else None
                 ),
                 leaderboard_projection_digest=(
-                    _digest("participant-leaderboard")
-                    if mode is ModeKind.BENCHMARK
-                    else None
+                    _digest("participant-leaderboard") if mode is ModeKind.BENCHMARK else None
                 ),
             )
         )
@@ -740,8 +708,7 @@ def _command(
         installation_receipt_digest=installation_receipt_digest,
     )
     receipts = tuple(
-        _retained_invocation(store, invocation.digest)
-        for invocation in plan.invocations
+        _retained_invocation(store, invocation.digest) for invocation in plan.invocations
     )
     receipt = ReleaseCommandReceipt(
         plan=plan,
@@ -844,9 +811,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
         for item in forged_coverage["backend_coverage"]
         if item["capability"] == Capability.ASIC_SYNTHESIS.value
     )
-    synthesis["independent_implementations"] = synthesis[
-        "independent_implementations"
-    ][:1]
+    synthesis["independent_implementations"] = synthesis["independent_implementations"][:1]
     synthesis["status"] = ReleaseEvidenceStatus.UNAVAILABLE.value
     with pytest.raises(ValidationError, match="derived from qualifications"):
         ReleaseReport.model_validate(forged_coverage)
@@ -874,8 +839,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
     missing_effort["campaigns"] = [
         item
         for item in missing_effort["campaigns"]
-        if item["campaign_scope"]
-        != CampaignScope.REASONING_EFFORT_SENSITIVITY.value
+        if item["campaign_scope"] != CampaignScope.REASONING_EFFORT_SENSITIVITY.value
     ]
     with pytest.raises(ValidationError, match="source counts"):
         ReleaseReport.model_validate(missing_effort)
@@ -884,8 +848,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
     effort = next(
         item
         for item in mismatched_effort["campaigns"]
-        if item["campaign_scope"]
-        == CampaignScope.REASONING_EFFORT_SENSITIVITY.value
+        if item["campaign_scope"] == CampaignScope.REASONING_EFFORT_SENSITIVITY.value
     )
     effort["controlled_variables_digest"] = _digest("different-controlled-variables")
     with pytest.raises(ValidationError, match="source counts"):
@@ -907,9 +870,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
         for item in mislabeled_actual_trial["campaigns"]
         if item["campaign_scope"] == CampaignScope.END_TO_END_SMOKE.value
     )
-    smoke["end_to_end"]["trials"][2]["task_role"] = (
-        CampaignTaskRole.TOOL_FAILURE_RECOVERY.value
-    )
+    smoke["end_to_end"]["trials"][2]["task_role"] = CampaignTaskRole.TOOL_FAILURE_RECOVERY.value
     with pytest.raises(ValidationError, match="summary must derive"):
         ReleaseReport.model_validate(mislabeled_actual_trial)
 
@@ -929,8 +890,8 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
         for item in stale_recovery["campaigns"]
         if item["campaign_scope"] == CampaignScope.END_TO_END_SMOKE.value
     )
-    smoke["end_to_end"]["trials"][0]["recovery"]["restored_manifest_digest"] = (
-        _digest("different-restored-manifest")
+    smoke["end_to_end"]["trials"][0]["recovery"]["restored_manifest_digest"] = _digest(
+        "different-restored-manifest"
     )
     with pytest.raises(ValidationError, match="committed checkpoint manifest"):
         ReleaseReport.model_validate(stale_recovery)
@@ -941,9 +902,7 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
         for item in spoofed_capability["campaigns"]
         if item["campaign_scope"] == CampaignScope.END_TO_END_SMOKE.value
     )
-    smoke["end_to_end"]["trials"][2]["device_capability"] = (
-        Capability.RTL_SIMULATION.value
-    )
+    smoke["end_to_end"]["trials"][2]["device_capability"] = Capability.RTL_SIMULATION.value
     with pytest.raises(ValidationError, match="does not admit"):
         ReleaseReport.model_validate(spoofed_capability)
 
@@ -957,9 +916,9 @@ def test_ready_report_requires_complete_derived_release_gates(tmp_path: Path) ->
     with pytest.raises(ValidationError, match="complete positive usage"):
         ReleaseReport.model_validate(unknown_paid_usage)
 
-    honest_unavailable_category = _campaign(
-        CampaignScope.MODEL_COMPARISON_PILOT
-    ).model_dump(mode="json")
+    honest_unavailable_category = _campaign(CampaignScope.MODEL_COMPARISON_PILOT).model_dump(
+        mode="json"
+    )
     honest_unavailable_category["covered_model_categories"].remove(
         ModelCategory.HIGH_THROUGHPUT.value
     )
@@ -1172,16 +1131,17 @@ def test_route_canary_source_cannot_be_relabelled_by_a_model_set() -> None:
         resolved_on="2026-09-04",
         routes=(route,),
     )
-    assert _model_discovery_source(
-        provider,
-        model_set,
-        {discovery.digest: discovery},
-    ) == discovery.digest
+    assert (
+        _model_discovery_source(
+            provider,
+            model_set,
+            {discovery.digest: discovery},
+        )
+        == discovery.digest
+    )
     assert _route_canary_sources(model_set, {canary.digest: canary}) == (canary.digest,)
 
-    relabelled_discovery = discovery.model_copy(
-        update={"model_labels": ("different-route",)}
-    )
+    relabelled_discovery = discovery.model_copy(update={"model_labels": ("different-route",)})
     wrong_discovery_set = model_set.model_copy(
         update={"discovery_digest": relabelled_discovery.digest}
     )
@@ -1446,6 +1406,7 @@ def test_hidden_verifier_resources_cannot_be_participant_visible() -> None:
         release,
         environment,
     )
+
 
 def test_repository_release_audit_requires_every_named_surface() -> None:
     payload = _repository().model_dump(mode="json")

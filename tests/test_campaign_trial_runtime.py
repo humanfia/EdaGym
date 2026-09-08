@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from edagym.benchmark.model import EpisodeBudget
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.evaluation.model import PassedOutcome, StageResult
 from edagym.executors.asset_policy import load_system_asset_source_policy
@@ -64,7 +65,6 @@ from edagym.projections.model import ParticipationKind
 from edagym.providers.campaign import (
     CampaignExecutionLimits,
     CampaignScope,
-    CampaignSpec,
     CampaignTokenLimits,
     CappedSpendLimit,
     FeatureSupport,
@@ -173,6 +173,7 @@ from edagym.specs.session import (
     SessionSpec,
 )
 from edagym.specs.task import TaskSpec
+from tests.campaign_fixtures import campaign_cells, campaign_header
 
 from .factories import (
     digest,
@@ -288,28 +289,31 @@ class _SequenceTransport:
             ),
             usage=usage,
         )
-        response_body = json.dumps({
-            "id": f"response_{self.calls}",
-            "model": self.reported_model,
-            "service_tier": "default",
-            "status": "completed",
-            "output": [
-                {
-                    "type": "function_call",
-                    "call_id": f"call_{self.calls}",
-                    "name": name,
-                    "arguments": json.dumps(arguments, separators=(",", ":")),
-                    "status": "completed",
-                }
-            ],
-            "usage": {
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "total_tokens": usage.total_tokens,
-                "input_tokens_details": {"cached_tokens": 0},
-                "output_tokens_details": {"reasoning_tokens": 0},
+        response_body = json.dumps(
+            {
+                "id": f"response_{self.calls}",
+                "model": self.reported_model,
+                "service_tier": "default",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": f"call_{self.calls}",
+                        "name": name,
+                        "arguments": json.dumps(arguments, separators=(",", ":")),
+                        "status": "completed",
+                    }
+                ],
+                "usage": {
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                },
             },
-        }, separators=(",", ":")).encode("utf-8")
+            separators=(",", ":"),
+        ).encode("utf-8")
         return response_body, result
 
 
@@ -740,11 +744,7 @@ def _campaign_inputs(
                 if hybrid
                 else (harness_actor,)
             ),
-            "writer": (
-                HandoffWriter(initial_writer="operator")
-                if hybrid
-                else base_session.writer
-            ),
+            "writer": (HandoffWriter(initial_writer="operator") if hybrid else base_session.writer),
             "resources": ResourceBudget(
                 max_turns=8,
                 max_tool_calls=8,
@@ -790,47 +790,46 @@ def _campaign_inputs(
         role=CampaignTaskRole.RTL_GENERATION,
         device_capability=Capability.RTL_SIMULATION,
         environment_digest=environment.digest,
-        harness=harness,
         evaluator_stage_ids=tuple(stage.stage_id for stage in task.evaluation.stages),
+        task_instance_digest=release.task_instance_digest,
     )
-    campaign = CampaignSpec(
+    header = campaign_header(
         campaign_id="trial-runtime",
         scope=CampaignScope.EXPANDED_BREADTH,
-        model_set_digest=model_set.digest,
-        route_ids=(route.route_id,),
-        task_release_digests=(release.digest,),
-        environment_digests=(environment.digest,),
-        harness_digests=(harness.digest,),
-        prompt_digest=harness.instruction_digest,
-        tool_schema_digest=harness.tool_schema_digest,
-        feedback_policy_digest=canonical_digest(
-            session.feedback,
-            domain="feedback-policy-v1",
-        ),
-        reasoning_efforts=("high",),
-        service_tier="fast",
-        paired_trial_seeds=("1" * 32,),
-        task_order_seed="2" * 32,
+        schedule_seed="2" * 32,
         retry_policy=RetryPolicy(max_request_attempts=1, backoff_milliseconds=0),
-        token_limits=CampaignTokenLimits(
+        provider_spend_limit=CappedSpendLimit(currency="USD", amount=Decimal("1")),
+        model_set=model_set,
+        provider_config=configuration,
+        tasks=(campaign_task,),
+        repetition_count=1,
+        cells=campaign_cells(
+            model_set=model_set,
+            harnesses=(harness,),
+            feedback_policy_digest=canonical_digest(
+                session.feedback,
+                domain="feedback-policy-v1",
+            ),
+        ),
+        episode_budget=EpisodeBudget(
+            max_experiments=session.resources.max_experiments,
             max_requests=8,
-            max_requests_per_trial=8,
             max_input_tokens_per_request=128,
             max_output_tokens_per_request=64,
-            max_input_tokens_per_trial=1024,
-            max_output_tokens_per_trial=512,
-            max_total_tokens_per_trial=1536,
             max_input_tokens=1024,
             max_output_tokens=512,
             max_total_tokens=1536,
+            max_turns=8,
+            max_tool_calls=8,
+            max_wall_seconds=300,
+            max_eda_compute_seconds=120,
+            max_license_seconds=session.resources.max_license_seconds,
+            max_artifact_bytes=16 * 1024**2,
+        ),
+        token_limits=CampaignTokenLimits(
+            max_requests=8, max_input_tokens=1024, max_output_tokens=512, max_total_tokens=1536
         ),
         execution_limits=CampaignExecutionLimits(
-            max_turns_per_trial=8,
-            max_tool_calls_per_trial=8,
-            max_wall_seconds_per_trial=300,
-            max_eda_compute_seconds_per_trial=120,
-            max_license_seconds_per_trial=60 if licensed else 1,
-            max_artifact_bytes_per_trial=16 * 1024**2,
             max_turns=8,
             max_tool_calls=8,
             max_wall_seconds=300,
@@ -838,15 +837,8 @@ def _campaign_inputs(
             max_license_seconds=60 if licensed else 1,
             max_artifact_bytes=16 * 1024**2,
         ),
-        provider_spend_limit=CappedSpendLimit(currency="USD", amount=Decimal("1")),
     )
-    runner = CampaignRunner(
-        campaign=campaign,
-        model_set=model_set,
-        tasks=(campaign_task,),
-        provider_config=configuration,
-        state_root=root / "campaign",
-    )
+    runner = CampaignRunner(header=header, state_root=root / "campaign")
     return runner, task, instance, release, environment, session, configuration
 
 
@@ -957,13 +949,7 @@ def test_campaign_trial_reopens_after_terminal_run_and_replays_both_journals(
     assert len(runner.pending_trials()) == 1
 
     monkeypatch.setattr(CampaignReservation, "finalize_run", original_finalize)
-    reopened = CampaignRunner(
-        campaign=runner.campaign,
-        model_set=runner.model_set,
-        tasks=runner.tasks,
-        provider_config=configuration,
-        state_root=root / "campaign",
-    )
+    reopened = CampaignRunner(header=runner.header, state_root=root / "campaign")
     unused_transport = _SequenceTransport("provider.route.snapshot")
     result = CampaignTrialDispatcher(reopened).dispatch(
         trial_id=trial.trial_id,
@@ -1052,7 +1038,10 @@ def test_campaign_trial_reopens_after_terminal_run_and_replays_both_journals(
     assert report.resources.requests == 4
     assert report.token_accounting.provider_input_tokens == 10
     assert report.token_accounting.provider_output_tokens == 4
-    assert report.service_tier_accounting.requested_service_tier == "fast"
+    assert tuple(
+        (item.service_tier, item.count)
+        for item in report.service_tier_accounting.requested_service_tiers
+    ) == (("fast", 4),)
     assert report.service_tier_accounting.reported_tier_mismatches.numerator == 4
     assert report.service_tier_accounting.reported_tier_mismatches.denominator == 4
     assert report.trials[0].outcome == result.outcome
@@ -1140,13 +1129,7 @@ def test_campaign_trial_restart_charges_unsettled_tool_reservation(
         )
     assert interrupted_transport.calls == 2
 
-    reopened = CampaignRunner(
-        campaign=runner.campaign,
-        model_set=runner.model_set,
-        tasks=runner.tasks,
-        provider_config=configuration,
-        state_root=root / "campaign",
-    )
+    reopened = CampaignRunner(header=runner.header, state_root=root / "campaign")
     resumed_transport = _SequenceTransport(
         "provider.route.snapshot",
         start_index=2,
@@ -1385,13 +1368,7 @@ def test_campaign_trial_continues_same_run_after_human_handoff(
     handed_off = initial_runtime.advance()
     assert handed_off.current_writer == "solver"
 
-    reopened = CampaignRunner(
-        campaign=runner.campaign,
-        model_set=runner.model_set,
-        tasks=runner.tasks,
-        provider_config=configuration,
-        state_root=root / "campaign",
-    )
+    reopened = CampaignRunner(header=runner.header, state_root=root / "campaign")
     continuation = CampaignTrialContinuation(
         run_binding=plan.binding,
         run_record_digest=journal.integrity_digest(),
@@ -1482,13 +1459,7 @@ def test_provider_recovery_replays_exact_response_and_predispatch_cancellation(
         security_binding=_security_binding(runner),
     )
 
-    reopened = CampaignRunner(
-        campaign=runner.campaign,
-        model_set=runner.model_set,
-        tasks=runner.tasks,
-        provider_config=configuration,
-        state_root=root / "campaign",
-    )
+    reopened = CampaignRunner(header=runner.header, state_root=root / "campaign")
     requests = (
         ProviderRequestState(
             request_id="completed_request",

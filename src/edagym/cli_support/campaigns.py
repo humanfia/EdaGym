@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, RootModel, ValidationError
 
+from edagym.benchmark.model import BenchmarkSpec
 from edagym.canonical import canonical_bytes
 from edagym.cli_support.documents import open_artifact_store
 from edagym.providers.campaign import CampaignSpec, DateStamp, ModelSetManifest
@@ -31,6 +32,7 @@ from edagym.providers.campaign_runner import (
     CampaignReport,
 )
 from edagym.providers.campaign_schedule import (
+    CampaignCell,
     CampaignHeader,
     CampaignTask,
     build_campaign_schedule,
@@ -115,6 +117,8 @@ class CampaignBudgetFreezeRequest(StrictModel):
     command: Literal[CampaignCliCommand.FREEZE] = CampaignCliCommand.FREEZE
     freeze_kind: Literal["campaign_budget"] = "campaign_budget"
     campaign: CampaignSpec
+    benchmark: BenchmarkSpec
+    cells: tuple[CampaignCell, ...]
     model_set: ModelSetManifest
     provider_config: ResolvedProviderConfig
     tasks: tuple[CampaignTask, ...]
@@ -257,9 +261,13 @@ def _freeze(
                 request.campaign,
                 request.model_set,
                 request.tasks,
+                request.benchmark,
+                request.cells,
             )
             header = CampaignHeader(
                 campaign=request.campaign,
+                benchmark=request.benchmark,
+                cells=request.cells,
                 model_set=request.model_set,
                 provider_config=request.provider_config,
                 tasks=request.tasks,
@@ -268,10 +276,7 @@ def _freeze(
             return (
                 FrozenCampaignProposal(
                     header=header,
-                    budget=CampaignBudgetProjection.from_campaign(
-                        request.campaign,
-                        schedule,
-                    ),
+                    budget=CampaignBudgetProjection.from_header(header),
                 ),
                 0,
             )

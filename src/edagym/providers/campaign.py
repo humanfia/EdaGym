@@ -9,14 +9,14 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, StringConstraints, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.providers.numeric import JcsNonNegativeInt, JcsPositiveInt
 from edagym.specs.common import (
     CanonicalDecimal,
     Digest,
     Identifier,
+    JcsNonNegativeInt,
+    JcsPositiveInt,
     ModelLabel,
     SchemaVersion,
-    Seed128Hex,
     ServiceTierLabel,
     StrictModel,
 )
@@ -221,79 +221,29 @@ class RetryPolicy(StrictModel):
 
 
 class CampaignTokenLimits(StrictModel):
-    """Directional and combined hard caps at request, trial, and campaign scope."""
+    """Global token ceilings; episode ceilings belong to BenchmarkSpec."""
 
     max_requests: JcsPositiveInt
-    max_requests_per_trial: JcsPositiveInt
-    max_input_tokens_per_request: JcsPositiveInt
-    max_output_tokens_per_request: JcsPositiveInt
-    max_input_tokens_per_trial: JcsPositiveInt
-    max_output_tokens_per_trial: JcsPositiveInt
-    max_total_tokens_per_trial: JcsPositiveInt
     max_input_tokens: JcsPositiveInt
     max_output_tokens: JcsPositiveInt
     max_total_tokens: JcsPositiveInt
 
     @model_validator(mode="after")
-    def validate_hard_limits(self) -> Self:
-        request_total = self.max_input_tokens_per_request + self.max_output_tokens_per_request
-        if self.max_requests_per_trial > self.max_requests:
-            raise ValueError("per-trial request limit cannot exceed the campaign limit")
-        if self.max_input_tokens_per_request > self.max_input_tokens_per_trial:
-            raise ValueError("trial input limit does not admit one maximum request")
-        if self.max_output_tokens_per_request > self.max_output_tokens_per_trial:
-            raise ValueError("trial output limit does not admit one maximum request")
-        if self.max_input_tokens_per_trial > self.max_input_tokens:
-            raise ValueError("per-trial input limit cannot exceed the campaign limit")
-        if self.max_output_tokens_per_trial > self.max_output_tokens:
-            raise ValueError("per-trial output limit cannot exceed the campaign limit")
-        if request_total > self.max_total_tokens_per_trial:
-            raise ValueError("trial token limit does not admit one maximum request")
-        if self.max_total_tokens_per_trial > (
-            self.max_input_tokens_per_trial + self.max_output_tokens_per_trial
-        ):
-            raise ValueError("trial total token limit cannot exceed directional limits")
-        if self.max_total_tokens_per_trial > self.max_total_tokens:
-            raise ValueError("trial token limit cannot exceed the campaign token limit")
+    def validate_total(self) -> Self:
         if self.max_total_tokens > self.max_input_tokens + self.max_output_tokens:
             raise ValueError("total token limit cannot exceed directional limits")
         return self
 
 
 class CampaignExecutionLimits(StrictModel):
-    """Non-token hard caps with independent trial and campaign ceilings."""
+    """Global execution ceilings owned by the campaign ledger."""
 
-    max_turns_per_trial: JcsPositiveInt
-    max_tool_calls_per_trial: JcsPositiveInt
-    max_wall_seconds_per_trial: JcsPositiveInt
-    max_eda_compute_seconds_per_trial: JcsPositiveInt
-    max_license_seconds_per_trial: JcsNonNegativeInt
-    max_artifact_bytes_per_trial: JcsPositiveInt
     max_turns: JcsPositiveInt
     max_tool_calls: JcsPositiveInt
     max_wall_seconds: JcsPositiveInt
     max_eda_compute_seconds: JcsPositiveInt
     max_license_seconds: JcsNonNegativeInt
     max_artifact_bytes: JcsPositiveInt
-
-    @model_validator(mode="after")
-    def validate_scope_limits(self) -> Self:
-        pairs = (
-            (self.max_turns_per_trial, self.max_turns, "turn"),
-            (self.max_tool_calls_per_trial, self.max_tool_calls, "tool-call"),
-            (self.max_wall_seconds_per_trial, self.max_wall_seconds, "wall-time"),
-            (
-                self.max_eda_compute_seconds_per_trial,
-                self.max_eda_compute_seconds,
-                "EDA-compute",
-            ),
-            (self.max_license_seconds_per_trial, self.max_license_seconds, "license-time"),
-            (self.max_artifact_bytes_per_trial, self.max_artifact_bytes, "artifact"),
-        )
-        for trial_limit, campaign_limit, label in pairs:
-            if trial_limit > campaign_limit:
-                raise ValueError(f"per-trial {label} limit cannot exceed the campaign limit")
-        return self
 
 
 class SpendLimitKind(StrEnum):
@@ -330,78 +280,29 @@ class StopPolicy(StrEnum):
 
 
 class CampaignSpec(StrictModel):
-    """Immutable envelope controlling a comparable, bounded paid evaluation."""
+    """Campaign identity and global bounds over one frozen benchmark."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     campaign_id: Identifier
     scope: CampaignScope
+    benchmark_spec_digest: Digest
     model_set_digest: Digest
-    route_ids: Annotated[tuple[Identifier, ...], Field(min_length=1)]
     task_release_digests: Annotated[tuple[Digest, ...], Field(min_length=1)]
     environment_digests: Annotated[tuple[Digest, ...], Field(min_length=1)]
-    harness_digests: Annotated[tuple[Digest, ...], Field(min_length=1)]
     prompt_digest: Digest
-    tool_schema_digest: Digest
-    feedback_policy_digest: Digest
-    reasoning_efforts: Annotated[
-        tuple[Annotated[str, StringConstraints(min_length=1, max_length=32)], ...],
-        Field(min_length=1),
-    ]
-    service_tier: ServiceTierLabel
-    paired_trial_seeds: Annotated[tuple[Seed128Hex, ...], Field(min_length=1)]
-    task_order_seed: Seed128Hex
     retry_policy: RetryPolicy
     token_limits: CampaignTokenLimits
     execution_limits: CampaignExecutionLimits
     provider_spend_limit: SpendLimit
     stop_policy: Literal[StopPolicy.HARD_LIMIT] = StopPolicy.HARD_LIMIT
 
-    @field_validator(
-        "task_release_digests",
-        "environment_digests",
-        "harness_digests",
-        "route_ids",
-        "reasoning_efforts",
-    )
+    @field_validator("task_release_digests", "environment_digests")
     @classmethod
     def normalize_unique_strings(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("campaign comparison dimensions must be unique")
         return tuple(sorted(value))
 
-    @field_validator("paired_trial_seeds")
-    @classmethod
-    def normalize_unique_seeds(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("paired trial seeds must be unique")
-        return tuple(sorted(value))
-
-    @model_validator(mode="after")
-    def validate_scope(self) -> Self:
-        repetitions = len(self.paired_trial_seeds)
-        if self.scope is CampaignScope.END_TO_END_SMOKE and (
-            len(self.route_ids) != 1
-            or len(self.reasoning_efforts) != 1
-            or repetitions != 1
-        ):
-            raise ValueError(
-                "end-to-end smoke campaigns require one route, "
-                "one reasoning effort, and one repetition"
-            )
-        if self.scope is CampaignScope.REASONING_EFFORT_SENSITIVITY and len(
-            self.reasoning_efforts
-        ) < 2:
-            raise ValueError(
-                "reasoning effort sensitivity campaigns require at least two reasoning efforts"
-            )
-        if self.retry_policy.max_request_attempts > self.token_limits.max_requests_per_trial:
-            raise ValueError("trial request budget cannot satisfy the retry policy")
-        return self
-
-    @property
-    def repetitions(self) -> int:
-        return len(self.paired_trial_seeds)
-
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="provider-campaign-v1")
+        return canonical_digest(self, domain="provider-campaign-v2")

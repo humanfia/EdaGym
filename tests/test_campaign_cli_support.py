@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from edagym.benchmark.model import EpisodeBudget
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.cli_support.campaigns import (
     CampaignCliCommand,
@@ -21,7 +22,6 @@ from edagym.participants.responses import responses_instruction_digest
 from edagym.providers.campaign import (
     CampaignExecutionLimits,
     CampaignScope,
-    CampaignSpec,
     CampaignTokenLimits,
     CappedSpendLimit,
     FeatureSupport,
@@ -46,11 +46,9 @@ from edagym.providers.campaign_operation import (
 )
 from edagym.providers.campaign_runner import CampaignRunner
 from edagym.providers.campaign_schedule import (
-    CampaignHeader,
     CampaignTask,
     CampaignTaskRole,
     MeteredProviderHarnessBinding,
-    build_campaign_schedule,
 )
 from edagym.providers.model import (
     ProviderDefaults,
@@ -75,6 +73,7 @@ from edagym.specs.session import (
     ResourceBudget,
     SessionSpec,
 )
+from tests.campaign_fixtures import campaign_cells, campaign_header
 from tests.factories import (
     digest,
     environment_spec,
@@ -256,44 +255,43 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
         role=CampaignTaskRole.RTL_GENERATION,
         device_capability=Capability.RTL_SIMULATION,
         environment_digest=environment.digest,
-        harness=harness,
         evaluator_stage_ids=tuple(stage.stage_id for stage in task.evaluation.stages),
+        task_instance_digest=release.task_instance_digest,
     )
-    campaign = CampaignSpec(
+    header = campaign_header(
         campaign_id="operation-smoke",
         scope=CampaignScope.EXPANDED_BREADTH,
-        model_set_digest=model_set.digest,
-        route_ids=(route.route_id,),
-        task_release_digests=(release.digest,),
-        environment_digests=(environment.digest,),
-        harness_digests=(harness.digest,),
-        prompt_digest=harness.instruction_digest,
-        tool_schema_digest=harness.tool_schema_digest,
-        feedback_policy_digest=canonical_digest(session.feedback, domain="feedback-policy-v1"),
-        reasoning_efforts=("high",),
-        service_tier="fast",
-        paired_trial_seeds=("1" * 32,),
-        task_order_seed="2" * 32,
+        schedule_seed="2" * 32,
         retry_policy=RetryPolicy(max_request_attempts=1, backoff_milliseconds=0),
-        token_limits=CampaignTokenLimits(
+        provider_spend_limit=CappedSpendLimit(currency="USD", amount=Decimal("1")),
+        model_set=model_set,
+        provider_config=configuration,
+        tasks=(campaign_task,),
+        repetition_count=1,
+        cells=campaign_cells(
+            model_set=model_set,
+            harnesses=(harness,),
+            feedback_policy_digest=canonical_digest(session.feedback, domain="feedback-policy-v1"),
+        ),
+        episode_budget=EpisodeBudget(
+            max_experiments=session.resources.max_experiments,
             max_requests=8,
-            max_requests_per_trial=8,
             max_input_tokens_per_request=128,
             max_output_tokens_per_request=64,
-            max_input_tokens_per_trial=1024,
-            max_output_tokens_per_trial=512,
-            max_total_tokens_per_trial=1536,
             max_input_tokens=1024,
             max_output_tokens=512,
             max_total_tokens=1536,
+            max_turns=8,
+            max_tool_calls=8,
+            max_wall_seconds=300,
+            max_eda_compute_seconds=120,
+            max_license_seconds=session.resources.max_license_seconds,
+            max_artifact_bytes=16 * 1024**2,
+        ),
+        token_limits=CampaignTokenLimits(
+            max_requests=8, max_input_tokens=1024, max_output_tokens=512, max_total_tokens=1536
         ),
         execution_limits=CampaignExecutionLimits(
-            max_turns_per_trial=8,
-            max_tool_calls_per_trial=8,
-            max_wall_seconds_per_trial=300,
-            max_eda_compute_seconds_per_trial=120,
-            max_license_seconds_per_trial=1,
-            max_artifact_bytes_per_trial=16 * 1024**2,
             max_turns=8,
             max_tool_calls=8,
             max_wall_seconds=300,
@@ -301,20 +299,11 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
             max_license_seconds=1,
             max_artifact_bytes=16 * 1024**2,
         ),
-        provider_spend_limit=CappedSpendLimit(currency="USD", amount=Decimal("1")),
-    )
-    schedule = build_campaign_schedule(campaign, model_set, (campaign_task,))
-    header = CampaignHeader(
-        campaign=campaign,
-        model_set=model_set,
-        provider_config=configuration,
-        tasks=(campaign_task,),
-        schedule=schedule,
     )
     return CampaignOperationRequest(
         proposal=FrozenCampaignProposal(
             header=header,
-            budget=CampaignBudgetProjection.from_campaign(campaign, schedule),
+            budget=CampaignBudgetProjection.from_header(header),
         ),
         instruction=instruction,
         authoring_provider=AuthoringProviderBinding(
@@ -395,13 +384,7 @@ def test_campaign_run_without_attestation_dispatches_nothing(tmp_path: Path) -> 
     assert refused.value.reason is CampaignOperationRefusalReason.PREFLIGHT_FAILED
     assert refused.value.trial_id == trial.trial_id
     assert host.admissions == 1
-    reopened = CampaignRunner(
-        campaign=request.header.campaign,
-        model_set=request.header.model_set,
-        tasks=request.header.tasks,
-        provider_config=request.header.provider_config,
-        state_root=tmp_path / "state" / "campaign",
-    )
+    reopened = CampaignRunner(header=request.header, state_root=tmp_path / "state" / "campaign")
     assert reopened.journal.record().commits == ()
     assert len(reopened.pending_trials()) == 1
     assert not (tmp_path / "state" / "runs").exists()
@@ -417,13 +400,7 @@ def test_campaign_resume_does_not_redispatch_terminal_trials(tmp_path: Path) -> 
     prepared = _prepared(request, tmp_path)
     header = request.header
     (tmp_path / "state").mkdir(mode=0o700)
-    runner = CampaignRunner(
-        campaign=header.campaign,
-        model_set=header.model_set,
-        tasks=header.tasks,
-        provider_config=header.provider_config,
-        state_root=tmp_path / "state" / "campaign",
-    )
+    runner = CampaignRunner(header=header, state_root=tmp_path / "state" / "campaign")
     runner.stop_unfinished(StopReason.EXPLICIT_CANCEL)
     host = _Host(header.provider_config, admission_error=None)
 

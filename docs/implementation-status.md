@@ -153,6 +153,45 @@ modes and 120 concurrent starts, including composite tool/workspace commands,
 did not reproduce it. The controller now retains the underlying exception at
 debug logging level; that intermittent startup failure remains unresolved.
 
+## Campaign matrix migration
+
+Benchmark and campaign schema version 2 freeze task instances, evaluation cells,
+repetitions, and episode budgets. Tasks no longer own harnesses. The benchmark
+schedule is the sole owner of ordering and lineage pairing; prepared benchmark
+loads verify the entire derived schedule, and campaign trials retain those same
+scheduled evaluations. Bootstrap resampling and execution ordering have separate
+seeds owned by the benchmark specification.
+
+The campaign header validates the complete frozen inputs and derives the
+reservation envelope before opening a journal. Sessions must match the episode
+request, token, turn, tool-call, experiment, wall-time, EDA-compute, license, and
+artifact limits. Campaign global caps cannot silently reduce those allowances.
+Outcome replay also checks the exact task-instance digest.
+
+Campaign cell aggregates and success-at-k preserve harness-specific denominators.
+Service-tier accounting compares each attempt with its own requested tier. A
+shared integration fixture replaces the old task-owned harness inputs. The
+numeric compatibility module is removed; consumers use the canonical domains.
+A direct prepared-store probe verified qualification refusal and rejection of a
+persisted schedule whose pairing was changed while retaining its benchmark digest.
+
+Validation of the unchanged source covered all 325 tests. The full invocation
+completed with 311 passed and 14 failed in 740.81 seconds (exit 1); all 14 failures
+occurred while signing Git fixture commits through a stale inherited SSH agent.
+Rerunning exactly those tests with the existing signing agent and a command-scoped
+key setting produced 14 passed in 7.36 seconds (exit 0). No source changes were
+needed between these runs. Ruff, strict mypy over 212 source files, generated
+schema checks, and diff checks passed. The real-tool and checkpoint checks passed
+in the full invocation; the previously observed intermittent startup failure is
+not claimed fixed by that result.
+
+This completes the frozen-matrix migration, not stage F. The current Responses
+runtime explicitly refuses native CLI bindings. Native execution, relay/grant
+integration, config-snapshot operation references, RunEngine accounting joins,
+and campaign concurrency limits remain unfinished. Benchmark inference still
+requires harness-separated analysis before real native/controlled comparisons;
+the campaign-wide operational summaries are not that inference.
+
 ## Remaining integration
 
 - Complete exact-toolset filesystem exclusion qualification.

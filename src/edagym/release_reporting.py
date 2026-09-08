@@ -280,11 +280,7 @@ class CampaignEvidence(StrictModel):
     ) -> tuple[CampaignTaskBindingEvidence, ...]:
         releases = [item.task_release_digest for item in value]
         bindings = [item.binding_digest for item in value]
-        if (
-            not value
-            or len(releases) != len(set(releases))
-            or len(bindings) != len(set(bindings))
-        ):
+        if not value or len(releases) != len(set(releases)) or len(bindings) != len(set(bindings)):
             raise ValueError("campaign task bindings must have unique immutable identities")
         return tuple(sorted(value, key=lambda item: item.task_release_digest))
 
@@ -536,19 +532,14 @@ class ReleaseReport(StrictModel):
                     raise ValueError("authoring contract evidence targets a different catalog")
                 if (
                     command.status is ReleaseEvidenceStatus.PASSED
-                    and command.verified_public_catalog_digest
-                    != self.public_task_catalog_digest
+                    and command.verified_public_catalog_digest != self.public_task_catalog_digest
                 ):
-                    raise ValueError(
-                        "authoring contract verified a different public catalog"
-                    )
+                    raise ValueError("authoring contract verified a different public catalog")
             elif command.input_subject_digest != repository_digest:
                 raise ValueError("release command evidence targets a different input subject")
             if release_command_requires_installation(command.purpose):
                 if command.installation_receipt_digest != installation.receipt_digest:
-                    raise ValueError(
-                        "release command evidence targets a different installation"
-                    )
+                    raise ValueError("release command evidence targets a different installation")
             elif command.installation_receipt_digest is not None:
                 raise ValueError(
                     "release command evidence has an unexpected installation prerequisite"
@@ -667,9 +658,7 @@ def build_release_report(
         flow_artifact_stores,
     )
     commands = tuple(project_release_command(item) for item in command_receipts)
-    campaign_stores = (
-        {} if campaign_artifact_stores is None else campaign_artifact_stores
-    )
+    campaign_stores = {} if campaign_artifact_stores is None else campaign_artifact_stores
     campaigns = _campaign_evidence(
         campaign_records,
         campaign_reports,
@@ -681,8 +670,7 @@ def build_release_report(
         campaign_environments,
         tuple(
             {
-                item.task.digest: item.task
-                for item in (*sail_task_documents, *flow_task_documents)
+                item.task.digest: item.task for item in (*sail_task_documents, *flow_task_documents)
             }.values()
         ),
         (
@@ -697,9 +685,7 @@ def build_release_report(
         backend_qualification_sources,
         campaign_stores,
     )
-    participant_stores = (
-        {} if participant_artifact_stores is None else participant_artifact_stores
-    )
+    participant_stores = {} if participant_artifact_stores is None else participant_artifact_stores
     participant_modes = project_participant_mode_suite(
         run_records=participant_run_records,
         task_specs=participant_task_specs,
@@ -787,27 +773,21 @@ def _flow_evidence(
     artifact_stores: Mapping[Digest, ContentAddressedStore],
 ) -> tuple[FlowReleaseEvidence, ...]:
     flow_families = {
-        item.family: item
-        for item in public_catalog.families
-        if item.root is TaskRoot.EDA_FLOW
+        item.family: item for item in public_catalog.families if item.root is TaskRoot.EDA_FLOW
     }
     if (
         not flow_families
         or catalog.public_catalog_digest != public_catalog.digest
         or catalog.attestation != catalog_attestation
         or set(catalog.families) != set(flow_families)
-        or catalog_attestation.capability
-        is not PrivateAuthoringCapability.EDA_FLOW_CATALOG
+        or catalog_attestation.capability is not PrivateAuthoringCapability.EDA_FLOW_CATALOG
         or catalog_attestation.public_catalog_digest != public_catalog.digest
     ):
         raise ValueError("flow sources do not bind the complete public task catalog")
-    family_attestations = {
-        item.family: item for item in catalog_attestation.families
-    }
-    if (
-        len(family_attestations) != len(catalog_attestation.families)
-        or set(family_attestations) != set(flow_families)
-    ):
+    family_attestations = {item.family: item for item in catalog_attestation.families}
+    if len(family_attestations) != len(catalog_attestation.families) or set(
+        family_attestations
+    ) != set(flow_families):
         raise ValueError("sealed flow attestation must exactly cover public flow metadata")
     documents: dict[str, DerivedTaskDocument] = {}
     for document in task_documents:
@@ -829,9 +809,7 @@ def _flow_evidence(
     response_by_reference = {
         item.instance_reference_digest: item for item in qualification_responses
     }
-    expected_references = {
-        document.instance_reference.digest for document in documents.values()
-    }
+    expected_references = {document.instance_reference.digest for document in documents.values()}
     if (
         len(response_by_reference) != len(qualification_responses)
         or set(response_by_reference) != expected_references
@@ -866,9 +844,7 @@ def _flow_evidence(
             raise ValueError("flow evidence requires a release-qualified flow manifest")
         if not isinstance(task.qualification, FlowQualificationSpec):
             raise ValueError("flow TaskSpec requires flow qualification semantics")
-        evaluator_capabilities = {
-            evaluator.capability for evaluator in task.evaluation.evaluators
-        }
+        evaluator_capabilities = {evaluator.capability for evaluator in task.evaluation.evaluators}
         matching_instance_evidence = tuple(
             item
             for item in family_attestation.instances
@@ -883,8 +859,7 @@ def _flow_evidence(
         if (
             family_attestation.public_metadata_digest != metadata.digest
             or family_attestation.task_spec_digest != task.digest
-            or response.descriptor.digest
-            != catalog_attestation.provider_descriptor_digest
+            or response.descriptor.digest != catalog_attestation.provider_descriptor_digest
             or response.descriptor.implementation_digest
             != catalog_attestation.provider_implementation_digest
             or response.descriptor.security_qualification_digest
@@ -908,8 +883,7 @@ def _flow_evidence(
             or instance_evidence.task_spec_digest != task.digest
             or instance_evidence.task_instance_digest != instance.digest
             or instance_evidence.release_digest != release.digest
-            or instance_evidence.participant_bundle_digest
-            != release.participant_bundle_digest
+            or instance_evidence.participant_bundle_digest != release.participant_bundle_digest
             or instance_evidence.verifier_bundle_digest != release.verifier_bundle_digest
             or instance_evidence.release_qualification_digest != qualification.digest
             or qualification.witness_resource_id != expected_witness_id
@@ -920,8 +894,7 @@ def _flow_evidence(
             raise ValueError("flow release diverges from its sealed public authoring sources")
         environment_digest = release.environment_digests[0]
         inventory_by_resource = {
-            item.candidate_resource_id: item
-            for item in family_attestation.flow_candidate_inventory
+            item.candidate_resource_id: item for item in family_attestation.flow_candidate_inventory
         }
         evidence_by_resource = {
             qualification.witness_resource_id: qualification.witness_evidence_digest,
@@ -945,18 +918,14 @@ def _flow_evidence(
             )
         except (KeyError, RuntimeError, ValueError) as error:
             raise ValueError("flow qualification failed live catalog and CAS replay") from error
-        candidate_attestations = {
-            item.candidate_resource_id: item
-            for item in joined_attestations
-        }
+        candidate_attestations = {item.candidate_resource_id: item for item in joined_attestations}
         expected_candidate_ids = {expected_witness_id, *expected_negative_ids}
         if (
             len(candidate_attestations) != len(expected_candidate_ids)
             or set(candidate_attestations) != expected_candidate_ids
             or set(inventory_by_resource) != expected_candidate_ids
             or any(
-                item.environment_spec_digest != environment_digest
-                for item in joined_attestations
+                item.environment_spec_digest != environment_digest for item in joined_attestations
             )
             or any(
                 item.candidate_id != inventory_by_resource[resource_id].candidate_id
@@ -1255,13 +1224,11 @@ def _campaign_evidence(
                 model_set_digest=model_set.digest,
                 model_discovery_digest=discovery_digest,
                 comparison_digest=_campaign_comparison_digest(record.header),
-                controlled_variables_digest=_campaign_controlled_variables_digest(
-                    record.header
-                ),
+                controlled_variables_digest=_campaign_controlled_variables_digest(record.header),
                 provider_logical_id=record.header.provider_config.profile.logical_id,
                 provider_profile_digest=record.header.provider_config.profile.digest,
                 provider_config_digest=record.header.provider_config.digest,
-                route_ids=campaign.route_ids,
+                route_ids=tuple(sorted({cell.definition.model_id for cell in record.header.cells})),
                 route_canary_evidence_digests=campaign_canaries,
                 task_bindings=tuple(
                     CampaignTaskBindingEvidence(
@@ -1270,8 +1237,12 @@ def _campaign_evidence(
                     )
                     for task in record.header.tasks
                 ),
-                reasoning_efforts=campaign.reasoning_efforts,
-                paired_trial_seeds=campaign.paired_trial_seeds,
+                reasoning_efforts=tuple(
+                    sorted({cell.policy.reasoning_effort for cell in record.header.cells})
+                ),
+                paired_trial_seeds=tuple(
+                    sorted({trial.binding.paired_seed for trial in record.header.schedule.trials})
+                ),
                 covered_model_categories=tuple(
                     {category for route in model_set.routes for category in route.categories}
                 ),
@@ -1336,10 +1307,8 @@ def _route_canary_sources(
             or canary.requested_model != route.requested_model
             or canary.provider_reported_model != route.provider_reported_model
             or canary.reasoning_control is not route.qualification.reasoning_control
-            or canary.tool_schema_digest
-            != route.qualification.canary_tool_schema_digest
-            or canary.observed_input_token_floor
-            != route.qualification.observed_input_token_floor
+            or canary.tool_schema_digest != route.qualification.canary_tool_schema_digest
+            or canary.observed_input_token_floor != route.qualification.observed_input_token_floor
             or canary.service_tier_requested != route.qualification.requested_service_tier
             or canary.provider_reported_service_tier
             != route.qualification.provider_reported_service_tier
@@ -1350,56 +1319,46 @@ def _route_canary_sources(
 
 
 def _campaign_comparison_digest(header: CampaignHeader) -> Digest:
-    campaign = header.campaign
     return canonical_digest(
         {
             **_campaign_controlled_variables(header),
             "tasks": header.tasks,
-            "reasoning_efforts": campaign.reasoning_efforts,
+            "cells": header.cells,
         },
-        domain="release-campaign-comparison-v1",
+        domain="release-campaign-comparison-v2",
     )
 
 
 def _campaign_controlled_variables_digest(header: CampaignHeader) -> Digest:
     return canonical_digest(
         _campaign_controlled_variables(header),
-        domain="release-campaign-controlled-variables-v1",
+        domain="release-campaign-controlled-variables-v2",
     )
 
 
 def _campaign_controlled_variables(header: CampaignHeader) -> dict[str, object]:
     campaign = header.campaign
-    token_limits = campaign.token_limits
-    execution_limits = campaign.execution_limits
-    routes = {item.route_id: item for item in header.model_set.routes}
+    # Reasoning effort is the sensitivity experiment's independent variable.
+    # Preserve each route/harness/non-effort policy association while excluding it.
+    bindings = {
+        canonical_digest(
+            {
+                "model_id": cell.definition.model_id,
+                "harness": cell.harness,
+                "service_tier": cell.policy.service_tier,
+                "feedback_policy_digest": cell.policy.feedback_policy_digest,
+            },
+            domain="release-campaign-controlled-cell-v1",
+        )
+        for cell in header.cells
+    }
     return {
         "model_set_digest": campaign.model_set_digest,
-        "routes": tuple(routes[route_id] for route_id in campaign.route_ids),
+        "cell_bindings": tuple(sorted(bindings)),
         "prompt_digest": campaign.prompt_digest,
-        "tool_schema_digest": campaign.tool_schema_digest,
-        "feedback_policy_digest": campaign.feedback_policy_digest,
-        "service_tier": campaign.service_tier,
-        "task_order_seed": campaign.task_order_seed,
+        "schedule_seed": header.benchmark.schedule_seed,
         "retry_policy": campaign.retry_policy,
-        "token_limits": {
-            "max_requests_per_trial": token_limits.max_requests_per_trial,
-            "max_input_tokens_per_request": token_limits.max_input_tokens_per_request,
-            "max_output_tokens_per_request": token_limits.max_output_tokens_per_request,
-            "max_input_tokens_per_trial": token_limits.max_input_tokens_per_trial,
-            "max_output_tokens_per_trial": token_limits.max_output_tokens_per_trial,
-            "max_total_tokens_per_trial": token_limits.max_total_tokens_per_trial,
-        },
-        "execution_limits": {
-            "max_turns_per_trial": execution_limits.max_turns_per_trial,
-            "max_tool_calls_per_trial": execution_limits.max_tool_calls_per_trial,
-            "max_wall_seconds_per_trial": execution_limits.max_wall_seconds_per_trial,
-            "max_eda_compute_seconds_per_trial": (
-                execution_limits.max_eda_compute_seconds_per_trial
-            ),
-            "max_license_seconds_per_trial": execution_limits.max_license_seconds_per_trial,
-            "max_artifact_bytes_per_trial": execution_limits.max_artifact_bytes_per_trial,
-        },
+        "episode_budget": header.benchmark.episode_budget,
         "stop_policy": campaign.stop_policy,
     }
 
@@ -1437,9 +1396,7 @@ def _campaign_suite_status(
     sensitivity = by_scope[CampaignScope.REASONING_EFFORT_SENSITIVITY]
     paired = (pilot, common_core)
     compared = (*paired, sensitivity)
-    pilot_tasks = {
-        item.task_release_digest: item.binding_digest for item in pilot.task_bindings
-    }
+    pilot_tasks = {item.task_release_digest: item.binding_digest for item in pilot.task_bindings}
     common_tasks = {
         item.task_release_digest: item.binding_digest for item in common_core.task_bindings
     }

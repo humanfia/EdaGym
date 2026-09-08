@@ -16,7 +16,7 @@ from edagym.benchmark.model import (
     ModelContrast,
     TrialObservation,
 )
-from edagym.benchmark.schedule import build_benchmark_schedule
+from edagym.benchmark.schedule import require_qualified_cases
 from edagym.benchmark.statistics import compute_paired_contrasts, compute_quality_gate
 from edagym.specs.release import TaskInstance
 
@@ -48,7 +48,7 @@ def build_quality_report(
     if spec.bootstrap_resamples < spec.minimum_resamples:
         reasons.append("resampling_tail_resolution_insufficient")
     try:
-        build_benchmark_schedule(spec, instances=instances)
+        require_qualified_cases(spec, instances)
     except ValueError:
         reasons.append("task_qualification_missing")
     if gate["invalid_rate"] > spec.max_invalid_rate:
@@ -67,8 +67,7 @@ def build_quality_report(
     if any(value is not None and value >= Decimal("0.30") for value in rates.values()):
         reasons.append("model_point_estimate_reaches_saturation")
     ideal_window = bool(rates) and all(
-        value is not None and Decimal("0.10") <= value < Decimal("0.30")
-        for value in rates.values()
+        value is not None and Decimal("0.10") <= value < Decimal("0.30") for value in rates.values()
     )
     roster_lower = gate["roster_lower"]
     if roster_lower is None or roster_lower <= 0:
@@ -124,7 +123,8 @@ def _preregistration_gaps(spec: BenchmarkSpec) -> tuple[str, ...]:
         return ("three_tier_model_groups_not_preregistered",)
     registered = {
         (item.kind, item.left_model_id, item.right_model_id)
-        for item in spec.contrast_hypotheses if isinstance(item, ModelContrast)
+        for item in spec.contrast_hypotheses
+        if isinstance(item, ModelContrast)
     }
     for cells in groups.values():
         ordered = sorted(cells, key=lambda cell: cell.tier_rank or 0)
@@ -140,12 +140,15 @@ def _preregistration_gaps(spec: BenchmarkSpec) -> tuple[str, ...]:
             return ("core_model_contrasts_not_preregistered",)
     for layer in {item.engineering_layer for item in spec.strata}:
         gradients = [
-            item for item in spec.contrast_hypotheses
+            item
+            for item in spec.contrast_hypotheses
             if isinstance(item, DifficultyContrast) and item.engineering_layer == layer
         ]
         if len(gradients) < 2 or not any(
             first.harder_difficulty_id == second.easier_difficulty_id
-            for first in gradients for second in gradients if first != second
+            for first in gradients
+            for second in gradients
+            if first != second
         ):
             return ("difficulty_progression_not_preregistered",)
     return ()

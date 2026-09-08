@@ -8,13 +8,13 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
+from edagym.benchmark.model import EpisodeBudget
+from edagym.benchmark.schedule import build_benchmark_schedule
 from edagym.evaluation.model import CandidateFailureOutcome, PassedOutcome, StageResult
 from edagym.providers.campaign import (
     CampaignExecutionLimits,
     CampaignScope,
-    CampaignSpec,
     CampaignTokenLimits,
     CappedSpendLimit,
     FeatureSupport,
@@ -44,6 +44,7 @@ from edagym.providers.campaign_runner import (
     UnknownSpendReason,
 )
 from edagym.providers.campaign_schedule import (
+    CampaignHeader,
     CampaignTask,
     CampaignTaskRole,
     MeteredProviderHarnessBinding,
@@ -75,6 +76,7 @@ from edagym.run.trial_model import (
 )
 from edagym.specs.common import Capability, ProviderResponseStatus, Redistribution
 from edagym.specs.task import PublicCalibrationTaskOrigin
+from tests.campaign_fixtures import campaign_cells, campaign_header
 
 
 def _digest(label: str) -> str:
@@ -133,6 +135,33 @@ def _tasks(count: int = 8) -> tuple[CampaignTask, ...]:
         CampaignTaskRole.TOOL_FAILURE_RECOVERY: Capability.RTL_LINT,
         CampaignTaskRole.LONG_RUN_RESUME: Capability.DIGITAL_IMPLEMENTATION,
     }
+    return tuple(
+        CampaignTask(
+            task_release_digest=_digest(f"release-{index}"),
+            task_instance_digest=_digest(f"instance-{index}"),
+            task_family=f"task-family-{index}",
+            role=roles[index % len(roles)],
+            device_capability=capabilities[roles[index % len(roles)]],
+            environment_digest=_digest(f"environment-{index}"),
+            evaluator_stage_ids=(f"verify-{index}", f"qor-{index}"),
+        )
+        for index in range(count)
+    )
+
+
+def _header(
+    *,
+    scope: CampaignScope,
+    tasks: tuple[CampaignTask, ...],
+    model_set: ModelSetManifest,
+    repetition_count: int,
+    max_requests: int = 64,
+    episode_max_requests: int = 4,
+    episode_max_total_tokens: int = 1000,
+    max_wall_seconds: int = 100,
+    route_ids: tuple[str, ...] | None = None,
+    reasoning_efforts: tuple[str, ...] = ("high",),
+) -> CampaignHeader:
     configuration = _provider_config()
     harness = MeteredProviderHarnessBinding(
         harness_id="responses-harness",
@@ -143,50 +172,36 @@ def _tasks(count: int = 8) -> tuple[CampaignTask, ...]:
         scaffold_digest=_digest("scaffold"),
         maximum_requests_per_action=4,
     )
-    return tuple(
-        CampaignTask(
-            task_release_digest=_digest(f"release-{index}"),
-            task_family=f"task-family-{index}",
-            role=roles[index % len(roles)],
-            device_capability=capabilities[roles[index % len(roles)]],
-            environment_digest=_digest(f"environment-{index}"),
-            harness=harness,
-            evaluator_stage_ids=(f"verify-{index}", f"qor-{index}"),
-        )
-        for index in range(count)
-    )
-
-
-def _campaign(
-    *,
-    scope: CampaignScope,
-    tasks: tuple[CampaignTask, ...],
-    model_set: ModelSetManifest,
-    seeds: tuple[str, ...],
-    max_requests: int = 64,
-    max_requests_per_trial: int = 4,
-    max_total_tokens_per_trial: int = 1000,
-    max_wall_seconds: int = 100,
-    route_ids: tuple[str, ...] | None = None,
-    reasoning_efforts: tuple[str, ...] = ("high",),
-) -> CampaignSpec:
-    return CampaignSpec(
+    return campaign_header(
         campaign_id="provider-evaluation",
         scope=scope,
-        model_set_digest=model_set.digest,
-        route_ids=(
-            tuple(route.route_id for route in model_set.routes) if route_ids is None else route_ids
+        model_set=model_set,
+        provider_config=configuration,
+        tasks=tasks,
+        cells=campaign_cells(
+            model_set=model_set,
+            harnesses=(harness,),
+            feedback_policy_digest=_digest("feedback"),
+            reasoning_efforts=reasoning_efforts,
+            route_ids=route_ids,
         ),
-        task_release_digests=tuple(sorted({task.task_release_digest for task in tasks})),
-        environment_digests=tuple(sorted({task.environment_digest for task in tasks})),
-        harness_digests=tuple(sorted({task.harness_digest for task in tasks})),
-        prompt_digest=_digest("prompt"),
-        tool_schema_digest=_digest("tools"),
-        feedback_policy_digest=_digest("feedback"),
-        reasoning_efforts=reasoning_efforts,
-        service_tier="fast",
-        paired_trial_seeds=seeds,
-        task_order_seed=_seed(91),
+        episode_budget=EpisodeBudget(
+            max_experiments=4,
+            max_requests=episode_max_requests,
+            max_input_tokens_per_request=100,
+            max_output_tokens_per_request=100,
+            max_input_tokens=600,
+            max_output_tokens=600,
+            max_total_tokens=episode_max_total_tokens,
+            max_turns=4,
+            max_tool_calls=2,
+            max_wall_seconds=min(max_wall_seconds, 25),
+            max_eda_compute_seconds=80,
+            max_license_seconds=60,
+            max_artifact_bytes=1000,
+        ),
+        repetition_count=repetition_count,
+        schedule_seed=_seed(91),
         retry_policy=RetryPolicy(
             max_request_attempts=2,
             backoff_milliseconds=0,
@@ -194,23 +209,11 @@ def _campaign(
         ),
         token_limits=CampaignTokenLimits(
             max_requests=max_requests,
-            max_requests_per_trial=max_requests_per_trial,
-            max_input_tokens_per_request=100,
-            max_output_tokens_per_request=100,
-            max_input_tokens_per_trial=600,
-            max_output_tokens_per_trial=600,
-            max_total_tokens_per_trial=max_total_tokens_per_trial,
             max_input_tokens=6400,
             max_output_tokens=6400,
             max_total_tokens=12800,
         ),
         execution_limits=CampaignExecutionLimits(
-            max_turns_per_trial=4,
-            max_tool_calls_per_trial=2,
-            max_wall_seconds_per_trial=min(max_wall_seconds, 25),
-            max_eda_compute_seconds_per_trial=80,
-            max_license_seconds_per_trial=60,
-            max_artifact_bytes_per_trial=1000,
             max_turns=256,
             max_tool_calls=128,
             max_wall_seconds=max_wall_seconds,
@@ -220,11 +223,7 @@ def _campaign(
         ),
         provider_spend_limit=(
             CappedSpendLimit(currency="USD", amount=Decimal("1"))
-            if scope
-            in {
-                CampaignScope.END_TO_END_SMOKE,
-                CampaignScope.EXPANDED_BREADTH,
-            }
+            if scope in {CampaignScope.END_TO_END_SMOKE, CampaignScope.EXPANDED_BREADTH}
             else UnknownSpendLimit()
         ),
     )
@@ -346,7 +345,7 @@ def _run_binding(runner: CampaignRunner, trial_index: int) -> RunBinding:
             authoring_revision=1,
             task_spec_digest=_digest(f"spec-{binding.task_family}"),
             instance_seed=binding.paired_seed,
-            instance_digest=_digest(f"instance-{trial.trial_id}"),
+            instance_digest=binding.task_instance_digest,
             release_digest=binding.task_release_digest,
         ),
         environment=EnvironmentRunBinding(
@@ -376,7 +375,7 @@ def _run_binding(runner: CampaignRunner, trial_index: int) -> RunBinding:
             ),
             initial_writer="test-harness",
             handoff_enabled=False,
-            feedback_policy_digest=runner.campaign.feedback_policy_digest,
+            feedback_policy_digest=binding.evaluation_cell.policy.feedback_policy_digest,
             budget_digest=_digest("run-budget"),
         ),
         evaluators=(
@@ -397,21 +396,6 @@ def _run_binding(runner: CampaignRunner, trial_index: int) -> RunBinding:
             reasoning_effort=binding.reasoning_effort,
             service_tier=binding.service_tier,
         ),
-    )
-
-
-def _runner(
-    campaign: CampaignSpec,
-    model_set: ModelSetManifest,
-    tasks: tuple[CampaignTask, ...],
-    state_root: Path,
-) -> CampaignRunner:
-    return CampaignRunner(
-        campaign=campaign,
-        model_set=model_set,
-        tasks=tasks,
-        provider_config=_provider_config(),
-        state_root=state_root,
     )
 
 
@@ -436,30 +420,30 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
     )
     model_set = _model_set(*routes)
     tasks = _tasks(3)
-    campaign = _campaign(
-        scope=CampaignScope.COMMON_CORE,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(3), _seed(1), _seed(2)),
+    header = _header(
+        scope=CampaignScope.COMMON_CORE, tasks=tasks, model_set=model_set, repetition_count=3
     )
 
-    schedule = build_campaign_schedule(campaign, model_set, tasks)
-    rebuilt = build_campaign_schedule(campaign, model_set, tuple(reversed(tasks)))
+    schedule = build_campaign_schedule(
+        header.campaign, model_set, tasks, header.benchmark, header.cells
+    )
+    rebuilt = build_campaign_schedule(
+        header.campaign, model_set, tuple(reversed(tasks)), header.benchmark, header.cells
+    )
     assert schedule == rebuilt
     assert len(schedule.trials) == len(tasks) * len(routes) * 3
     assert tuple(trial.ordinal for trial in schedule.trials) == tuple(range(18))
-    combinations = {
-        (
-            trial.binding.task_release_digest,
-            trial.binding.route_id,
-            trial.binding.paired_seed,
-        )
-        for trial in schedule.trials
-    }
-    assert combinations == {
-        (task.task_release_digest, route.route_id, seed)
-        for task in tasks for route in routes for seed in campaign.paired_trial_seeds
-    }
+    for task in tasks:
+        for repetition in range(3):
+            paired = [
+                trial.binding
+                for trial in schedule.trials
+                if trial.binding.task_instance_digest == task.task_instance_digest
+                and trial.binding.repetition_index == repetition
+            ]
+            assert {binding.route_id for binding in paired} == {route.route_id for route in routes}
+            assert len({binding.paired_seed for binding in paired}) == 1
+    assert len({trial.binding.paired_seed for trial in schedule.trials}) == len(tasks) * 3
     assert len({trial.trial_id for trial in schedule.trials}) == 18
     for repetition in range(3):
         observed = tuple(
@@ -468,7 +452,7 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
             if trial.binding.repetition_index == repetition
         )[:: len(routes)]
         assert observed == schedule.ordered_task_release_digests
-    projection = _runner(campaign, model_set, tasks, tmp_path / "scope").budget_projection()
+    projection = CampaignRunner(header=header, state_root=tmp_path / "scope").budget_projection()
     assert projection.trial_count == 18
     assert projection.global_limits == CampaignResources(
         requests=64,
@@ -496,28 +480,23 @@ def test_scope_contract_and_schedule_freeze_the_full_paired_product(tmp_path: Pa
     assert projection.per_trial_limits.tool_calls == 2
     assert projection.global_total_token_limit == 12800
 
-    common_values = campaign.model_dump(mode="python")
-    pilot = CampaignSpec.model_validate(
-        {
-            **common_values,
-            "scope": CampaignScope.MODEL_COMPARISON_PILOT,
-            "paired_trial_seeds": (_seed(1), _seed(2)),
-        }
+    pilot = _header(
+        scope=CampaignScope.MODEL_COMPARISON_PILOT,
+        tasks=tasks,
+        model_set=model_set,
+        repetition_count=2,
     )
-    assert len(build_campaign_schedule(pilot, model_set, tasks).trials) == 12
-    effort_campaign = CampaignSpec.model_validate(
-        {
-            **common_values,
-            "scope": CampaignScope.EXPANDED_BREADTH,
-            "paired_trial_seeds": (_seed(1),),
-            "reasoning_efforts": ("high", "low"),
-            "provider_spend_limit": CappedSpendLimit(
-                currency="USD",
-                amount=Decimal("1"),
-            ),
-        }
-    )
-    effort_schedule = build_campaign_schedule(effort_campaign, model_set, tasks)
+    assert len(pilot.schedule.trials) == 12
+    assert {trial.binding.paired_seed for trial in pilot.schedule.trials} <= {
+        trial.binding.paired_seed for trial in schedule.trials
+    }
+    effort_schedule = _header(
+        scope=CampaignScope.EXPANDED_BREADTH,
+        tasks=tasks,
+        model_set=model_set,
+        repetition_count=1,
+        reasoning_efforts=("high", "low"),
+    ).schedule
     assert len(effort_schedule.trials) == len(tasks) * len(routes) * 2
     assert {trial.binding.reasoning_effort for trial in effort_schedule.trials} == {
         "high",
@@ -538,15 +517,17 @@ def test_end_to_end_smoke_limits_model_dispatch_without_expanding_tasks() -> Non
     )
     model_set = _model_set(*routes)
     tasks = _tasks(1)
-    campaign = _campaign(
+    header = _header(
         scope=CampaignScope.END_TO_END_SMOKE,
         tasks=tasks,
         model_set=model_set,
-        seeds=(_seed(1),),
+        repetition_count=1,
         route_ids=(routes[0].route_id,),
     )
 
-    schedule = build_campaign_schedule(campaign, model_set, tasks)
+    schedule = build_campaign_schedule(
+        header.campaign, model_set, tasks, header.benchmark, header.cells
+    )
     assert len(schedule.trials) == 1
     assert {trial.binding.route_id for trial in schedule.trials} == {routes[0].route_id}
     spoofed_capability = (
@@ -554,32 +535,35 @@ def test_end_to_end_smoke_limits_model_dispatch_without_expanding_tasks() -> Non
         tasks[-1].model_copy(update={"device_capability": Capability.STATIC_TIMING}),
     )
     with pytest.raises(ValueError, match="capability is not admitted"):
-        build_campaign_schedule(campaign, model_set, spoofed_capability)
-    values = campaign.model_dump(mode="python")
-    with pytest.raises(ValueError):
-        CampaignSpec.model_validate(
-            {
-                **values,
-                "route_ids": tuple(route.route_id for route in routes),
-            }
+        build_campaign_schedule(
+            header.campaign, model_set, spoofed_capability, header.benchmark, header.cells
         )
-    with pytest.raises(ValueError):
-        CampaignSpec.model_validate(
-            {
-                **values,
-                "paired_trial_seeds": (_seed(1), _seed(2), _seed(3)),
-            }
+    with pytest.raises(ValueError, match="one cell and one repetition"):
+        _header(
+            scope=CampaignScope.END_TO_END_SMOKE,
+            tasks=tasks,
+            model_set=model_set,
+            repetition_count=1,
         )
-    unknown_spend = CampaignSpec.model_validate(
-        {
-            **values,
-            "provider_spend_limit": UnknownSpendLimit(),
+    with pytest.raises(ValueError, match="one cell and one repetition"):
+        _header(
+            scope=CampaignScope.END_TO_END_SMOKE,
+            tasks=tasks,
+            model_set=model_set,
+            repetition_count=3,
+            route_ids=(routes[0].route_id,),
+        )
+    missing = header.cells[0].model_copy(
+        update={
+            "definition": header.cells[0].definition.model_copy(
+                update={"model_id": "missing-route"}
+            )
         }
     )
-    assert isinstance(unknown_spend.provider_spend_limit, UnknownSpendLimit)
-    missing_route = campaign.model_copy(update={"route_ids": ("missing-route",)})
-    with pytest.raises(ValueError, match="frozen model set"):
-        build_campaign_schedule(missing_route, model_set, tasks)
+    benchmark = header.benchmark.model_copy(update={"evaluation_cells": (missing.definition,)})
+    campaign = header.campaign.model_copy(update={"benchmark_spec_digest": benchmark.digest})
+    with pytest.raises(ValueError, match="qualified routes"):
+        build_campaign_schedule(campaign, model_set, tasks, benchmark, (missing,))
 
 
 def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
@@ -595,15 +579,17 @@ def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
     )
     model_set = _model_set(*routes)
     tasks = _tasks(2)
-    campaign = _campaign(
+    header = _header(
         scope=CampaignScope.REASONING_EFFORT_SENSITIVITY,
         tasks=tasks,
         model_set=model_set,
-        seeds=(_seed(1),),
+        repetition_count=1,
         reasoning_efforts=("high", "max"),
     )
 
-    schedule = build_campaign_schedule(campaign, model_set, tasks)
+    schedule = build_campaign_schedule(
+        header.campaign, model_set, tasks, header.benchmark, header.cells
+    )
     assert len(schedule.trials) == 8
     assert {trial.binding.route_id for trial in schedule.trials} == {
         route.route_id for route in routes
@@ -612,33 +598,31 @@ def test_reasoning_effort_sensitivity_is_a_distinct_paired_product() -> None:
         "high",
         "max",
     }
-    assert {
-        (
-            trial.binding.task_release_digest,
-            trial.binding.route_id,
-            trial.binding.reasoning_effort,
-            trial.binding.paired_seed,
-        )
-        for trial in schedule.trials
-    } == {
-        (task.task_release_digest, route.route_id, effort, _seed(1))
-        for task in tasks
-        for route in routes
-        for effort in ("high", "max")
-    }
-
-    with pytest.raises(ValueError):
-        CampaignSpec.model_validate(
-            {
-                **campaign.model_dump(mode="python"),
-                "reasoning_efforts": ("high",),
-            }
+    for task in tasks:
+        paired = [
+            trial.binding
+            for trial in schedule.trials
+            if trial.binding.task_instance_digest == task.task_instance_digest
+        ]
+        assert {(binding.route_id, binding.reasoning_effort) for binding in paired} == {
+            (route.route_id, effort) for route in routes for effort in ("high", "max")
+        }
+        assert len({binding.paired_seed for binding in paired}) == 1
+    with pytest.raises(ValueError, match="multiple effort policies"):
+        _header(
+            scope=CampaignScope.REASONING_EFFORT_SENSITIVITY,
+            tasks=tasks,
+            model_set=model_set,
+            repetition_count=1,
         )
     with pytest.raises(ValueError, match="every reasoning-qualified route"):
-        build_campaign_schedule(
-            campaign.model_copy(update={"route_ids": (routes[0].route_id,)}),
-            model_set,
-            tasks,
+        _header(
+            scope=CampaignScope.REASONING_EFFORT_SENSITIVITY,
+            tasks=tasks,
+            model_set=model_set,
+            repetition_count=1,
+            reasoning_efforts=("high", "max"),
+            route_ids=(routes[0].route_id,),
         )
 
 
@@ -656,13 +640,10 @@ def test_campaign_report_preserves_requested_and_reported_service_tiers(
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "service-tier")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "service-tier")
     runner.record_outcome(
         trial_id=runner.schedule.trials[0].trial_id,
         outcome=_complete_outcome(
@@ -676,10 +657,11 @@ def test_campaign_report_preserves_requested_and_reported_service_tiers(
 
     report = runner.build_report()
     accounting = report.service_tier_accounting
-    assert accounting.requested_service_tier == "fast"
     assert tuple(
-        (item.provider_reported_service_tier, item.count)
-        for item in accounting.provider_reported_service_tiers
+        (item.service_tier, item.count) for item in accounting.requested_service_tiers
+    ) == (("fast", 1),)
+    assert tuple(
+        (item.service_tier, item.count) for item in accounting.provider_reported_service_tiers
     ) == (("default", 1),)
     assert accounting.unknown_attempts == 0
     assert accounting.reported_tier_mismatches == CountRatio(numerator=1, denominator=1)
@@ -707,49 +689,20 @@ def test_public_calibration_is_excluded_from_every_paid_campaign_scope() -> None
         provenance=("https://github.com/hkust-zhiyao/rtllm",),
     )
     tasks = tuple(task.model_copy(update={"task_origin": origin}) for task in _tasks())
-    smoke_tasks = tasks[:3]
-    campaigns = (
-        (
-            _campaign(
-                scope=CampaignScope.END_TO_END_SMOKE,
-                tasks=smoke_tasks,
-                model_set=model_set,
-                seeds=(_seed(1),),
-                route_ids=(routes[0].route_id,),
-            ),
-            smoke_tasks,
-        ),
-        (
-            _campaign(
-                scope=CampaignScope.MODEL_COMPARISON_PILOT,
-                tasks=tasks,
-                model_set=model_set,
-                seeds=(_seed(1),),
-            ),
-            tasks,
-        ),
-        (
-            _campaign(
-                scope=CampaignScope.COMMON_CORE,
-                tasks=tasks,
-                model_set=model_set,
-                seeds=(_seed(1), _seed(2), _seed(3)),
-            ),
-            tasks,
-        ),
-        (
-            _campaign(
-                scope=CampaignScope.EXPANDED_BREADTH,
-                tasks=tasks,
-                model_set=model_set,
-                seeds=(_seed(1),),
-            ),
-            tasks,
-        ),
-    )
-    for campaign, campaign_tasks in campaigns:
+    for scope in CampaignScope:
         with pytest.raises(ValueError, match="native sealed"):
-            build_campaign_schedule(campaign, model_set, campaign_tasks)
+            _header(
+                scope=scope,
+                tasks=tasks,
+                model_set=model_set,
+                repetition_count=1,
+                route_ids=(routes[0].route_id,)
+                if scope is CampaignScope.END_TO_END_SMOKE
+                else None,
+                reasoning_efforts=("high", "max")
+                if scope is CampaignScope.REASONING_EFFORT_SENSITIVITY
+                else ("high",),
+            )
 
 
 def test_unknown_provider_usage_is_retained_and_stops_further_dispatch(
@@ -766,13 +719,10 @@ def test_unknown_provider_usage_is_retained_and_stops_further_dispatch(
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "accounting")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "accounting")
     trial = runner.schedule.trials[0]
 
     first = runner.reserve_provider_attempt(
@@ -808,9 +758,7 @@ def test_unknown_provider_usage_is_retained_and_stops_further_dispatch(
         outcome=TrialRunOutcome(
             disposition=TrialDisposition.FAILED_BEFORE_RUN,
             terminal_reason=StopReason.INFRASTRUCTURE_FAILURE,
-            provider_spend=UnknownSpend(
-                reason=UnknownSpendReason.PROVIDER_REPORTING_INCOMPLETE
-            ),
+            provider_spend=UnknownSpend(reason=UnknownSpendReason.PROVIDER_REPORTING_INCOMPLETE),
         ),
     )
     report = runner.build_report()
@@ -841,13 +789,10 @@ def test_report_requires_every_trial_and_aggregates_failures_without_selection(
     )
     model_set = _model_set(*routes)
     tasks = _tasks()
-    campaign = _campaign(
-        scope=CampaignScope.COMMON_CORE,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1), _seed(2), _seed(3)),
+    header = _header(
+        scope=CampaignScope.COMMON_CORE, tasks=tasks, model_set=model_set, repetition_count=3
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "report")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "report")
 
     with pytest.raises(CampaignAccountingError, match="every scheduled trial"):
         runner.build_report()
@@ -881,7 +826,7 @@ def test_report_requires_every_trial_and_aggregates_failures_without_selection(
     assert {item.success.denominator for item in report.task_aggregates} == {6}
     assert {item.success.denominator for item in report.device_aggregates} == {6}
     assert {item.success.denominator for item in report.model_aggregates} == {24}
-    assert {item.success.denominator for item in report.model_effort_aggregates} == {24}
+    assert {item.success.denominator for item in report.cell_aggregates} == {24}
     assert report.spend.unknown_trial_count == 48
     assert report.terminal_reasons[0].count + report.terminal_reasons[1].count == 48
 
@@ -912,14 +857,14 @@ def test_global_wall_budget_rejects_before_cross_trial_dispatch(tmp_path: Path) 
     )
     model_set = _model_set(route)
     tasks = _tasks(2)
-    campaign = _campaign(
+    header = _header(
         scope=CampaignScope.EXPANDED_BREADTH,
         tasks=tasks,
         model_set=model_set,
-        seeds=(_seed(1),),
+        repetition_count=1,
         max_wall_seconds=10,
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "wall")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "wall")
     first, second = runner.schedule.trials
 
     reservation = runner.reserve_work(
@@ -963,13 +908,10 @@ def test_provider_usage_overrun_is_retained_and_poisoned(tmp_path: Path) -> None
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "overrun")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "overrun")
     trial = runner.schedule.trials[0]
     reservation = runner.reserve_provider_attempt(
         trial_id=trial.trial_id,
@@ -1020,15 +962,15 @@ def test_concurrent_provider_reservations_cannot_cross_the_global_cap(tmp_path: 
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
+    header = _header(
         scope=CampaignScope.EXPANDED_BREADTH,
         tasks=tasks,
         model_set=model_set,
-        seeds=(_seed(1),),
+        repetition_count=1,
         max_requests=4,
-        max_requests_per_trial=4,
+        episode_max_requests=4,
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "concurrent")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "concurrent")
     trial = runner.schedule.trials[0]
 
     def reserve(index: int) -> CampaignReservation | None:
@@ -1066,13 +1008,10 @@ def test_provider_budget_adapter_keeps_campaign_runner_as_accounting_owner(
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "budget-adapter")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "budget-adapter")
     budget = CampaignProviderBudget(runner)
     trial = runner.schedule.trials[0]
 
@@ -1112,7 +1051,7 @@ def test_provider_budget_adapter_keeps_campaign_runner_as_accounting_owner(
     )
 
     report = runner.build_report()
-    assert budget.campaign_digest == campaign.digest
+    assert budget.campaign_digest == header.campaign.digest
     assert budget.binding_digest == runner.budget_projection().digest
     assert report.resources.requests == 1
     assert report.resources.input_tokens == 7
@@ -1134,14 +1073,11 @@ def test_campaign_restart_recovers_a_dispatched_attempt_from_durable_events(
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
     state_root = tmp_path / "restart"
-    first = _runner(campaign, model_set, tasks, state_root)
+    first = CampaignRunner(header=header, state_root=state_root)
     trial = first.schedule.trials[0]
     reservation = first.reserve_provider_attempt(
         trial_id=trial.trial_id,
@@ -1152,7 +1088,7 @@ def test_campaign_restart_recovers_a_dispatched_attempt_from_durable_events(
     )
     reservation.mark_dispatched()
 
-    resumed = _runner(campaign, model_set, tasks, state_root)
+    resumed = CampaignRunner(header=header, state_root=state_root)
     with pytest.raises(CampaignAccountingError, match="dispatch"):
         resumed.build_report()
     recovered = resumed.recover_incomplete_dispatches()
@@ -1181,7 +1117,7 @@ def test_campaign_restart_recovers_a_dispatched_attempt_from_durable_events(
     with pytest.raises(ValueError, match="schedule digest"):
         type(report).model_validate(tampered_report)
 
-    reopened = _runner(campaign, model_set, tasks, state_root)
+    reopened = CampaignRunner(header=header, state_root=state_root)
     assert reopened.build_report() == report
 
 
@@ -1197,13 +1133,10 @@ def test_completed_outcome_requires_the_exact_scheduled_run_binding(tmp_path: Pa
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "binding")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "binding")
     trial = runner.schedule.trials[0]
     valid = _run_binding(runner, 0)
     assert valid.campaign is not None
@@ -1287,18 +1220,10 @@ def test_paid_campaign_requires_metered_harness_and_matching_provider_facts(
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    incomplete = tasks[0].model_dump(mode="python")
-    incomplete["harness"] = {"harness_digest": tasks[0].harness_digest}
-    with pytest.raises(ValidationError, match="harness_id"):
-        CampaignTask.model_validate(incomplete)
-
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
-    runner = _runner(campaign, model_set, tasks, tmp_path / "metered-harness")
+    runner = CampaignRunner(header=header, state_root=tmp_path / "metered-harness")
     trial = runner.schedule.trials[0]
     reservation = runner.reserve_provider_attempt(
         trial_id=trial.trial_id,
@@ -1375,14 +1300,11 @@ def test_campaign_journal_recovers_a_torn_tail_and_rejects_durable_tampering(
     )
     model_set = _model_set(route)
     tasks = _tasks(1)
-    campaign = _campaign(
-        scope=CampaignScope.EXPANDED_BREADTH,
-        tasks=tasks,
-        model_set=model_set,
-        seeds=(_seed(1),),
+    header = _header(
+        scope=CampaignScope.EXPANDED_BREADTH, tasks=tasks, model_set=model_set, repetition_count=1
     )
     state_root = tmp_path / "torn-tail"
-    runner = _runner(campaign, model_set, tasks, state_root)
+    runner = CampaignRunner(header=header, state_root=state_root)
     trial = runner.schedule.trials[0]
     runner.reserve_work(
         trial_id=trial.trial_id,
@@ -1393,7 +1315,7 @@ def test_campaign_journal_recovers_a_torn_tail_and_rejects_durable_tampering(
         stream.write(b'{"torn"')
         stream.flush()
 
-    resumed = _runner(campaign, model_set, tasks, state_root)
+    resumed = CampaignRunner(header=header, state_root=state_root)
     resumed.recover_incomplete_dispatches()
     recovered_bytes = resumed.journal.events_path.read_bytes()
     assert recovered_bytes.startswith(durable)
@@ -1405,3 +1327,95 @@ def test_campaign_journal_recovers_a_torn_tail_and_rejects_durable_tampering(
     resumed.journal.events_path.write_bytes(tampered)
     with pytest.raises(CampaignJournalCorruption):
         resumed.journal.record()
+
+
+def test_cells_keep_harness_denominators_and_lineage_pairing_separate(tmp_path: Path) -> None:
+    model_set = _model_set(_route("shared-route", tuple(ModelCategory)))
+    tasks = tuple(task.model_copy(update={"task_family": "shared-lineage"}) for task in _tasks(2))
+    base = _header(
+        scope=CampaignScope.EXPANDED_BREADTH,
+        tasks=tasks,
+        model_set=model_set,
+        repetition_count=2,
+    )
+    harness = base.cells[0].harness
+    alternate = harness.model_copy(update={"harness_id": "alternate-harness"})
+    header = campaign_header(
+        campaign_id=base.campaign.campaign_id,
+        scope=base.campaign.scope,
+        model_set=model_set,
+        provider_config=base.provider_config,
+        tasks=tasks,
+        cells=campaign_cells(
+            model_set=model_set,
+            harnesses=(harness, alternate),
+            feedback_policy_digest=base.cells[0].policy.feedback_policy_digest,
+        ),
+        episode_budget=base.benchmark.episode_budget,
+        repetition_count=base.benchmark.repetition_count,
+        schedule_seed=base.benchmark.schedule_seed,
+        retry_policy=base.campaign.retry_policy,
+        token_limits=base.campaign.token_limits,
+        execution_limits=base.campaign.execution_limits,
+        provider_spend_limit=base.campaign.provider_spend_limit,
+    )
+    assert tuple(trial.binding.evaluation for trial in header.schedule.trials) == (
+        build_benchmark_schedule(header.benchmark).entries
+    )
+    for repetition in range(2):
+        paired = [
+            trial.binding
+            for trial in header.schedule.trials
+            if trial.binding.repetition_index == repetition
+        ]
+        assert len(paired) == 4
+        assert len({binding.paired_seed for binding in paired}) == 1
+        assert len({binding.task_instance_digest for binding in paired}) == 2
+        assert len({binding.cell_id for binding in paired}) == 2
+    runner = CampaignRunner(header=header, state_root=tmp_path / "cells")
+    stages = {task.task_release_digest: task.evaluator_stage_ids[0] for task in tasks}
+    for index, trial in enumerate(header.schedule.trials):
+        runner.record_outcome(
+            trial_id=trial.trial_id,
+            outcome=_complete_outcome(
+                runner,
+                index,
+                successful=trial.binding.harness_digest == harness.digest,
+                stage_id=stages[trial.binding.task_release_digest],
+            ),
+        )
+    report = runner.build_report()
+    assert {
+        (row.harness_digest, row.success.numerator, row.success.denominator)
+        for row in report.cell_aggregates
+    } == {
+        (harness.digest, 4, 4),
+        (alternate.digest, 0, 4),
+    }
+    assert len(report.success_at_k) == 4
+    assert {row.success.denominator for row in report.success_at_k} == {2}
+    assert {row.cell_id for row in report.success_at_k} == {
+        cell.definition.cell_id for cell in header.cells
+    }
+    tampered = report.model_dump(mode="python")
+    tampered["cell_aggregates"] = (report.cell_aggregates[0],)
+    with pytest.raises(ValueError, match="cell aggregates"):
+        type(report).model_validate(tampered)
+
+    # A campaign cap cannot silently lower the benchmark's solving allowance.
+    campaign = header.campaign.model_copy(
+        update={
+            "execution_limits": header.campaign.execution_limits.model_copy(update={"max_turns": 3})
+        }
+    )
+    schedule = build_campaign_schedule(campaign, model_set, tasks, header.benchmark, header.cells)
+    with pytest.raises(ValueError, match="per-trial turns limit"):
+        CampaignHeader(
+            campaign=campaign,
+            benchmark=header.benchmark,
+            cells=header.cells,
+            model_set=model_set,
+            provider_config=header.provider_config,
+            tasks=tasks,
+            schedule=schedule,
+        )

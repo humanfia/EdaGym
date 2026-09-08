@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import fields
 
-from edagym.providers.campaign import CampaignSpec
 from edagym.providers.campaign_budget import (
     BudgetDimension,
     CampaignAccountingError,
@@ -12,6 +11,7 @@ from edagym.providers.campaign_budget import (
     CampaignBudgetProjection,
     CampaignResources,
     _MutableResources,
+    campaign_limits,
 )
 from edagym.providers.campaign_runner import (
     AttemptDisposition,
@@ -67,7 +67,7 @@ def ready_campaign_projection(
 
 
 def reservation_rejection(
-    campaign: CampaignSpec,
+    header: CampaignHeader,
     state: _CampaignProjection,
     trial_id: str,
     claim: CampaignResources,
@@ -76,17 +76,17 @@ def reservation_rejection(
 ) -> CampaignBudgetExceeded | None:
     ready_campaign_projection(state, trial_id)
     if provider_request:
-        if claim.input_tokens > campaign.token_limits.max_input_tokens_per_request:
+        if claim.input_tokens > header.benchmark.episode_budget.max_input_tokens_per_request:
             return CampaignBudgetExceeded(BudgetDimension.INPUT_TOKENS, per_trial=True)
-        if claim.output_tokens > campaign.token_limits.max_output_tokens_per_request:
+        if claim.output_tokens > header.benchmark.episode_budget.max_output_tokens_per_request:
             return CampaignBudgetExceeded(BudgetDimension.OUTPUT_TOKENS, per_trial=True)
     global_current = _sum_resources(state.committed, state.reserved)
     trial = state.ledgers[trial_id]
     trial_current = _sum_resources(trial.committed, trial.reserved)
-    dimension = _first_exceeded(global_current, claim, _limits(campaign, per_trial=False))
+    dimension = _first_exceeded(global_current, claim, campaign_limits(header, per_trial=False))
     if dimension is not None:
         return CampaignBudgetExceeded(dimension, per_trial=False)
-    dimension = _first_exceeded(trial_current, claim, _limits(campaign, per_trial=True))
+    dimension = _first_exceeded(trial_current, claim, campaign_limits(header, per_trial=True))
     if dimension is not None:
         return CampaignBudgetExceeded(dimension, per_trial=True)
     return None
@@ -130,7 +130,7 @@ def apply_campaign_event(
     elif isinstance(event, BudgetStoppedEvent):
         payload = event.payload
         expected = reservation_rejection(
-            header.campaign,
+            header,
             state,
             payload.trial_id,
             payload.rejected_claim,
@@ -182,13 +182,9 @@ def _apply_reservation_created(
         trial = _trial(header, payload.trial_id)
         if (
             provider.observed_input_token_floor >= claim.input_tokens
-            or provider.observed_input_token_floor
-            != trial.binding.observed_input_token_floor
+            or provider.observed_input_token_floor != trial.binding.observed_input_token_floor
             or provider.security_binding.budget_binding_digest
-            != CampaignBudgetProjection.from_campaign(
-                header.campaign,
-                header.schedule,
-            ).digest
+            != CampaignBudgetProjection.from_header(header).digest
         ):
             raise CampaignAccountingError(
                 "provider reservation floor differs from its frozen route"
@@ -226,7 +222,7 @@ def _apply_reservation_created(
                 raise CampaignAccountingError("provider failure is not admitted by retry policy")
     if (
         reservation_rejection(
-            header.campaign,
+            header,
             state,
             payload.trial_id,
             payload.claim,
@@ -337,8 +333,10 @@ def _validate_run_binding(
         run_binding.trial_key != trial.trial_id
         or run_binding.task.family != binding.task_family
         or run_binding.task.release_digest != binding.task_release_digest
+        or run_binding.task.instance_digest != binding.task_instance_digest
         or run_binding.environment.environment_spec_digest != binding.environment_digest
-        or run_binding.session.feedback_policy_digest != header.campaign.feedback_policy_digest
+        or run_binding.session.feedback_policy_digest
+        != binding.evaluation_cell.policy.feedback_policy_digest
         or campaign.campaign_digest != binding.campaign_digest
         or campaign.schedule_digest != header.schedule.digest
         or campaign.scheduled_trial_digest != trial.digest
@@ -411,8 +409,7 @@ def _validate_provider_requests(
         if (
             request.reserved_input_tokens != claim.input_tokens
             or request.reserved_output_tokens != claim.output_tokens
-            or request.observed_input_token_floor
-            != claim.observed_input_token_floor
+            or request.observed_input_token_floor != claim.observed_input_token_floor
             or request.security_binding != final_attempt.security_binding
         ):
             raise ValueError("run provider reservation differs from campaign dispatch evidence")
@@ -496,24 +493,6 @@ def _sum_resources(first: _MutableResources, second: _MutableResources) -> _Muta
             for item in fields(first)
         }
     )
-
-
-def _limits(campaign: CampaignSpec, *, per_trial: bool) -> dict[BudgetDimension, int]:
-    token = campaign.token_limits
-    execution = campaign.execution_limits
-    suffix = "_per_trial" if per_trial else ""
-    return {
-        BudgetDimension.REQUESTS: getattr(token, f"max_requests{suffix}"),
-        BudgetDimension.INPUT_TOKENS: getattr(token, f"max_input_tokens{suffix}"),
-        BudgetDimension.OUTPUT_TOKENS: getattr(token, f"max_output_tokens{suffix}"),
-        BudgetDimension.TOTAL_TOKENS: getattr(token, f"max_total_tokens{suffix}"),
-        BudgetDimension.TURNS: getattr(execution, f"max_turns{suffix}"),
-        BudgetDimension.TOOL_CALLS: getattr(execution, f"max_tool_calls{suffix}"),
-        BudgetDimension.WALL_SECONDS: getattr(execution, f"max_wall_seconds{suffix}"),
-        BudgetDimension.EDA_COMPUTE_SECONDS: getattr(execution, f"max_eda_compute_seconds{suffix}"),
-        BudgetDimension.LICENSE_SECONDS: getattr(execution, f"max_license_seconds{suffix}"),
-        BudgetDimension.ARTIFACT_BYTES: getattr(execution, f"max_artifact_bytes{suffix}"),
-    }
 
 
 def _first_exceeded(

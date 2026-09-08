@@ -9,8 +9,7 @@ from typing import Any, SupportsIndex
 from pydantic import TypeAdapter, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.providers.numeric import JcsPositiveInt
-from edagym.specs.common import Digest, Identifier, StrictModel
+from edagym.specs.common import Digest, Identifier, JcsPositiveInt, StrictModel
 
 _TRIAL_ID_ADAPTER = TypeAdapter(Identifier)
 

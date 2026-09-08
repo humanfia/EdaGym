@@ -9,7 +9,16 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.specs.common import CanonicalDecimal, Digest, Identifier, SchemaVersion, StrictModel
+from edagym.specs.common import (
+    CanonicalDecimal,
+    Digest,
+    Identifier,
+    JcsNonNegativeInt,
+    JcsPositiveInt,
+    SchemaVersion,
+    Seed128Hex,
+    StrictModel,
+)
 
 
 class BenchmarkPhase(StrEnum):
@@ -74,28 +83,6 @@ class BenchmarkStratum(StrictModel):
     weight: Annotated[CanonicalDecimal, Field(gt=0)]
     cases: Annotated[tuple[BenchmarkCase, ...], Field(min_length=1)]
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_task_digest_list(cls, value: object) -> object:
-        if not isinstance(value, dict) or "cases" in value:
-            return value
-        raw_tasks = value.get("task_instance_digests")
-        if not isinstance(raw_tasks, (list, tuple)):
-            return value
-        raw_blocks = value.get("block_ids", {})
-        block_map = raw_blocks if isinstance(raw_blocks, dict) else {}
-        updated = dict(value)
-        updated["cases"] = tuple(
-            {
-                "task_instance_digest": digest,
-                "block_id": block_map.get(digest, f"block_{str(digest)[7:39]}"),
-            }
-            for digest in raw_tasks
-        )
-        updated.pop("task_instance_digests", None)
-        updated.pop("block_ids", None)
-        return updated
-
     @field_validator("cases")
     @classmethod
     def normalize_tasks(cls, value: tuple[BenchmarkCase, ...]) -> tuple[BenchmarkCase, ...]:
@@ -109,10 +96,43 @@ class BenchmarkStratum(StrictModel):
         return tuple(case.task_instance_digest for case in self.cases)
 
 
+class EpisodeBudget(StrictModel):
+    """The benchmark owns every solving limit for one scored episode."""
+
+    max_requests: JcsPositiveInt
+    max_input_tokens_per_request: JcsPositiveInt
+    max_output_tokens_per_request: JcsPositiveInt
+    max_input_tokens: JcsPositiveInt
+    max_output_tokens: JcsPositiveInt
+    max_total_tokens: JcsPositiveInt
+    max_turns: JcsPositiveInt
+    max_tool_calls: JcsPositiveInt
+    max_experiments: JcsPositiveInt
+    max_wall_seconds: JcsPositiveInt
+    max_eda_compute_seconds: JcsPositiveInt
+    max_license_seconds: JcsNonNegativeInt
+    max_artifact_bytes: JcsPositiveInt
+
+    @model_validator(mode="after")
+    def validate_request_capacity(self) -> Self:
+        if self.max_input_tokens_per_request > self.max_input_tokens:
+            raise ValueError("episode input limit does not admit one maximum request")
+        if self.max_output_tokens_per_request > self.max_output_tokens:
+            raise ValueError("episode output limit does not admit one maximum request")
+        if (
+            self.max_input_tokens_per_request + self.max_output_tokens_per_request
+            > self.max_total_tokens
+        ):
+            raise ValueError("episode token limit does not admit one maximum request")
+        if self.max_total_tokens > self.max_input_tokens + self.max_output_tokens:
+            raise ValueError("episode token total cannot exceed its directional limits")
+        return self
+
+
 class BenchmarkSpec(StrictModel):
     """Frozen inputs for one finite benchmark series."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     benchmark_id: Identifier
     revision: Annotated[int, Field(strict=True, ge=1)]
     parent_benchmark_id: Identifier | None = None
@@ -120,12 +140,10 @@ class BenchmarkSpec(StrictModel):
     strata: tuple[BenchmarkStratum, ...]
     evaluation_cells: tuple[EvaluationCell, ...]
     repetition_count: Annotated[int, Field(strict=True, ge=1)] = 1
-    episode_max_requests: Annotated[int, Field(strict=True, ge=1)]
-    episode_max_wall_seconds: Annotated[int, Field(strict=True, ge=1)]
+    episode_budget: EpisodeBudget
+    schedule_seed: Seed128Hex
     min_valid_blocks_per_stratum: Annotated[int, Field(strict=True, ge=1)] = 40
-    max_invalid_rate: Annotated[CanonicalDecimal, Field(ge=0, le=Decimal("0.02"))] = Decimal(
-        "0.02"
-    )
+    max_invalid_rate: Annotated[CanonicalDecimal, Field(ge=0, le=Decimal("0.02"))] = Decimal("0.02")
     target_effect_size: Annotated[CanonicalDecimal, Field(ge=Decimal("0.05"), le=1)] = Decimal(
         "0.05"
     )
@@ -134,31 +152,6 @@ class BenchmarkSpec(StrictModel):
     bootstrap_resamples: Annotated[int, Field(strict=True, ge=10_000)] = 10_000
     bootstrap_seed: Annotated[int, Field(strict=True, ge=0)] = 0
     contrast_hypotheses: tuple[Contrast, ...] = ()
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_pair_contrasts(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        raw = value.get("contrast_hypotheses")
-        if not isinstance(raw, (list, tuple)):
-            return value
-        converted: list[object] = []
-        for index, item in enumerate(raw):
-            if isinstance(item, (list, tuple)) and len(item) == 2:
-                converted.append(
-                    {
-                        "contrast_id": f"contrast_{index + 1}",
-                        "kind": ContrastKind.ADJACENT_MODEL,
-                        "left_model_id": item[0],
-                        "right_model_id": item[1],
-                    }
-                )
-            else:
-                converted.append(item)
-        updated = dict(value)
-        updated["contrast_hypotheses"] = tuple(converted)
-        return updated
 
     @field_validator("strata")
     @classmethod
@@ -199,7 +192,8 @@ class BenchmarkSpec(StrictModel):
                     raise ValueError("contrast hypotheses must reference evaluation models")
             else:
                 difficulties = {
-                    item.difficulty_id for item in self.strata
+                    item.difficulty_id
+                    for item in self.strata
                     if item.engineering_layer == contrast.engineering_layer
                 }
                 if (
@@ -231,7 +225,7 @@ class BenchmarkSpec(StrictModel):
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="benchmark-spec-v1")
+        return canonical_digest(self, domain="benchmark-spec-v2")
 
     @property
     def model_ids(self) -> tuple[str, ...]:

@@ -15,6 +15,7 @@ from edagym.providers.campaign_budget import (
 from edagym.providers.campaign_runner import (
     CampaignRecord,
     CampaignReport,
+    CellAggregate,
     CountRatio,
     CurrencyTotal,
     DeviceAggregate,
@@ -22,11 +23,10 @@ from edagym.providers.campaign_runner import (
     KnownSpend,
     ModelAggregate,
     ModelCategoryAggregate,
-    ModelEffortAggregate,
     ProviderAttemptRecord,
     ReportedModelCount,
-    ReportedServiceTierCount,
     ServiceTierAccounting,
+    ServiceTierCount,
     SpendSummary,
     StageOutcomeCount,
     SuccessAtK,
@@ -130,10 +130,8 @@ def build_campaign_report(
         _model_aggregate(route_by_id[route_id], group)
         for route_id, group in sorted(route_groups.items())
     )
-    model_effort_aggregates = tuple(
-        _model_effort_aggregate(route_by_id[route_id], effort, group)
-        for (route_id, effort), group in _model_effort_groups(trial_reports).items()
-    )
+    cell_groups = _cell_groups(trial_reports)
+    cell_aggregates = tuple(_cell_aggregate(group) for group in cell_groups.values())
     category_aggregates = tuple(
         _category_aggregate(category, header, trial_reports)
         for category in sorted(
@@ -143,6 +141,7 @@ def build_campaign_report(
     attempts = all_attempts(trial_reports)
     return CampaignReport(
         campaign_digest=header.campaign.digest,
+        benchmark_spec_digest=header.benchmark.digest,
         schedule_digest=header.schedule.digest,
         campaign_record_digest=record_digest,
         campaign_scope=header.campaign.scope,
@@ -156,17 +155,14 @@ def build_campaign_report(
         task_aggregates=task_aggregates,
         device_aggregates=device_aggregates,
         model_aggregates=model_aggregates,
-        model_effort_aggregates=model_effort_aggregates,
+        cell_aggregates=cell_aggregates,
         model_category_aggregates=category_aggregates,
-        success_at_k=_success_at_k(header, route_by_id, route_groups),
+        success_at_k=_success_at_k(header, cell_groups),
         evaluator_funnel=_evaluator_funnel(header, task_by_release, task_groups),
         terminal_reasons=terminal_reason_counts(trial_reports),
         resources=committed_resources,
         token_accounting=token_accounting(attempts),
-        service_tier_accounting=service_tier_accounting(
-            attempts,
-            requested_service_tier=header.campaign.service_tier,
-        ),
+        service_tier_accounting=service_tier_accounting(attempts),
         spend=spend_summary(trial_reports),
     )
 
@@ -201,25 +197,24 @@ def _model_aggregate(route: ModelRoute, reports: list[TrialReport]) -> ModelAggr
     )
 
 
-def _model_effort_groups(
+def _cell_groups(
     reports: tuple[TrialReport, ...],
-) -> dict[tuple[str, str], list[TrialReport]]:
-    groups: defaultdict[tuple[str, str], list[TrialReport]] = defaultdict(list)
+) -> dict[str, list[TrialReport]]:
+    groups: defaultdict[str, list[TrialReport]] = defaultdict(list)
     for report in reports:
-        binding = report.trial.binding
-        groups[(binding.route_id, binding.reasoning_effort)].append(report)
+        groups[report.trial.binding.cell_id].append(report)
     return dict(sorted(groups.items()))
 
 
-def _model_effort_aggregate(
-    route: ModelRoute,
-    reasoning_effort: str,
-    reports: list[TrialReport],
-) -> ModelEffortAggregate:
-    return ModelEffortAggregate(
-        route_id=route.route_id,
-        requested_model=route.requested_model,
-        reasoning_effort=reasoning_effort,
+def _cell_aggregate(reports: list[TrialReport]) -> CellAggregate:
+    binding = reports[0].trial.binding
+    return CellAggregate(
+        cell_id=binding.cell_id,
+        harness_digest=binding.harness_digest,
+        policy_digest=binding.evaluation_cell.policy.digest,
+        route_id=binding.route_id,
+        requested_model=binding.requested_model,
+        reasoning_effort=binding.reasoning_effort,
         success=success_ratio(reports),
         resources=aggregate_resources(reports),
         token_accounting=token_accounting(all_attempts(reports)),
@@ -251,37 +246,30 @@ def _category_aggregate(
 
 def _success_at_k(
     header: CampaignHeader,
-    route_by_id: dict[str, ModelRoute],
-    route_groups: defaultdict[str, list[TrialReport]],
+    cell_groups: dict[str, list[TrialReport]],
 ) -> tuple[SuccessAtK, ...]:
     rows: list[SuccessAtK] = []
-    for route_id, reports in sorted(route_groups.items()):
-        route = route_by_id[route_id]
-        for reasoning_effort in sorted(
-            {report.trial.binding.reasoning_effort for report in reports}
-        ):
-            by_task: defaultdict[str, list[TrialReport]] = defaultdict(list)
-            for report in reports:
-                if report.trial.binding.reasoning_effort == reasoning_effort:
-                    by_task[report.trial.binding.task_release_digest].append(report)
-            for group in by_task.values():
-                group.sort(key=lambda report: report.trial.binding.repetition_index)
-            for k in range(1, header.campaign.repetitions + 1):
-                successes = sum(
-                    any(report.success for report in group[:k]) for group in by_task.values()
+    for cell_id, reports in cell_groups.items():
+        binding = reports[0].trial.binding
+        by_task: defaultdict[str, list[TrialReport]] = defaultdict(list)
+        for report in reports:
+            by_task[report.trial.binding.task_instance_digest].append(report)
+        for group in by_task.values():
+            group.sort(key=lambda report: report.trial.binding.repetition_index)
+        for k in range(1, header.benchmark.repetition_count + 1):
+            successes = sum(
+                any(report.success for report in group[:k]) for group in by_task.values()
+            )
+            rows.append(
+                SuccessAtK(
+                    cell_id=cell_id,
+                    route_id=binding.route_id,
+                    requested_model=binding.requested_model,
+                    reasoning_effort=binding.reasoning_effort,
+                    k=k,
+                    success=CountRatio(numerator=successes, denominator=len(by_task)),
                 )
-                rows.append(
-                    SuccessAtK(
-                        route_id=route_id,
-                        requested_model=route.requested_model,
-                        reasoning_effort=reasoning_effort,
-                        k=k,
-                        success=CountRatio(
-                            numerator=successes,
-                            denominator=len(by_task),
-                        ),
-                    )
-                )
+            )
     return tuple(rows)
 
 
@@ -361,19 +349,13 @@ def token_accounting(attempts: tuple[ProviderAttemptRecord, ...]) -> TokenAccoun
     return TokenAccounting(
         request_attempts=len(attempts),
         retry_attempts=sum(attempt.attempt_number > 1 for attempt in attempts),
-        charged_input_tokens=sum(
-            attempt.charged_resources.input_tokens for attempt in attempts
-        ),
-        charged_output_tokens=sum(
-            attempt.charged_resources.output_tokens for attempt in attempts
-        ),
+        charged_input_tokens=sum(attempt.charged_resources.input_tokens for attempt in attempts),
+        charged_output_tokens=sum(attempt.charged_resources.output_tokens for attempt in attempts),
         provider_input_tokens=sum(item.input_tokens for item in known),
         provider_output_tokens=sum(item.output_tokens for item in known),
         unknown_usage_attempts=sum(item is None for item in usage),
         cached_input_tokens=sum(
-            item.cached_input_tokens
-            for item in known
-            if item.cached_input_tokens is not None
+            item.cached_input_tokens for item in known if item.cached_input_tokens is not None
         ),
         unknown_cached_usage_attempts=sum(
             item is None or item.cached_input_tokens is None for item in usage
@@ -389,11 +371,8 @@ def token_accounting(attempts: tuple[ProviderAttemptRecord, ...]) -> TokenAccoun
 
 def service_tier_accounting(
     attempts: tuple[ProviderAttemptRecord, ...],
-    *,
-    requested_service_tier: str,
 ) -> ServiceTierAccounting:
-    if any(attempt.requested_service_tier != requested_service_tier for attempt in attempts):
-        raise ValueError("provider attempts do not share the campaign service tier")
+    requested = Counter(attempt.requested_service_tier for attempt in attempts)
     reported = Counter(
         attempt.provider_reported_service_tier
         for attempt in attempts
@@ -401,15 +380,17 @@ def service_tier_accounting(
     )
     known = sum(reported.values())
     mismatches = sum(
-        count for tier, count in reported.items() if tier != requested_service_tier
+        attempt.provider_reported_service_tier is not None
+        and attempt.provider_reported_service_tier != attempt.requested_service_tier
+        for attempt in attempts
     )
     return ServiceTierAccounting(
-        requested_service_tier=requested_service_tier,
+        requested_service_tiers=tuple(
+            ServiceTierCount(service_tier=tier, count=count)
+            for tier, count in sorted(requested.items())
+        ),
         provider_reported_service_tiers=tuple(
-            ReportedServiceTierCount(
-                provider_reported_service_tier=tier,
-                count=count,
-            )
+            ServiceTierCount(service_tier=tier, count=count)
             for tier, count in sorted(reported.items())
         ),
         unknown_attempts=len(attempts) - known,

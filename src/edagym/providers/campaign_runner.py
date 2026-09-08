@@ -17,10 +17,8 @@ from edagym.canonical import canonical_digest
 from edagym.evaluation.model import OutcomeKind
 from edagym.providers.campaign import (
     CampaignScope,
-    CampaignSpec,
     ModelCategory,
     ModelReferenceKind,
-    ModelSetManifest,
     RetryCondition,
 )
 from edagym.providers.campaign_budget import (
@@ -47,18 +45,14 @@ from edagym.providers.campaign_budget import (
 from edagym.providers.campaign_schedule import (
     CampaignHeader,
     CampaignSchedule,
-    CampaignTask,
     CampaignTaskRole,
     ScheduledTrial,
-    build_campaign_schedule,
 )
 from edagym.providers.model import (
     ProviderProfile,
     ProviderUsage,
     RequestTokenClaim,
-    ResolvedProviderConfig,
 )
-from edagym.providers.numeric import JcsNonNegativeInt, JcsPositiveInt
 from edagym.run.trial_model import (
     CandidateStageResult,
     ProviderRequestState,
@@ -72,6 +66,8 @@ from edagym.specs.common import (
     Capability,
     Digest,
     Identifier,
+    JcsNonNegativeInt,
+    JcsPositiveInt,
     ModelLabel,
     ProviderResponseStatus,
     SchemaVersion,
@@ -275,27 +271,27 @@ class CountRatio(StrictModel):
         return self
 
 
-class ReportedServiceTierCount(StrictModel):
-    provider_reported_service_tier: ServiceTierLabel
+class ServiceTierCount(StrictModel):
+    service_tier: ServiceTierLabel
     count: JcsPositiveInt
 
 
 class ServiceTierAccounting(StrictModel):
-    requested_service_tier: ServiceTierLabel
-    provider_reported_service_tiers: tuple[ReportedServiceTierCount, ...]
+    requested_service_tiers: tuple[ServiceTierCount, ...]
+    provider_reported_service_tiers: tuple[ServiceTierCount, ...]
     unknown_attempts: JcsNonNegativeInt
     reported_tier_mismatches: CountRatio
 
-    @field_validator("provider_reported_service_tiers")
+    @field_validator("requested_service_tiers", "provider_reported_service_tiers")
     @classmethod
     def validate_unique_tiers(
         cls,
-        value: tuple[ReportedServiceTierCount, ...],
-    ) -> tuple[ReportedServiceTierCount, ...]:
-        tiers = [item.provider_reported_service_tier for item in value]
+        value: tuple[ServiceTierCount, ...],
+    ) -> tuple[ServiceTierCount, ...]:
+        tiers = [item.service_tier for item in value]
         if len(tiers) != len(set(tiers)):
             raise ValueError("provider-reported service tier counts must be unique")
-        return tuple(sorted(value, key=lambda item: item.provider_reported_service_tier))
+        return tuple(sorted(value, key=lambda item: item.service_tier))
 
 
 class TokenAccounting(StrictModel):
@@ -419,7 +415,10 @@ class ModelAggregate(StrictModel):
     spend: SpendSummary
 
 
-class ModelEffortAggregate(StrictModel):
+class CellAggregate(StrictModel):
+    cell_id: Identifier
+    harness_digest: Digest
+    policy_digest: Digest
     route_id: Identifier
     requested_model: ModelLabel
     reasoning_effort: Annotated[str, Field(min_length=1, max_length=32)]
@@ -441,6 +440,7 @@ class ModelCategoryAggregate(StrictModel):
 
 
 class SuccessAtK(StrictModel):
+    cell_id: Identifier
     route_id: Identifier
     requested_model: ModelLabel
     reasoning_effort: Annotated[str, Field(min_length=1, max_length=32)]
@@ -465,8 +465,9 @@ class EvaluatorFunnel(StrictModel):
 class CampaignReport(StrictModel):
     """Mechanical report over every scheduled trial, including non-runs."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     campaign_digest: Digest
+    benchmark_spec_digest: Digest
     schedule_digest: Digest
     campaign_record_digest: Digest
     campaign_scope: CampaignScope
@@ -480,7 +481,7 @@ class CampaignReport(StrictModel):
     task_aggregates: tuple[TaskAggregate, ...]
     device_aggregates: tuple[DeviceAggregate, ...]
     model_aggregates: tuple[ModelAggregate, ...]
-    model_effort_aggregates: tuple[ModelEffortAggregate, ...]
+    cell_aggregates: tuple[CellAggregate, ...]
     model_category_aggregates: tuple[ModelCategoryAggregate, ...]
     success_at_k: tuple[SuccessAtK, ...]
     evaluator_funnel: tuple[EvaluatorFunnel, ...]
@@ -493,6 +494,8 @@ class CampaignReport(StrictModel):
     @model_validator(mode="after")
     def validate_derived_totals(self) -> Self:
         from edagym.providers.campaign_reporting import (
+            _cell_aggregate,
+            _cell_groups,
             aggregate_resources,
             all_attempts,
             service_tier_accounting,
@@ -524,6 +527,7 @@ class CampaignReport(StrictModel):
             raise ValueError("campaign report task order is not contiguous")
         schedule = CampaignSchedule(
             campaign_digest=self.campaign_digest,
+            benchmark_spec_digest=self.benchmark_spec_digest,
             model_set_digest=self.model_set_digest,
             ordered_task_release_digests=tuple(
                 task_order[index] for index in range(len(task_order))
@@ -538,17 +542,18 @@ class CampaignReport(StrictModel):
             report.trial.binding.campaign_digest != self.campaign_digest for report in self.trials
         ):
             raise ValueError("campaign report trials must match the campaign digest")
+        expected_cells = tuple(
+            _cell_aggregate(group) for group in _cell_groups(self.trials).values()
+        )
+        if self.cell_aggregates != expected_cells:
+            raise ValueError("cell aggregates must be derived from their scheduled trials")
         if self.overall_success != success_ratio(self.trials):
             raise ValueError("overall success must be derived from every trial")
         if self.resources != aggregate_resources(self.trials):
             raise ValueError("campaign resources must be derived from every trial")
         if self.token_accounting != token_accounting(all_attempts(self.trials)):
             raise ValueError("campaign token accounting must be derived from every trial")
-        requested_tiers = {report.trial.binding.service_tier for report in self.trials}
-        if len(requested_tiers) != 1 or self.service_tier_accounting != service_tier_accounting(
-            all_attempts(self.trials),
-            requested_service_tier=next(iter(requested_tiers)),
-        ):
+        if self.service_tier_accounting != service_tier_accounting(all_attempts(self.trials)):
             raise ValueError("campaign service tier accounting must be derived from every trial")
         if self.terminal_reasons != terminal_reason_counts(self.trials):
             raise ValueError("campaign terminal reasons must be derived from every trial")
@@ -560,7 +565,7 @@ class CampaignReport(StrictModel):
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="provider-campaign-report-v1")
+        return canonical_digest(self, domain="provider-campaign-report-v2")
 
 
 class CampaignEventKind(StrEnum):
@@ -799,7 +804,7 @@ def _ready_campaign_projection(
 
 
 def _reservation_rejection(
-    campaign: CampaignSpec,
+    header: CampaignHeader,
     state: _CampaignProjection,
     trial_id: str,
     claim: CampaignResources,
@@ -809,7 +814,7 @@ def _reservation_rejection(
     from edagym.providers.campaign_replay import reservation_rejection
 
     return reservation_rejection(
-        campaign,
+        header,
         state,
         trial_id,
         claim,
@@ -968,33 +973,19 @@ class CampaignReservation:
 class CampaignRunner:
     """Own the complete schedule and atomically account every external dispatch."""
 
-    def __init__(
-        self,
-        *,
-        campaign: CampaignSpec,
-        model_set: ModelSetManifest,
-        tasks: tuple[CampaignTask, ...],
-        provider_config: ResolvedProviderConfig,
-        state_root: Path,
-    ) -> None:
-        self.campaign = campaign
-        self.model_set = model_set
-        self.tasks = tasks
-        self.schedule = build_campaign_schedule(campaign, model_set, tasks)
-        self.provider_config = provider_config
-        self.header = CampaignHeader(
-            campaign=campaign,
-            model_set=model_set,
-            provider_config=provider_config,
-            tasks=tasks,
-            schedule=self.schedule,
-        )
+    def __init__(self, *, header: CampaignHeader, state_root: Path) -> None:
+        self.header = header
+        self.campaign = header.campaign
+        self.model_set = header.model_set
+        self.tasks = header.tasks
+        self.schedule = header.schedule
+        self.provider_config = header.provider_config
         from edagym.providers.campaign_journal import CampaignJournal
 
-        self.journal = CampaignJournal.create(state_root, self.header)
+        self.journal = CampaignJournal.create(state_root, header)
         self._trial_by_id = {trial.trial_id: trial for trial in self.schedule.trials}
-        self._route_by_id = {route.route_id: route for route in model_set.routes}
-        self._task_by_release = {task.task_release_digest: task for task in tasks}
+        self._route_by_id = {route.route_id: route for route in self.model_set.routes}
+        self._task_by_release = {task.task_release_digest: task for task in self.tasks}
         self._active_reservations: set[CampaignReservation] = set()
         self._lock = Lock()
         self._closed = False
@@ -1012,7 +1003,7 @@ class CampaignRunner:
             )
 
     def budget_projection(self) -> CampaignBudgetProjection:
-        return CampaignBudgetProjection.from_campaign(self.campaign, self.schedule)
+        return CampaignBudgetProjection.from_header(self.header)
 
     def reserve_provider_attempt(
         self,
@@ -1074,13 +1065,11 @@ class CampaignRunner:
                 provider = ProviderReservationBinding(
                     request_key=request_key,
                     attempt_number=attempt_number,
-                    observed_input_token_floor=(
-                        token_claim.observed_input_token_floor
-                    ),
+                    observed_input_token_floor=(token_claim.observed_input_token_floor),
                     security_binding=security_binding,
                 )
                 rejection = _reservation_rejection(
-                    self.campaign,
+                    self.header,
                     state,
                     trial_id,
                     claim,
@@ -1147,7 +1136,7 @@ class CampaignRunner:
                 self._require_trial(trial_id)
                 _ready_campaign_projection(state, trial_id)
                 rejection = _reservation_rejection(
-                    self.campaign,
+                    self.header,
                     state,
                     trial_id,
                     claim,
@@ -1640,9 +1629,7 @@ class CampaignRunner:
         ):
             raise ValueError("provider failure condition is not admitted by retry policy")
         completed = disposition is AttemptDisposition.COMPLETED
-        if completed and (
-            provider_reported_model is None or provider_response_status is None
-        ):
+        if completed and (provider_reported_model is None or provider_response_status is None):
             raise ValueError("completed provider attempts require response identity and status")
         if not completed and (
             provider_reported_model is not None
@@ -1666,9 +1653,7 @@ class CampaignRunner:
             reserved_token_claim=RequestTokenClaim(
                 input_tokens=reservation._claim.input_tokens,
                 output_tokens=reservation._claim.output_tokens,
-                observed_input_token_floor=(
-                    provider.observed_input_token_floor
-                ),
+                observed_input_token_floor=(provider.observed_input_token_floor),
             ),
             disposition=disposition,
             failure_condition=failure_condition,

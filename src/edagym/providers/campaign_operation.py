@@ -138,10 +138,7 @@ class FrozenCampaignProposal(StrictModel):
 
     @model_validator(mode="after")
     def validate_budget(self) -> Self:
-        expected = CampaignBudgetProjection.from_campaign(
-            self.header.campaign,
-            self.header.schedule,
-        )
+        expected = CampaignBudgetProjection.from_header(self.header)
         if self.budget != expected:
             raise ValueError("campaign proposal budget is not derived from its header")
         return self
@@ -692,10 +689,7 @@ def execute_campaign_operation(
     with _operation_lock(state_root):
         try:
             runner = CampaignRunner(
-                campaign=header.campaign,
-                model_set=header.model_set,
-                tasks=header.tasks,
-                provider_config=header.provider_config,
+                header=header,
                 state_root=state_root / _CAMPAIGN_JOURNAL_DIRECTORY,
             )
         except (CampaignJournalError, OSError, ValueError):

@@ -226,10 +226,13 @@ Unknown outcomes require fencing before the terminal failure is journaled.
 
 ## Paid campaign accounting
 
-`CampaignSpec` freezes the complete paid-evaluation envelope. Token limits are
-explicit at request, trial, and campaign scope. Turns, tool calls, wall time,
-EDA compute, license occupancy, and artifact bytes each have independent trial
-and campaign caps.
+`BenchmarkSpec` owns the cases, model/harness/policy cells, repetition count,
+and episode solving budget. Its request, token, turn, tool-call, experiment,
+wall-time, EDA-compute, license, and artifact limits are checked against the
+session before dispatch. `CampaignSpec` references that benchmark digest and
+owns aggregate reservation limits. `CampaignBudgetProjection` derives the
+combined envelope from the frozen header; it does not maintain competing
+per-episode settings.
 
 `CampaignRunner` is the accounting owner for a scheduled campaign. Every
 external dispatch records its worst-case resource reservation in a private,
@@ -239,12 +242,23 @@ stream; process-local projections are never accounting authorities. A restart
 conservatively charges dispatched reservations whose final usage is unknown and
 cancels reservations that never reached dispatch.
 
-Pilot and common-core campaigns bind the same eight representative task roles.
-The pilot uses one paired seed, while common core requires three. Every completed
-outcome carries the exact run binding for its campaign, schedule, trial, task,
-environment, harness, route, reasoning effort, service tier, seed, and
-repetition. The campaign report also binds the non-secret provider profile,
-provider configuration projection, and frozen model set.
+`CampaignHeader` freezes the benchmark, qualified model set, task bindings,
+cell bindings, provider configuration, and derived schedule together. Tasks own
+no harness. Scheduling interleaves the declared cells within each task and
+repetition; the benchmark schedule seed, lineage block, and repetition determine a shared
+paired seed. Campaign trials retain their canonical `ScheduledEvaluation`; the
+benchmark preparation and campaign dispatch paths share one schedule builder.
+Pilot and common-core scopes no longer impose a fixed task count.
+Every completed outcome carries the exact scheduled instance, environment,
+harness, route, reasoning effort, service tier, and repetition. Cell aggregates
+and success-at-k keep different harnesses separate, while requested and reported
+service tiers are counted from individual attempts. Campaign-wide summaries
+remain operational accounting, not benchmark inference.
+
+The campaign specification, benchmark, header, schedule, and report use version
+2. Harness bindings form a closed controlled-provider/native-CLI union. The
+current Responses dispatcher explicitly refuses native bindings; native CLI
+execution through RunEngine remains integration work.
 
 The provider transport consumes `CampaignProviderBudget`, an adapter over the
 same runner; it does not keep a second campaign ledger.

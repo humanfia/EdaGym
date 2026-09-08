@@ -23,10 +23,11 @@ from edagym.providers.model import (
     ToolParameter,
     ToolValueKind,
 )
-from edagym.providers.numeric import JcsNonNegativeInt, JcsPositiveInt
 from edagym.specs.common import (
     Digest,
     Identifier,
+    JcsNonNegativeInt,
+    JcsPositiveInt,
     SchemaVersion,
     ServiceTierLabel,
     StrictModel,

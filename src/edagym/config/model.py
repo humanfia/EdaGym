@@ -43,6 +43,11 @@ class HarnessKind(StrEnum):
     NATIVE_CLI = "native_cli"
 
 
+class NativeCliKind(StrEnum):
+    CODEX_EXEC = "codex_exec"
+    CLAUDE_CODE = "claude_code"
+
+
 class SessionKind(StrEnum):
     HUMAN = "human"
     AGENT = "agent"

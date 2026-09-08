@@ -80,6 +80,8 @@ def runtime_surface_binding_for_trial(
     ):
         raise ValueError("runtime surface inputs differ from the frozen campaign trial")
     harness = binding.harness
+    if not isinstance(harness, MeteredProviderHarnessBinding):
+        raise ValueError("native CLI cells require a native runtime surface")
     campaign_trial_harness_actor(trial, session)
     return RuntimeSurfaceBinding(
         campaign_digest=runner.campaign.digest,

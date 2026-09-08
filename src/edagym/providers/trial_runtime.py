@@ -86,6 +86,7 @@ from edagym.providers.campaign_runner import (
 )
 from edagym.providers.campaign_schedule import (
     CampaignTask,
+    MeteredProviderHarnessBinding,
     ScheduledTrial,
     require_paid_campaign_task_origin,
 )
@@ -1076,12 +1077,16 @@ class CampaignTrialDispatcher:
         if type(asset_source_policy) is not AssetSourcePolicy:
             raise ValueError("campaign trials require trusted asset source authority")
         trial = _scheduled_trial(self.runner, trial_id)
+        harness = trial.binding.harness
+        if not isinstance(harness, MeteredProviderHarnessBinding):
+            raise ValueError("native CLI cells require a native campaign dispatcher")
         campaign_task = _campaign_task(self.runner, trial)
         campaign_binding = campaign_trial_run_binding(self.runner, trial)
         _validate_trial_inputs(
             runner=self.runner,
             trial=trial,
             campaign_task=campaign_task,
+            instance=instance,
             task=task,
             release=release,
             environment=environment,
@@ -1114,9 +1119,7 @@ class CampaignTrialDispatcher:
         journal = TrialJournal.create(run_state_root, run_header, task)
         if continuation is None:
             if len(session.actors) != 1:
-                raise ValueError(
-                    "multi-actor campaign trials require an existing-run continuation"
-                )
+                raise ValueError("multi-actor campaign trials require an existing-run continuation")
         else:
             _validate_campaign_continuation(
                 continuation,
@@ -1184,9 +1187,7 @@ class CampaignTrialDispatcher:
                 }
             )
         )
-        tools: list[ResponsesParticipantTool] = [
-            WorkspaceReadTool(workspace, paths=read_paths)
-        ]
+        tools: list[ResponsesParticipantTool] = [WorkspaceReadTool(workspace, paths=read_paths)]
         if environment.participant_operations:
             tool_dispatcher = ExecutorParticipantToolDispatcher(
                 journal=journal,
@@ -1199,9 +1200,7 @@ class CampaignTrialDispatcher:
                 asset_paths=tool_assets,
                 asset_source_policy=asset_source_policy,
                 license_providers=providers,
-                protected_paths=(
-                    self.runner.journal.directory,
-                ),
+                protected_paths=(self.runner.journal.directory,),
                 clock=runtime_clock,
                 monotonic=monotonic,
                 poll_interval_seconds=poll_interval_seconds,
@@ -1241,7 +1240,7 @@ class CampaignTrialDispatcher:
             tool_schema_digest=responses_tool_schema_digest(
                 tuple(tool.definition for tool in tools)
             ),
-            maximum_requests_per_action=(trial.binding.harness.maximum_requests_per_action),
+            maximum_requests_per_action=(harness.maximum_requests_per_action),
             budget_binding_digest=self.runner.budget_projection().digest,
         )
         responses_participant = ResponsesParticipantAdapter(
@@ -1253,15 +1252,13 @@ class CampaignTrialDispatcher:
             sender=sender,
             instruction=instruction,
             token_claim=RequestTokenClaim(
-                input_tokens=self.runner.campaign.token_limits.max_input_tokens_per_request,
-                output_tokens=self.runner.campaign.token_limits.max_output_tokens_per_request,
-                observed_input_token_floor=(
-                    trial.binding.observed_input_token_floor
-                ),
+                input_tokens=self.runner.header.benchmark.episode_budget.max_input_tokens_per_request,
+                output_tokens=self.runner.header.benchmark.episode_budget.max_output_tokens_per_request,
+                observed_input_token_floor=(trial.binding.observed_input_token_floor),
             ),
             tools=tuple(tools),
             usage_policy=ProviderUsagePolicy.EXACT,
-            maximum_requests_per_action=trial.binding.harness.maximum_requests_per_action,
+            maximum_requests_per_action=harness.maximum_requests_per_action,
             campaign_admission=admission,
             reasoning_effort=trial.binding.reasoning_effort,
             service_tier=trial.binding.service_tier,
@@ -1378,8 +1375,7 @@ def _validate_campaign_continuation(
         or continuation.run_record_digest != journal.integrity_digest()
         or continuation.current_harness_actor_id != state.current_writer
         or continuation.current_harness_actor_id != actor.actor_id
-        or continuation.campaign_budget_binding_digest
-        != runner.budget_projection().digest
+        or continuation.campaign_budget_binding_digest != runner.budget_projection().digest
     ):
         raise ValueError("campaign continuation differs from the active hybrid run")
 
@@ -1410,6 +1406,7 @@ def _validate_trial_inputs(
     runner: CampaignRunner,
     trial: ScheduledTrial,
     campaign_task: CampaignTask,
+    instance: TaskInstance,
     task: TaskSpec,
     release: ReleaseManifest,
     environment: EnvironmentSpec,
@@ -1425,7 +1422,9 @@ def _validate_trial_inputs(
         or campaign_task.task_family != task.identity.family
         or campaign_task.task_origin != task.identity.origin
         or campaign_task.environment_digest != environment.digest
-        or campaign_task.harness != binding.harness
+        or binding.task_instance_digest != instance.digest
+        or release.task_instance_digest != instance.digest
+        or campaign_task.task_instance_digest != instance.digest
     ):
         raise ValueError("campaign trial inputs differ from the frozen schedule")
     require_paid_campaign_task_origin(task.identity.origin)
@@ -1443,30 +1442,33 @@ def _validate_trial_inputs(
         or actor.scaffold_digest != binding.harness.scaffold_digest
         or actor.requested_model_route != binding.requested_model
         or canonical_digest(session.feedback, domain="feedback-policy-v1")
-        != runner.campaign.feedback_policy_digest
+        != binding.evaluation_cell.policy.feedback_policy_digest
     ):
         raise ValueError("campaign session differs from the scheduled metered harness")
     model = session.model_budget
     if model is None:
         raise ValueError("campaign session requires a provider model budget")
-    token = runner.campaign.token_limits
-    execution = runner.campaign.execution_limits
+    budget = runner.header.benchmark.episode_budget
     if (
-        model.max_input_tokens_per_request < token.max_input_tokens_per_request
-        or model.max_output_tokens_per_request < token.max_output_tokens_per_request
-        or model.max_requests > token.max_requests_per_trial
-        or model.max_total_input_tokens > token.max_input_tokens_per_trial
-        or model.max_total_output_tokens > token.max_output_tokens_per_trial
-        or model.max_total_tokens > token.max_total_tokens_per_trial
-        or session.resources.max_turns > execution.max_turns_per_trial
-        or session.resources.max_tool_calls > execution.max_tool_calls_per_trial
-        or session.resources.max_wall_seconds > execution.max_wall_seconds_per_trial
-        or session.resources.max_eda_compute_seconds > execution.max_eda_compute_seconds_per_trial
-        or session.resources.max_license_seconds > execution.max_license_seconds_per_trial
-        or session.resources.max_artifact_bytes > execution.max_artifact_bytes_per_trial
+        model.max_input_tokens_per_request != budget.max_input_tokens_per_request
+        or model.max_output_tokens_per_request != budget.max_output_tokens_per_request
+        or model.max_requests != budget.max_requests
+        or model.max_total_input_tokens != budget.max_input_tokens
+        or model.max_total_output_tokens != budget.max_output_tokens
+        or model.max_total_tokens != budget.max_total_tokens
+        or session.resources.max_turns != budget.max_turns
+        or session.resources.max_tool_calls != budget.max_tool_calls
+        or session.resources.max_experiments != budget.max_experiments
+        or session.resources.max_wall_seconds != budget.max_wall_seconds
+        or session.resources.max_eda_compute_seconds != budget.max_eda_compute_seconds
+        or session.resources.max_license_seconds != budget.max_license_seconds
+        or session.resources.max_artifact_bytes != budget.max_artifact_bytes
     ):
-        raise ValueError("session budgets do not fit the frozen campaign trial limits")
-    if binding.harness.maximum_requests_per_action > model.max_requests:
+        raise ValueError("session budgets differ from the frozen benchmark episode budget")
+    harness = binding.harness
+    if not isinstance(harness, MeteredProviderHarnessBinding):
+        raise ValueError("native CLI cells require a native campaign dispatcher")
+    if harness.maximum_requests_per_action > model.max_requests:
         raise ValueError("campaign harness request bound exceeds its session budget")
 
 
