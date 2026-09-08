@@ -1,9 +1,10 @@
 # Environment Contract
 
-`EnvironmentSpec` is the canonical description of everything allowed to execute
-or become visible during a run. It binds an executor, tool installations,
-assets, network policy, resources, license channels, checkpoint capability, and
-artifact retention policy.
+`EnvironmentSpec` freezes an executor, tool grants, assets, network policy,
+resources, license channels, checkpoint capability, and artifact retention
+policy. Configured file-view policy comes from the private profile; view
+qualification binds its observed filesystem inventory to the snapshot and
+environment digests.
 
 ## Tool resolution
 
@@ -149,6 +150,34 @@ snapshot, view, installation, and runtime identities against the tool probe
 receipts. This projection is input to execution qualification; it does not itself
 establish tool visibility or qualify a task. Library source paths and the storage
 root stay in the private resolved profile.
+
+Configuration v2 places `tool_visibility` on `ProfileViewConfig`. A
+`declared_bundle` grants the complete visible payload of its pinned image,
+including programs and data outside the configured tool API grants. Qualification
+retains its file inventory, symlink targets, executable subset, and directories
+that the container cannot search. An unlistable but searchable directory prevents
+complete inventory qualification. Runtime and library mounts have separate
+receipts and are excluded from the image inventory.
+
+The view canary runs through the configured rootless executor and supervisor.
+It verifies tool entrypoint bytes, a read-only root filesystem and library
+attachments, absence of controller files and importable framework code, the
+exact supervisor control files, and absence of undeclared mounts. The shared
+Podman builder masks automatic `/run/secrets` mounts with an empty, read-only
+tmpfs and disables copy-up; the canary verifies that it is empty. The system
+asset source policy also rejects the framework package and its ancestors as
+library sources. Private probe inputs, invocation plans, results, and encrypted
+observations remain available after cleanup.
+
+`exact_toolset` still requires separate filesystem evidence excluding
+unauthorized tool entrypoints, package files, and dedicated libraries. The
+current complete-image inventory cannot supply that evidence, so exact views
+remain unavailable. View conformance does not establish task reference/mutant
+qualification or complete RunEngine admission.
+
+`config import` converts v1 per-tool visibility into one view policy only when
+the selected tools agree. Conflicting modes require an explicit configuration
+decision. Normal loading requires v2 and never upgrades frozen run snapshots.
 
 Runnable profiles explicitly set positive `cpu_millicores`, `memory_bytes`,
 `process_count`, `wall_seconds`, `storage.max_bytes`, and

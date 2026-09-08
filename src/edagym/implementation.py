@@ -8,6 +8,8 @@ from pathlib import Path
 
 from edagym.canonical import canonical_digest
 
+FRAMEWORK_PACKAGE_ROOT = Path(__file__).resolve().parent
+
 
 def framework_implementation_digest() -> str:
     """Bind the installed Python source tree without relying on a Git checkout.
@@ -18,10 +20,11 @@ def framework_implementation_digest() -> str:
     identity, independent of their installation path.
     """
 
-    root = Path(__file__).resolve().parent
     modules = {
-        path.relative_to(root).as_posix(): f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
-        for path in sorted(root.rglob("*.py"))
+        path.relative_to(FRAMEWORK_PACKAGE_ROOT).as_posix(): (
+            f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+        )
+        for path in sorted(FRAMEWORK_PACKAGE_ROOT.rglob("*.py"))
     }
     return canonical_digest(
         {"modules": modules, "python_version": tuple(sys.version_info[:3])},

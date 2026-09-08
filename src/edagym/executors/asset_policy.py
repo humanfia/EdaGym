@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Never, SupportsIndex
 
 from edagym.canonical import canonical_digest
+from edagym.implementation import FRAMEWORK_PACKAGE_ROOT
 from edagym.specs.common import Digest
 
 _MOUNTINFO_PATH = Path("/proc/self/mountinfo")
@@ -205,7 +206,10 @@ def _read_system_source_authority() -> _SystemSourceAuthority:
         resolved_home = home.resolve(strict=True)
     except (OSError, RuntimeError):
         raise AssetSourcePolicyError("account home cannot be resolved safely") from None
-    sensitive_candidates = tuple(resolved_home / name for name in _SENSITIVE_HOME_NAMES)
+    sensitive_candidates = (
+        FRAMEWORK_PACKAGE_ROOT,
+        *(resolved_home / name for name in _SENSITIVE_HOME_NAMES),
+    )
     sensitive: set[Path] = set(sensitive_candidates)
     for candidate in sensitive_candidates:
         try:

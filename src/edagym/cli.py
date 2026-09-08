@@ -57,8 +57,8 @@ from edagym.cli_support.runs import (
 )
 from edagym.config import initialize_config, load_config
 from edagym.config.model import EdaGymConfig
-from edagym.config.qualification import qualify_profile
 from edagym.config.resolve import resolve_profile
+from edagym.config.view_qualification import qualify_profile
 from edagym.drivers.catalog import (
     BACKEND_CATALOG,
     BACKENDS,
@@ -809,9 +809,7 @@ def _backend_qualify(arguments: argparse.Namespace) -> int:
 
 
 def _tool_qualify(arguments: argparse.Namespace) -> int:
-    """Run controlled tool probes and persist private qualification receipts."""
-
-
+    """Qualify configured file views and persist their private executor evidence."""
     try:
         config = load_config(_config_path(arguments))
         resolved = resolve_profile(config, arguments.profile)
@@ -821,12 +819,18 @@ def _tool_qualify(arguments: argparse.Namespace) -> int:
     available = bool(receipts) and all(
         item.disposition is QualificationDisposition.CONFORMANT for item in receipts
     )
-    reasons = tuple(sorted({item.failure.value for item in receipts if item.failure is not None}))
+    reasons = tuple(sorted({
+        gap.value for item in receipts
+        for gap in (
+            item.failure, *(probe.failure for probe in item.tool_probes)
+        )
+        if gap is not None
+    }))
     _emit(
         {
             "profile_id": resolved.profile_id,
             "status": "available" if available else "unavailable",
-            "reasons": reasons or ("execution_qualification_required",),
+            "reasons": reasons,
             "receipt_count": len(receipts),
         }
     )

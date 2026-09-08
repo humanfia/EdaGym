@@ -20,6 +20,7 @@ from edagym.config.model import (
     RuntimeBaseSpec,
     StoragePolicy,
     ToolConfig,
+    ToolVisibility,
 )
 from edagym.specs.environment import ExecutorKind, NetworkKind
 
@@ -49,6 +50,7 @@ class ResolvedTool:
 @dataclass(frozen=True, slots=True, repr=False)
 class ResolvedEnvironmentView:
     view: ConfigView
+    tool_visibility: ToolVisibility
     runtime: RuntimeBaseSpec | None
     tools: tuple[ResolvedTool, ...]
     library_paths: tuple[tuple[str, Path], ...]
@@ -192,6 +194,7 @@ def _resolve_view(
             resolved_libraries.append((library.library_id, source))
     return ResolvedEnvironmentView(
         view=view,
+        tool_visibility=declared.tool_visibility,
         runtime=runtime,
         tools=tuple(resolved_tools),
         library_paths=tuple(resolved_libraries),

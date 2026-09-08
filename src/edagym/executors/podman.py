@@ -33,6 +33,13 @@ class PodmanContainment(StrEnum):
     DELEGATED_SCOPE = "delegated_scope"
 
 
+ROOTLESS_TEMP_TARGETS = ("/tmp", "/var/tmp")
+ROOTLESS_EMPTY_SECRET_TARGET = "/run/secrets"
+ROOTLESS_RUNTIME_FILE_TARGETS = (
+    "/etc/hostname", "/etc/hosts", "/etc/resolv.conf", "/run/.containerenv",
+)
+
+
 ROOTLESS_CONTROL_TARGETS = MappingProxyType(
     {
         RootlessControlFile.COMPOSITE_RECIPE: "/run/edagym-control/recipe.json",
@@ -96,6 +103,10 @@ def rootless_podman_command(
         "--image-volume=ignore",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        (
+            f"--tmpfs={ROOTLESS_EMPTY_SECRET_TARGET}:"
+            "ro,noexec,nosuid,nodev,notmpcopyup,size=4096,mode=0555"
+        ),
         "--userns=keep-id:uid=0,gid=0",
         f"--pids-limit={resources.pids}",
         f"--memory={resources.memory_bytes}",
@@ -116,22 +127,15 @@ def rootless_podman_command(
     if temporary_directory is None:
         command.append("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m")
     else:
+        command.append("--read-only-tmpfs=false")
         command.extend(
-            (
-                "--read-only-tmpfs=false",
-                _volume_argument(
-                    temporary_directory,
-                    "/tmp",
-                    readonly=False,
-                    extra_options=("noexec", "nosuid", "nodev"),
-                ),
-                _volume_argument(
-                    temporary_directory,
-                    "/var/tmp",
-                    readonly=False,
-                    extra_options=("noexec", "nosuid", "nodev"),
-                ),
+            _volume_argument(
+                temporary_directory,
+                target,
+                readonly=False,
+                extra_options=("noexec", "nosuid", "nodev"),
             )
+            for target in ROOTLESS_TEMP_TARGETS
         )
     if interactive:
         command.append("--interactive")

@@ -89,12 +89,6 @@ class ConfiguredToolResolution:
     capability: RootlessContainerCapability | None
 
 
-def qualify_profile(pair: ResolvedEnvironmentPair) -> tuple[ToolQualificationReceipt, ...]:
-    """Project actual installation probes; complete view qualification is still required."""
-
-    return tuple(result.receipt for result in resolve_profile_tools(pair))
-
-
 def resolve_profile_tools(pair: ResolvedEnvironmentPair) -> tuple[ConfiguredToolResolution, ...]:
     """Resolve configured tools once for both qualification and executor construction."""
 

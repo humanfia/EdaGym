@@ -9,6 +9,7 @@ from pytest import CaptureFixture
 
 from edagym.cli import main
 from edagym.config import initialize_config
+from edagym.config.execution import ExecutionPolicyGap
 
 
 def test_tool_qualification_requires_execution_evidence(
@@ -20,7 +21,7 @@ def test_tool_qualification_requires_execution_evidence(
     output = json.loads(capfd.readouterr().out)
     assert status != 0
     assert output["status"] == "unavailable"
-    assert output["reasons"] == ["execution_qualification_required"]
+    assert ExecutionPolicyGap.VIEW_UNAVAILABLE.value in output["reasons"]
     assert str(tmp_path) not in json.dumps(output)
     assert "config_digest" not in output
 

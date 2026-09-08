@@ -19,13 +19,16 @@ from edagym.config import initialize_config, resolve_profile
 from edagym.config.execution import project_environment
 from edagym.config.model import ConfigView, EdaGymConfig, PrivateConfigSnapshot
 from edagym.config.qualification import resolve_profile_tools
-from edagym.config.resolve import resolve_snapshot
+from edagym.config.resolve import ResolvedEnvironmentPair, resolve_snapshot
+from edagym.config.view_qualification import VIEW_OBSERVATION_ID, ViewObservation, qualify_view
 from edagym.drivers.catalog import BACKENDS
 from edagym.drivers.probe import probe_backend
+from edagym.drivers.qualification import QualificationDisposition
 from edagym.drivers.rootless_image import (
     RootlessImageConfiguration,
     RootlessImageExecutionRecipe,
 )
+from edagym.executors.asset_identity import capture_asset_identity
 from edagym.executors.asset_policy import load_system_asset_source_policy
 from edagym.executors.capabilities import (
     ProviderAvailability,
@@ -180,11 +183,11 @@ def _rootless_runtime(
     return environment, installation, capability
 
 
-def _configured_rootless_runtime(
+def _configured_rootless_profile(
     tmp_path: Path, tool_id: str, logical_tool_id: str, view: ConfigView,
     *, wall_seconds: int = 15,
-) -> tuple[EnvironmentSpec, ResolvedInstallation, RootlessContainerCapability]:
-    environment, installation, capability = _rootless_runtime(tool_id)
+) -> ResolvedEnvironmentPair:
+    environment, installation, _ = _rootless_runtime(tool_id)
     document = initialize_config(tmp_path / "config.toml", tmp_path / "state").model_dump(
         mode="python"
     )
@@ -213,7 +216,16 @@ def _configured_rootless_runtime(
     document["profiles"][0]["storage"] = {
         "max_bytes": 64 * 1024**2, "output_max_bytes": 1024**2,
     }
-    pair = resolve_profile(EdaGymConfig.model_validate(document), "default")
+    return resolve_profile(EdaGymConfig.model_validate(document), "default")
+
+
+def _configured_rootless_runtime(
+    tmp_path: Path, tool_id: str, logical_tool_id: str, view: ConfigView,
+    *, wall_seconds: int = 15,
+) -> tuple[EnvironmentSpec, ResolvedInstallation, RootlessContainerCapability]:
+    pair = _configured_rootless_profile(
+        tmp_path, tool_id, logical_tool_id, view, wall_seconds=wall_seconds,
+    )
     selected, = resolve_profile_tools(pair)
     assert selected.receipt.view is view
     assert selected.receipt.failure is None
@@ -223,6 +235,47 @@ def _configured_rootless_runtime(
     assert installation.package_manifest_digest is None
     environment = project_environment(pair, view, (selected,))
     return environment, installation, capability
+
+
+@pytest.mark.skipif(not Path("/usr/bin/podman").exists(), reason="Podman is unavailable")
+def test_configured_bundle_records_its_actual_file_view(tmp_path: Path) -> None:
+    pair = _configured_rootless_profile(
+        tmp_path, "iverilog", "simulation", ConfigView.PARTICIPANT,
+    )
+    asset = tmp_path / "mount-canary.txt"
+    content = b"Synthetic mount canary, not an EDA library.\n"
+    asset.write_bytes(content)
+    document = pair.snapshot.configuration.model_dump(mode="python")
+    document["libraries"] = [{
+        "library_id": "mount_canary", "source_path": asset,
+        "content_digest": capture_asset_identity(asset).restricted_digest,
+        "allowed_views": ["participant"],
+    }]
+    declared = document["profiles"][0]["participant"]
+    declared["tool_visibility"] = "declared_bundle"
+    declared["library_ids"] = ["mount_canary"]
+    pair = resolve_profile(EdaGymConfig.model_validate(document), "default")
+    resolutions = resolve_profile_tools(pair)
+    receipt = qualify_view(pair, ConfigView.PARTICIPANT, resolutions)
+    assert receipt.disposition is QualificationDisposition.CONFORMANT
+    assert receipt.execution is not None and receipt.evidence_id is not None
+    environment = project_environment(pair, ConfigView.PARTICIPANT, resolutions)
+    evidence = pair.site.state_root / "qualifications" / "views" / receipt.evidence_id
+    store = ContentAddressedStore.open_private(evidence / "cas", policy=environment.artifact_policy)
+    output = next(
+        item for item in receipt.execution.outputs if item.logical_id == VIEW_OBSERVATION_ID
+    )
+    observation = ViewObservation.model_validate_json(
+        store.read_bytes(output.blob, maximum_bytes=output.blob.size_bytes),
+    )
+    # The configured API grant contains Icarus. The image bundle also exposes
+    # these programs and data, and its qualification must retain that fact.
+    assert "/usr/bin/ngspice" in observation.program_paths
+    assert "/usr/share/yosys/simlib.v" in observation.rootfs_paths
+    assert observation.default_secrets_empty
+    assert observation.framework_absent and observation.private_sources_absent
+    assert observation.readonly_library_ids == ("mount_canary",)
+    assert asset.read_bytes() == content
 
 
 def _rootless_environment() -> tuple[EnvironmentSpec, str]:

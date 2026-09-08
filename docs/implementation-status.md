@@ -25,10 +25,16 @@ This branch is an implementation checkpoint, not a completed release.
 - Run-bound rootless execution with durable launch, container identity, terminal,
   and CAS result receipts. A delegated user scope owns each operation's deadline;
   collection and scoped cleanup survive controller loss.
+- Configuration v2 owns tool visibility per filesystem view. The explicit v1
+  importer converts agreeing tool declarations and refuses conflicting modes.
+- Complete-image bundle qualification through the configured rootless executor,
+  with a retained file inventory, read-only library canaries, private framework
+  boundaries, and empty automatic secret mounts. Exact views remain unavailable
+  until filesystem exclusion evidence exists.
 
 ## Validation
 
-The full suite reports **320 passed** in 368.37 seconds (exit 0). Retained CLI
+The full suite reports **321 passed** in 373.90 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
@@ -51,6 +57,16 @@ with copied labels. No task-owned containers or filesystem mounts remain after
 validation. The guest wire contract was updated and formatting checked; no VM,
 Slurm, or guest-agent deployment was exercised.
 
+Actual bundle-view audits inventory 8,256 image files and 679 executable files,
+including tools and data beyond the API grants. Both views retain read-only
+synthetic library attachments. A separate nonempty-parent canary proves that
+the secret mount is empty and read-only without modifying its host source.
+Four saved qualifications reopened with matching inputs, plans, results,
+environment and snapshot bindings, and CAS closure after cleanup. Framework
+package paths are refused as library sources. Explicit configuration import
+preserves typed credential references while rejecting unknown inline credential
+fields. These checks establish view conformance, not task qualification.
+
 Fresh-controller audits reproduced both frozen environments, rejected changed
 library content and framework source, and accepted restored library content.
 Actual image probes during browser create and resume leave the ASGI event loop
@@ -66,7 +82,8 @@ RunEngine execution or TaskInstance qualification.
 
 ## Remaining integration
 
-- Complete positive and negative tool-visibility and library-view qualification.
+- Complete exact-toolset filesystem exclusion qualification and integrate view
+  receipts into run admission and recovery.
 - Bind generated reference/mutant qualification to the execution workflow.
 - Connect RunEngine tool, edit, and submit operations to execution and recovery;
   consolidate the existing journal implementations into one semantic owner.

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from edagym.config.model import EdaGymConfig
+from edagym.config.model import EdaGymConfig, ToolVisibility
 from edagym.policy.runtime_storage import private_directory, read_private, write_private
 
 
@@ -39,8 +39,8 @@ def load_config(path: Path) -> EdaGymConfig:
 def import_legacy_config(source_path: Path, output_path: Path) -> EdaGymConfig:
     """Explicitly migrate a legacy TOML/JSON document into the private schema.
 
-    The operation is deliberately opt-in and rejects unknown or secret-bearing
-    fields instead of silently carrying them into the new configuration.
+    The operation is opt-in and validates every field against the current typed
+    schema before publishing the converted configuration.
     """
 
     source = source_path.expanduser().absolute()
@@ -56,11 +56,10 @@ def import_legacy_config(source_path: Path, output_path: Path) -> EdaGymConfig:
         raise ConfigError("legacy configuration cannot be parsed") from error
     if not isinstance(raw, dict):
         raise ConfigError("legacy configuration must be an object")
-    _reject_secret_fields(raw)
-    allowed = set(EdaGymConfig.model_fields) - {"source_path"}
-    unknown = set(raw) - allowed
-    if unknown:
-        raise ConfigError("legacy configuration contains unsupported fields")
+    if "source_path" in raw:
+        raise ConfigError("legacy configuration cannot set its own source location")
+    if raw.get("schema_version") == 1:
+        _migrate_visibility(raw)
     try:
         config = EdaGymConfig.model_validate(raw)
     except ValidationError as error:
@@ -89,7 +88,7 @@ def initialize_config(config_path: Path, private_root: Path) -> EdaGymConfig:
 def _template(root: Path) -> bytes:
     root_value = json.dumps(os.fspath(root), ensure_ascii=True)
     return (
-        "schema_version = 1\n\n"
+        f"schema_version = {EdaGymConfig.model_fields['schema_version'].default}\n\n"
         "[[sites]]\n"
         'site_id = "local"\n'
         f"state_root = {root_value}\n"
@@ -123,16 +122,36 @@ def _contains_placeholder(value: object) -> bool:
     return False
 
 
-def _reject_secret_fields(value: object) -> None:
-    secret_markers = ("secret", "token", "password", "api_key", "private_key")
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if any(marker in str(key).casefold() for marker in secret_markers):
-                raise ConfigError("legacy configuration contains a secret field")
-            _reject_secret_fields(item)
-    elif isinstance(value, list):
-        for item in value:
-            _reject_secret_fields(item)
+def _migrate_visibility(document: dict[str, object]) -> None:
+    """Offline v1 conversion; immutable run snapshots are never upgraded."""
+
+    tools = document.get("tools", [])
+    profiles = document.get("profiles", [])
+    if not isinstance(tools, list) or not isinstance(profiles, list):
+        raise ConfigError("legacy configuration collections are invalid")
+    modes = {}
+    for tool in tools:
+        if not isinstance(tool, dict) or not isinstance(tool.get("tool_id"), str):
+            raise ConfigError("legacy configuration tool is invalid")
+        modes[tool["tool_id"]] = ToolVisibility(
+            tool.pop("visibility", ToolVisibility.EXACT_TOOLSET)
+        )
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            raise ConfigError("legacy configuration profile is invalid")
+        for name in ("participant", "evaluator"):
+            view = profile.get(name, {})
+            if not isinstance(view, dict) or not isinstance(view.get("tool_ids", []), list):
+                raise ConfigError("legacy configuration view is invalid")
+            references = view.get("tool_ids", [])
+            if any(not isinstance(tool_id, str) for tool_id in references):
+                raise ConfigError("legacy configuration tool reference is invalid")
+            selected = {modes.get(tool_id) for tool_id in references}
+            if None in selected or len(selected) > 1 or "tool_visibility" in view:
+                raise ConfigError("legacy tool visibility cannot define one unambiguous view")
+            view["tool_visibility"] = next(iter(selected), ToolVisibility.EXACT_TOOLSET)
+            profile[name] = view
+    document["schema_version"] = EdaGymConfig.model_fields["schema_version"].default
 
 
 def _toml_bytes(config: EdaGymConfig) -> bytes:

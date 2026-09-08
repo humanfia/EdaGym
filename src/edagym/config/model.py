@@ -113,7 +113,6 @@ class ToolConfig(StrictModel):
     source: ToolSource
     version_label: Annotated[str, Field(min_length=1, max_length=160)]
     capabilities: Annotated[tuple[Capability, ...], Field(min_length=1)]
-    visibility: ToolVisibility = ToolVisibility.EXACT_TOOLSET
     environment_reference_ids: tuple[Identifier, ...] = ()
 
     @field_validator("capabilities")
@@ -219,6 +218,7 @@ class StoragePolicy(StrictModel):
 
 class ProfileViewConfig(StrictModel):
     runtime_id: Identifier | None = None
+    tool_visibility: ToolVisibility = ToolVisibility.EXACT_TOOLSET
     tool_ids: tuple[Identifier, ...] = ()
     library_ids: tuple[Identifier, ...] = ()
     network: NetworkKind = NetworkKind.NONE
@@ -306,7 +306,7 @@ class SnapshotView(StrictModel):
 class EdaGymConfig(StrictModel):
     """One private TOML document with no include, merge, or environment overlay layer."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     sites: tuple[SiteConfig, ...]
     runtimes: tuple[RuntimeBaseSpec, ...] = ()
     tools: tuple[ToolConfig, ...] = ()
@@ -403,7 +403,7 @@ class EdaGymConfig(StrictModel):
     def digest(self) -> Digest:
         return canonical_digest(
             self.model_dump(mode="json", exclude={"source_path"}),
-            domain="edagym-private-config-v1",
+            domain="edagym-private-config-v2",
         )
 
     def redacted_view(self) -> dict[str, object]:
@@ -436,11 +436,13 @@ class EdaGymConfig(StrictModel):
                     "profile_id": profile.profile_id,
                     "site_id": profile.site_id,
                     "participant": {
+                        "tool_visibility": profile.participant.tool_visibility,
                         "tool_count": len(profile.participant.tool_ids),
                         "library_count": len(profile.participant.library_ids),
                         "network": profile.participant.network,
                     },
                     "evaluator": {
+                        "tool_visibility": profile.evaluator.tool_visibility,
                         "tool_count": len(profile.evaluator.tool_ids),
                         "library_count": len(profile.evaluator.library_ids),
                         "network": profile.evaluator.network,
