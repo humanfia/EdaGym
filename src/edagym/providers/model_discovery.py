@@ -28,6 +28,7 @@ from edagym.providers.model import (
     ModelLabel,
     ProviderConfigLabel,
     ProviderProfile,
+    ProviderSecurityBinding,
     RequestTokenClaim,
     ResolvedProviderConfig,
 )
@@ -43,7 +44,6 @@ from edagym.providers.responses import (
     ProviderProtocolError,
     RawHttpResponse,
 )
-from edagym.run.trial_model import ProviderSecurityBinding
 from edagym.security.canary import CanaryAttestation, CanaryPolicy
 from edagym.security.canary_artifact import ProviderCanaryEvidence
 from edagym.security.credentials import (

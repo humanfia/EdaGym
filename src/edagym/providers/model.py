@@ -5,10 +5,9 @@ from __future__ import annotations
 import ipaddress
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Annotated, Any, Literal, SupportsIndex
+from typing import Annotated, Any, Literal, Self, SupportsIndex
 from urllib.parse import urlsplit
 
 from pydantic import Field, StringConstraints, TypeAdapter, field_validator, model_validator
@@ -521,30 +520,32 @@ class ResponsesRequest:
         raise TypeError("confidential requests cannot be serialized")
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderUsage:
-    input_tokens: int
-    output_tokens: int
-    total_tokens: int
-    cached_input_tokens: int | None = None
-    reasoning_tokens: int | None = None
+class ProviderUsage(StrictModel):
+    """One exact provider usage receipt shared by transport, journals, and accounting."""
 
-    def __post_init__(self) -> None:
-        values = (
-            self.input_tokens,
-            self.output_tokens,
-            self.total_tokens,
-            self.cached_input_tokens,
-            self.reasoning_tokens,
-        )
-        if any(value is not None and (type(value) is not int or value < 0) for value in values):
-            raise ValueError("usage counters must be non-negative integers")
+    input_tokens: JcsNonNegativeInt
+    output_tokens: JcsNonNegativeInt
+    total_tokens: JcsNonNegativeInt
+    cached_input_tokens: JcsNonNegativeInt | None = None
+    reasoning_tokens: JcsNonNegativeInt | None = None
+
+    @model_validator(mode="after")
+    def validate_counters(self) -> Self:
         if self.total_tokens != self.input_tokens + self.output_tokens:
             raise ValueError("total usage must equal input plus output usage")
         if self.cached_input_tokens is not None and self.cached_input_tokens > self.input_tokens:
             raise ValueError("cached input usage cannot exceed input usage")
         if self.reasoning_tokens is not None and self.reasoning_tokens > self.output_tokens:
             raise ValueError("reasoning usage cannot exceed output usage")
+        return self
+
+
+class ProviderSecurityBinding(StrictModel):
+    """The consumed isolation evidence and accounting policy authorizing a sender."""
+
+    canary_receipt_digest: Digest
+    runtime_surface_manifest_digest: Digest
+    budget_binding_digest: Digest
 
 
 class _ConfidentialOutput:

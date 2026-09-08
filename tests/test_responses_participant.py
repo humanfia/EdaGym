@@ -38,6 +38,7 @@ from edagym.providers.model import (
     FunctionCallOutput,
     FunctionCallStatus,
     FunctionTool,
+    ProviderSecurityBinding,
     ProviderUsage,
     RequestTokenClaim,
     ResponsesRequest,
@@ -66,8 +67,6 @@ from edagym.run.trial_model import (
     ParticipantProcessIdentity,
     ProducerKind,
     ProviderResponseRecordedEvent,
-    ProviderSecurityBinding,
-    ProviderUsageFact,
     RunEndedEvent,
     RunEndedPayload,
     RunHeader,
@@ -183,6 +182,7 @@ class _TwoRequestSender:
         request_body = json.dumps(payload, separators=(",", ":")).encode()
         observer.request_reserved(
             trial_id=trial_id,
+            request_key=request_key,
             provider_profile_digest=digest("provider-profile"),
             provider_config_digest=digest("provider-config"),
             security_binding=ProviderSecurityBinding(
@@ -458,7 +458,7 @@ def test_run_cannot_end_with_an_unsettled_provider_request(tmp_path: Path) -> No
         budget_binding_digest=digest("provider-budget"),
         reserved_input_tokens=32,
         reserved_output_tokens=16,
-        usage=ProviderUsageFact(input_tokens=1, output_tokens=1, total_tokens=2),
+        usage=ProviderUsage(input_tokens=1, output_tokens=1, total_tokens=2),
     )
     journal.transact_events(
         lambda state: exchange.request_events(state, timestamp=_NOW)

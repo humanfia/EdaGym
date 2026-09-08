@@ -20,6 +20,7 @@ from edagym.providers.model import (
     OutputText,
     ProviderContentType,
     ProviderProfile,
+    ProviderSecurityBinding,
     ProviderUsage,
     ProviderWire,
     ReasoningSummary,
@@ -37,7 +38,6 @@ from edagym.providers.provider_budget import (
     ProviderBudget,
     StandaloneProviderBudget,
 )
-from edagym.run.trial_model import ProviderSecurityBinding
 from edagym.security.canary import CanaryAttestation, CanaryPolicy, CanaryReceipt
 from edagym.security.canary_artifact import (
     MAX_PROVIDER_TRANSCRIPT_REQUEST_BYTES,
@@ -136,6 +136,7 @@ class ProviderExchangeObserver[Completion: ProviderCompletion](Protocol):
         self,
         *,
         trial_id: Identifier,
+        request_key: Identifier,
         provider_profile_digest: Digest,
         provider_config_digest: Digest,
         security_binding: ProviderSecurityBinding,
@@ -606,6 +607,7 @@ class ResponsesCampaign:
             if observer is not None:
                 observer.request_reserved(
                     trial_id=trial_id,
+                    request_key=request_key,
                     provider_profile_digest=self._configuration.profile.digest,
                     provider_config_digest=self._configuration.digest,
                     security_binding=self._security_binding,

@@ -8,6 +8,7 @@ from uuid import UUID
 
 import pytest
 
+from edagym.providers.model import ProviderSecurityBinding
 from edagym.resolution import resolve_run
 from edagym.run.artifact_model import (
     ArtifactManifest,
@@ -39,7 +40,6 @@ from edagym.run.trial_model import (
     ProviderRequestStartedPayload,
     ProviderResponseRecordedEvent,
     ProviderResponseRecordedPayload,
-    ProviderSecurityBinding,
     RunCommit,
     RunEndedEvent,
     RunEndedPayload,

@@ -62,6 +62,15 @@ Responses requests still reject a Messages profile before reservation or dispatc
 a controlled Messages participant is not yet connected. A provider profile alone
 does not qualify a native harness or enable a native campaign.
 
+`ProviderUsage` is the common validated receipt for provider transport, run
+journals, and campaign accounting. Those consumers retain the same typed value;
+they do not maintain separate usage schemas or field-by-field conversions.
+`ProviderSecurityBinding` also belongs to the provider domain, so transport
+admission does not depend on the legacy trial journal's model definitions.
+The sender supplies its reserved `request_key` to the exchange observer. The
+participant observer checks that key against the request it is about to journal
+before persisting evidence or allowing upstream dispatch.
+
 `NativeProviderRelay` exposes one short-lived trial capability on a private
 Unix socket. It accepts only the fixed path for its sender's protocol, requires its issued
 bearer token, and rejects requests after the absolute deadline supplied by the

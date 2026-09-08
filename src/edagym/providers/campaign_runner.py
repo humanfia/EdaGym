@@ -50,13 +50,13 @@ from edagym.providers.campaign_schedule import (
 )
 from edagym.providers.model import (
     ProviderProfile,
+    ProviderSecurityBinding,
     ProviderUsage,
     RequestTokenClaim,
 )
 from edagym.run.trial_model import (
     CandidateStageResult,
     ProviderRequestState,
-    ProviderSecurityBinding,
     RunBinding,
     RunState,
     StopReason,
@@ -86,34 +86,6 @@ class AttemptDisposition(StrEnum):
     TERMINAL_FAILURE = "terminal_failure"
 
 
-class UsageCounters(StrictModel):
-    input_tokens: JcsNonNegativeInt
-    output_tokens: JcsNonNegativeInt
-    total_tokens: JcsNonNegativeInt
-    cached_input_tokens: JcsNonNegativeInt | None = None
-    reasoning_tokens: JcsNonNegativeInt | None = None
-
-    @model_validator(mode="after")
-    def validate_totals(self) -> Self:
-        if self.total_tokens != self.input_tokens + self.output_tokens:
-            raise ValueError("provider total tokens must equal input plus output tokens")
-        if self.cached_input_tokens is not None and self.cached_input_tokens > self.input_tokens:
-            raise ValueError("cached input tokens cannot exceed input tokens")
-        if self.reasoning_tokens is not None and self.reasoning_tokens > self.output_tokens:
-            raise ValueError("reasoning tokens cannot exceed output tokens")
-        return self
-
-    @classmethod
-    def from_provider_usage(cls, usage: ProviderUsage) -> UsageCounters:
-        return cls(
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-            cached_input_tokens=usage.cached_input_tokens,
-            reasoning_tokens=usage.reasoning_tokens,
-        )
-
-
 class ProviderAttemptRecord(StrictModel):
     request_key: Identifier
     attempt_number: JcsPositiveInt
@@ -126,7 +98,7 @@ class ProviderAttemptRecord(StrictModel):
     provider_reported_model: ModelLabel | None = None
     provider_reported_service_tier: ServiceTierLabel | None = None
     provider_response_status: ProviderResponseStatus | None = None
-    provider_usage: UsageCounters | None = None
+    provider_usage: ProviderUsage | None = None
     charged_resources: CampaignResources
 
     @model_validator(mode="after")
@@ -1291,13 +1263,7 @@ class CampaignRunner:
                             raise CampaignAccountingError(
                                 "a completed provider request lacks response identity"
                             )
-                        usage = (
-                            None
-                            if request.usage is None
-                            else UsageCounters.model_validate(
-                                request.usage.model_dump(mode="python")
-                            )
-                        )
+                        usage = request.usage
                         actual = CampaignResources(
                             requests=1,
                             input_tokens=(
@@ -1638,7 +1604,6 @@ class CampaignRunner:
             or usage is not None
         ):
             raise ValueError("failed provider attempts cannot carry response facts")
-        provider_usage = None if usage is None else UsageCounters.from_provider_usage(usage)
         actual = CampaignResources(
             requests=1,
             input_tokens=(reservation._claim.input_tokens if usage is None else usage.input_tokens),
@@ -1663,7 +1628,7 @@ class CampaignRunner:
             provider_reported_model=provider_reported_model,
             provider_reported_service_tier=provider_reported_service_tier,
             provider_response_status=provider_response_status,
-            provider_usage=provider_usage,
+            provider_usage=usage,
             charged_resources=actual,
         )
         with self._lock:

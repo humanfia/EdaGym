@@ -321,6 +321,22 @@ Configured CLI closure admission, controlled Messages participants,
 credential-source selection, native run-event persistence, and campaign linkage
 to RunEngine remain unfinished. Native campaign dispatch remains unavailable.
 
+## Shared provider facts
+
+Transport, run journals, and campaign accounting now use the same validated
+`ProviderUsage` value. The separate usage models and manual conversions have
+been removed. `ProviderSecurityBinding` belongs to the provider domain, and the
+sender supplies its reserved request key to the exchange observer. The current
+participant observer rejects a mismatched key before persisting request evidence.
+
+The full suite passed 349 tests in 769.88 seconds (exit 0), with source, tests,
+and schemas unchanged throughout. Ruff, strict mypy over 218 source files,
+generated schema consistency, and diff checks passed. No test-owned containers
+or mounts remained. An isolated mismatch probe confirmed the journal remains
+unchanged when the observer receives a different reserved request key.
+This prepares the shared facts for RunEngine integration; it does not implement
+native harness operations or provider events in the new run journal.
+
 ## Remaining integration
 
 Configuration schema version 4 now owns explicit provider profiles, defaults,
@@ -349,6 +365,9 @@ participants, and campaign linkage to RunEngine remain unfinished.
   outcome/event view, and broaden the rendered browser interaction checks.
 - Migrate the remaining release-trial controllers and projections to RunEngine.
   Shared physical journal storage does not complete that semantic migration.
+- Enforce configured episode budgets in RunEngine. Its manifest currently records
+  the session request and wall-time limits as a digest, while execution applies
+  operation resource limits; that is not session-level budget enforcement.
 - Connect harnesses and campaigns to the same engine and collect real benchmark
   evidence. No completed six-model campaign or qualified benchmark is claimed.
 

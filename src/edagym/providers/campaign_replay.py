@@ -426,7 +426,7 @@ def _validate_provider_requests(
             or (
                 request.usage is not None
                 and final_attempt.provider_usage is not None
-                and request.usage.model_dump() != final_attempt.provider_usage.model_dump()
+                and request.usage != final_attempt.provider_usage
             )
         ):
             raise ValueError("run provider response differs from campaign dispatch evidence")

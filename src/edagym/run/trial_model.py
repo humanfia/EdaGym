@@ -14,6 +14,7 @@ from edagym.evaluation.model import ScoringDecision, StageResult
 from edagym.participant_tool_protocol import (
     participant_tool_invocation_id,
 )
+from edagym.providers.model import ProviderSecurityBinding, ProviderUsage
 from edagym.run.artifact_model import ArtifactRecord
 from edagym.run.journal_storage import JournalCommit
 from edagym.specs.common import (
@@ -468,30 +469,6 @@ class ParticipantToolLostPayload(StrictModel):
     invocation_digest: Digest
 
 
-class ProviderUsageFact(StrictModel):
-    input_tokens: JcsNonNegativeInt
-    output_tokens: JcsNonNegativeInt
-    total_tokens: JcsNonNegativeInt
-    cached_input_tokens: JcsNonNegativeInt | None = None
-    reasoning_tokens: JcsNonNegativeInt | None = None
-
-    @model_validator(mode="after")
-    def validate_counters(self) -> Self:
-        if self.total_tokens != self.input_tokens + self.output_tokens:
-            raise ValueError("total usage must equal input plus output usage")
-        if self.cached_input_tokens is not None and self.cached_input_tokens > self.input_tokens:
-            raise ValueError("cached input usage cannot exceed input usage")
-        if self.reasoning_tokens is not None and self.reasoning_tokens > self.output_tokens:
-            raise ValueError("reasoning usage cannot exceed output usage")
-        return self
-
-
-class ProviderSecurityBinding(StrictModel):
-    canary_receipt_digest: Digest
-    runtime_surface_manifest_digest: Digest
-    budget_binding_digest: Digest
-
-
 class ProviderRequestStartedPayload(StrictModel):
     request_id: Identifier
     actor_id: Identifier
@@ -518,7 +495,7 @@ class ProviderResponseRecordedPayload(StrictModel):
     provider_reported_model: ModelLabel
     provider_reported_service_tier: ServiceTierLabel | None = None
     status: ProviderResponseStatus
-    usage: ProviderUsageFact | None = None
+    usage: ProviderUsage | None = None
 
 
 class ControlTransferredPayload(StrictModel):
@@ -1057,7 +1034,7 @@ class ProviderRequestState(StrictModel):
     provider_reported_model: ModelLabel | None = None
     provider_reported_service_tier: ServiceTierLabel | None = None
     status: ProviderResponseStatus | None = None
-    usage: ProviderUsageFact | None = None
+    usage: ProviderUsage | None = None
 
     @model_validator(mode="after")
     def validate_input_reservation(self) -> Self:

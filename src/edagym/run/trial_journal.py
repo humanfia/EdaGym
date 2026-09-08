@@ -24,6 +24,7 @@ from edagym.evaluation.promotion import (
 )
 from edagym.evaluation.scoring import build_candidate_score, measurement_sample_seeds
 from edagym.participant_tool_protocol import EXECUTOR_PARTICIPANT_TOOL_NAME
+from edagym.providers.model import ProviderSecurityBinding
 from edagym.run.artifact_model import (
     ArtifactRecord,
 )
@@ -75,7 +76,6 @@ from edagym.run.trial_model import (
     ProviderRequestStartedEvent,
     ProviderRequestState,
     ProviderResponseRecordedEvent,
-    ProviderSecurityBinding,
     RunCommit,
     RunEndedEvent,
     RunEvent,

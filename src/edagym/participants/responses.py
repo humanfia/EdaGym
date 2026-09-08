@@ -31,6 +31,7 @@ from edagym.providers.model import (
     FunctionTool,
     InputMessage,
     InputRole,
+    ProviderSecurityBinding,
     ReasoningSummary,
     RequestTokenClaim,
     ResponsesRequest,
@@ -57,8 +58,6 @@ from edagym.run.trial_model import (
     ProviderRequestStartedPayload,
     ProviderResponseRecordedEvent,
     ProviderResponseRecordedPayload,
-    ProviderSecurityBinding,
-    ProviderUsageFact,
     RunEvent,
     RunPurpose,
     RunState,
@@ -657,6 +656,7 @@ class _JournalExchangeRecorder:
         self,
         *,
         trial_id: Identifier,
+        request_key: Identifier,
         provider_profile_digest: Digest,
         provider_config_digest: Digest,
         security_binding: ProviderSecurityBinding,
@@ -664,7 +664,12 @@ class _JournalExchangeRecorder:
         request_body: bytes,
         beta_features: tuple[str, ...],
     ) -> None:
-        if beta_features or self._started or trial_id != self._journal.header.binding.trial_key:
+        if (
+            beta_features
+            or self._started
+            or trial_id != self._journal.header.binding.trial_key
+            or request_key != self._request_id
+        ):
             raise ParticipantAdapterError(ParticipantFailureKind.CHANNEL_FAILURE)
         provider_identity = (provider_profile_digest, provider_config_digest)
         if (
@@ -790,18 +795,6 @@ class _JournalExchangeRecorder:
         if not self._started or self._result is not None:
             raise ParticipantAdapterError(ParticipantFailureKind.CHANNEL_FAILURE)
         record = self._store_transcript(response_body, ProviderTranscriptRole.RESPONSE)
-        usage = result.usage
-        usage_fact = (
-            None
-            if usage is None
-            else ProviderUsageFact(
-                input_tokens=usage.input_tokens,
-                output_tokens=usage.output_tokens,
-                total_tokens=usage.total_tokens,
-                cached_input_tokens=usage.cached_input_tokens,
-                reasoning_tokens=usage.reasoning_tokens,
-            )
-        )
         timestamp = self._clock()
         artifact_event_id = self._event_id_factory()
         provider_event_id = self._event_id_factory()
@@ -830,7 +823,7 @@ class _JournalExchangeRecorder:
                         provider_reported_model=result.reported_model,
                         provider_reported_service_tier=result.reported_service_tier,
                         status=result.status,
-                        usage=usage_fact,
+                        usage=result.usage,
                     ),
                 ),
             )

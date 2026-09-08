@@ -55,6 +55,7 @@ from edagym.projections import (
     project_leaderboard_entry,
     project_pareto_front,
 )
+from edagym.providers.model import ProviderUsage
 from edagym.run.artifacts import (
     RAW_MEASUREMENT_LINKS_MEDIA_TYPE,
     SANITIZED_MEASUREMENTS_MEDIA_TYPE,
@@ -82,7 +83,6 @@ from edagym.run.trial_model import (
     LicenseLeaseReleasedEvent,
     LicenseLeaseReleasedPayload,
     ProducerKind,
-    ProviderUsageFact,
     RunEndedEvent,
     ScoringRecordedEvent,
     StopReason,
@@ -1232,7 +1232,7 @@ def test_runtime_accounts_completed_provider_usage_instead_of_reservation(
         budget_binding_digest=digest("provider-budget"),
         reserved_input_tokens=5,
         reserved_output_tokens=5,
-        usage=ProviderUsageFact(
+        usage=ProviderUsage(
             input_tokens=4,
             output_tokens=4,
             total_tokens=8,

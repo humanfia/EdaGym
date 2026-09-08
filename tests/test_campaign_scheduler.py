@@ -53,6 +53,7 @@ from edagym.providers.campaign_schedule import (
 from edagym.providers.model import (
     ProviderDefaults,
     ProviderProfile,
+    ProviderSecurityBinding,
     ProviderUsage,
     RequestTokenClaim,
     ResolvedProviderConfig,
@@ -65,8 +66,6 @@ from edagym.run.trial_model import (
     EvaluatorRunBinding,
     HarnessRunActor,
     ProviderRequestState,
-    ProviderSecurityBinding,
-    ProviderUsageFact,
     ResolvedToolBinding,
     RunBinding,
     RunPurpose,
@@ -329,7 +328,7 @@ def _provider_request_fact(
         provider_reported_model=provider_reported_model,
         provider_reported_service_tier=provider_reported_service_tier,
         status=ProviderResponseStatus.COMPLETED,
-        usage=ProviderUsageFact(
+        usage=ProviderUsage(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             total_tokens=usage.total_tokens,

@@ -11,8 +11,7 @@ from edagym.providers.campaign_runner import (
     CampaignReservation,
     CampaignRunner,
 )
-from edagym.providers.model import ProviderUsage, RequestTokenClaim
-from edagym.run.trial_model import ProviderSecurityBinding
+from edagym.providers.model import ProviderSecurityBinding, ProviderUsage, RequestTokenClaim
 from edagym.specs.common import Digest, Identifier, ModelLabel, ProviderResponseStatus
 
 

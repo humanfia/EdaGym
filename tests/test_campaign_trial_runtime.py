@@ -95,6 +95,7 @@ from edagym.providers.model import (
     FunctionCallStatus,
     ProviderDefaults,
     ProviderProfile,
+    ProviderSecurityBinding,
     ProviderUsage,
     RequestTokenClaim,
     ResolvedProviderConfig,
@@ -131,8 +132,6 @@ from edagym.run.trial_model import (
     ParticipantToolReservedEvent,
     ParticipantToolSettledEvent,
     ProviderRequestState,
-    ProviderSecurityBinding,
-    ProviderUsageFact,
     RunHeader,
     RunStartedEvent,
     StopReason,
@@ -393,6 +392,7 @@ class _MeteredSequenceSender(MeteredResponsesParticipantSender):
         try:
             observer.request_reserved(
                 trial_id=trial_id,
+                request_key=request_key,
                 provider_profile_digest=self.provider_profile_digest,
                 provider_config_digest=self.provider_config_digest,
                 security_binding=self._security_binding,
@@ -1482,7 +1482,7 @@ def test_provider_recovery_replays_exact_response_and_predispatch_cancellation(
             provider_reported_model=trial.binding.qualified_provider_reported_model,
             provider_reported_service_tier="default",
             status=ProviderResponseStatus.COMPLETED,
-            usage=ProviderUsageFact(
+            usage=ProviderUsage(
                 input_tokens=3,
                 output_tokens=2,
                 total_tokens=5,

@@ -13,6 +13,7 @@ import pytest
 
 from edagym.canonical import canonical_bytes
 from edagym.executors.capabilities import ProviderAvailability, probe_local_containment
+from edagym.providers.model import ProviderSecurityBinding, ProviderUsage
 from edagym.run.artifact_model import (
     ArtifactRecord,
     BlobRef,
@@ -26,8 +27,6 @@ from edagym.run.trial_model import (
     ProviderRequestStartedPayload,
     ProviderResponseRecordedEvent,
     ProviderResponseRecordedPayload,
-    ProviderSecurityBinding,
-    ProviderUsageFact,
     RunEvent,
     RunHeader,
     RunState,
@@ -279,7 +278,7 @@ def provider_exchange_fixture(
     budget_binding_digest: str,
     reserved_input_tokens: int,
     reserved_output_tokens: int,
-    usage: ProviderUsageFact | None,
+    usage: ProviderUsage | None,
     requested_service_tier: str | None = None,
     provider_reported_service_tier: str | None = None,
 ) -> ProviderExchangeFixture:

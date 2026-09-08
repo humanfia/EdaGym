@@ -15,11 +15,10 @@ from pathlib import Path
 import pytest
 
 from edagym.providers.budget import BudgetLedger
-from edagym.providers.model import RequestTokenClaim
+from edagym.providers.model import ProviderSecurityBinding, RequestTokenClaim
 from edagym.providers.native_wire import NativeProviderResult
 from edagym.providers.relay import NativeProviderRelay
 from edagym.providers.responses import ResponsesCampaign
-from edagym.run.trial_model import ProviderSecurityBinding
 from edagym.security.canary_artifact import ProviderCanaryEvidence
 from tests.test_provider_security import _HttpsStub, _open_local_campaign, _tls_contexts
 
@@ -83,6 +82,7 @@ class _Evidence:
         self,
         *,
         trial_id: str,
+        request_key: str,
         provider_profile_digest: str,
         provider_config_digest: str,
         security_binding: ProviderSecurityBinding,
