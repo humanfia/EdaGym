@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.config.model import PrivateConfigSnapshot
+from edagym.evaluation.model import OutcomeKind
 from edagym.executors.model import InvocationView, JobHandle, JobStateKind
 from edagym.run.journal_storage import (
     EventConflict,
@@ -22,6 +24,7 @@ from edagym.run.journal_storage import (
 )
 from edagym.run.manifest import RunManifest, RunPurpose
 from edagym.run.model import (
+    BUDGETED_EVENT_KINDS,
     CancelRequestedEvent,
     CandidatePayload,
     CandidateSubmittedEvent,
@@ -37,7 +40,6 @@ from edagym.run.model import (
     QualificationCompletedEvent,
     RunCancelledEvent,
     RunCommit,
-    RunCompletedEvent,
     RunEvent,
     RunFailedEvent,
     RunPreparedEvent,
@@ -45,6 +47,7 @@ from edagym.run.model import (
     RunRecord,
     RunStartedEvent,
     RunState,
+    RunTimedOutEvent,
     RunUnavailableEvent,
     WorkspaceCommittedEvent,
 )
@@ -63,6 +66,7 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
     candidates: list[CandidatePayload] = []
     evaluations: list[EvaluationPayload] = []
     cancel_requested = False
+    deadline = None
     qualification_instance_id = None
     operations: dict[str, OperationState] = {}
     event_ids: set[str] = set()
@@ -77,6 +81,12 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             raise InvalidTransition("the first run fact must bind its manifest")
         if terminal is not None:
             raise InvalidTransition("terminal runs cannot accept new facts")
+        if (
+            deadline is not None
+            and event.timestamp >= deadline
+            and event.kind in BUDGETED_EVENT_KINDS
+        ):
+            raise InvalidTransition("expired runs cannot accept budgeted actions")
         if event.intent is not None:
             if event.actor_id != owner:
                 raise InvalidTransition("intent actor does not own run control")
@@ -99,6 +109,8 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             if phase is not EnginePhase.PREPARED or manifest.participant is None:
                 raise InvalidTransition("run start requires both frozen execution views")
             phase, workspace = EnginePhase.RUNNING, event.payload.workspace
+            if manifest.purpose is RunPurpose.TASK:
+                deadline = event.timestamp + timedelta(seconds=manifest.budget.max_wall_seconds)
         elif phase is not EnginePhase.RUNNING:
             raise InvalidTransition("run action requires a started run")
         elif isinstance(event, OperationPreparedEvent):
@@ -110,8 +122,9 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             if (
                 plan.run_id != manifest.digest
                 or plan.input_manifest_digest != payload.input_manifest.semantic_digest
+                or plan.deadline != deadline
             ):
-                raise InvalidTransition("operation differs from its run or input manifest")
+                raise InvalidTransition("operation differs from its run, input, or deadline")
             if plan.view not in {InvocationView.PARTICIPANT, InvocationView.EVALUATOR}:
                 raise InvalidTransition("operation requires a run filesystem view")
             if payload.parent_id is not None:
@@ -185,6 +198,8 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
                     raise EventConflict("candidate identifier is already submitted")
                 candidates.append(event.payload)
             elif isinstance(event, EvaluationCompletedEvent):
+                if cancel_requested:
+                    raise InvalidTransition("cancelled runs cannot publish evaluation outcomes")
                 candidate = next(
                     (
                         item
@@ -211,6 +226,11 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
                 ):
                     raise InvalidTransition("evaluation operation does not consume its candidate")
                 evaluations.append(event.payload)
+                if (
+                    manifest.purpose is RunPurpose.TASK
+                    and event.payload.outcome is OutcomeKind.PASSED
+                ):
+                    phase, terminal = EnginePhase.TERMINAL, "task_passed"
             elif isinstance(event, QualificationCompletedEvent):
                 if manifest.purpose is not RunPurpose.QUALIFICATION:
                     raise InvalidTransition(
@@ -218,14 +238,13 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
                     )
                 phase, terminal = EnginePhase.TERMINAL, "qualification_finished"
                 qualification_instance_id = event.payload.instance_id
+            elif isinstance(event, RunTimedOutEvent):
+                if deadline is None or event.timestamp < deadline:
+                    raise InvalidTransition("run timeout requires its elapsed episode deadline")
+                phase, terminal = EnginePhase.TERMINAL, event.kind.value
             elif isinstance(event, RunFailedEvent):
                 phase, terminal = EnginePhase.TERMINAL, f"{event.payload.failure.value}_failure"
-            elif isinstance(event, RunCancelledEvent | RunCompletedEvent):
-                if (
-                    isinstance(event, RunCompletedEvent)
-                    and manifest.purpose is RunPurpose.QUALIFICATION
-                ):
-                    raise InvalidTransition("qualification termination must publish its evidence")
+            elif isinstance(event, RunCancelledEvent):
                 phase, terminal = EnginePhase.TERMINAL, event.payload.reason
     return RunState(
         projection=RunProjection(
@@ -241,6 +260,7 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
             evaluations=tuple(evaluations),
             cancel_requested=cancel_requested,
             qualification_instance_id=qualification_instance_id,
+            deadline=deadline,
         ),
         events=tuple(events),
         operations=tuple(operations.values()),
@@ -293,6 +313,20 @@ class RunJournal:
             or snapshot.digest != self.manifest.private_config_snapshot_digest
         ):
             raise JournalCorruption("frozen run snapshot is corrupt")
+        session = next(
+            (
+                item for item in snapshot.configuration.sessions
+                if item.session_id == self.manifest.session_id
+            ),
+            None,
+        )
+        if session is None or (
+            self.manifest.session_digest
+            != canonical_digest(session, domain="session-configuration-v1")
+            or self.manifest.harness_id != session.harness_id
+            or self.manifest.budget != session.budget
+        ):
+            raise JournalCorruption("run session or budget differs from its frozen snapshot")
         return snapshot
 
     @contextmanager

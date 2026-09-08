@@ -8,6 +8,7 @@ import multiprocessing
 import signal
 import subprocess
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -19,6 +20,7 @@ from edagym.canonical import canonical_digest
 from edagym.config import initialize_config, resolve_profile
 from edagym.config.model import EdaGymConfig, PrivateConfigSnapshot
 from edagym.evaluation.model import OutcomeKind
+from edagym.executors.local import _systemd_unit_is_quiescent, _systemd_unit_result
 from edagym.executors.model import ExecutionFailureKind, JobStateKind
 from edagym.executors.rootless import _InvocationReceipt
 from edagym.policy.runtime_storage import PrivateStorageError
@@ -26,13 +28,14 @@ from edagym.run.journal import RunJournal
 from edagym.run.model import (
     EditPayload,
     EnginePhase,
+    EventKind,
     IntentKind,
     InteractionIntent,
     Principal,
     ToolPayload,
     TransferPayload,
 )
-from edagym.runtime.engine import RunEngine
+from edagym.runtime.engine import EngineError, RunEngine
 from edagym.specs.release import QualificationStatus
 from edagym.web.app import create_web_app
 from tests.test_executor_boundaries import _OPEN_EDA_DIGEST, _OPEN_EDA_REFERENCE, _rootless_runtime
@@ -370,3 +373,108 @@ def test_lost_launch_receipt_fences_the_operation_without_reexecution(
         ["/usr/bin/podman", "container", "exists", receipt.container_name], check=False
     )
     assert observed.returncode == 1
+
+
+@pytest.fixture(scope="module")
+def budgeted_task(
+    configured_task: tuple[EdaGymConfig, PrivateConfigSnapshot, GeneratedTask],
+) -> tuple[EdaGymConfig, PrivateConfigSnapshot, GeneratedTask]:
+    config, _, generated = configured_task
+    document = config.model_dump(mode="python")
+    document["sessions"][0]["max_wall_seconds"] = 20
+    document["profiles"][0]["resources"]["wall_seconds"] = 45
+    config = EdaGymConfig.model_validate(document)
+    pair = resolve_profile(config, "default")
+    qualified = RunEngine(pair.site.state_root).qualify_task(
+        generated, pair.snapshot, config.sessions[0].session_id,
+        Principal(principal_id=config.web.principal_id),
+    )
+    return config, pair.snapshot, qualified
+
+
+def test_episode_deadline_survives_controller_loss_without_reexecution(
+    budgeted_task: tuple[EdaGymConfig, PrivateConfigSnapshot, GeneratedTask],
+) -> None:
+    config, snapshot, qualified = budgeted_task
+    state_root = snapshot.configuration.sites[0].state_root
+    engine = RunEngine(state_root)
+    principal = Principal(principal_id=config.web.principal_id)
+    run = engine.prepare_task(qualified, snapshot, config.sessions[0].session_id, principal)
+    assert run.deadline is not None
+    journal = RunJournal.open(state_root / "runs" / run.run_id)
+    controller = multiprocessing.get_context("spawn").Process(
+        target=_tool_controller, args=(state_root, run.run_id, principal.principal_id)
+    )
+    controller.start()
+    try:
+        limit = time.monotonic() + 120
+        while not any(operation.running is not None for operation in journal.state().operations):
+            assert controller.is_alive(), "controller exited before launch"
+            assert time.monotonic() < limit
+            time.sleep(0.05)
+        controller.kill()
+        controller.join(10)
+        assert controller.exitcode == -signal.SIGKILL
+    finally:
+        if controller.is_alive():
+            controller.kill()
+            controller.join(10)
+        controller.close()
+    (operation,) = journal.state().operations
+    plan = operation.prepared.payload.plan
+    assert plan.deadline == run.deadline
+    receipt = _InvocationReceipt.model_validate_json(
+        (journal.directory / plan.view.value / "jobs" / plan.invocation_id / "invocation.json")
+        .read_bytes()
+    )
+    assert not _systemd_unit_is_quiescent(receipt.scope_unit)
+    limit = time.monotonic() + 90
+    while not _systemd_unit_is_quiescent(receipt.scope_unit):
+        assert time.monotonic() < limit
+        time.sleep(0.05)
+    assert _systemd_unit_result(receipt.scope_unit) == "timeout"
+    recovered = engine.resume(run.run_id, principal)
+    assert recovered.phase is EnginePhase.TERMINAL
+    assert recovered.terminal_reason == EventKind.RUN_TIMED_OUT.value
+    assert recovered.deadline == run.deadline
+    (finished,) = journal.state().operations
+    assert finished.prepared == operation.prepared
+    assert finished.terminal is not None
+    assert finished.terminal.payload.result.state.state is JobStateKind.TIMED_OUT
+    assert finished.terminal.payload.result.state.failure is ExecutionFailureKind.TIMEOUT
+    record = journal.record()
+    assert engine.resume(run.run_id, principal) == recovered
+    assert journal.record() == record
+    assert engine.gc(run.run_id, principal)
+
+
+def test_expired_idle_episode_rejects_edits_without_changing_workspace(
+    budgeted_task: tuple[EdaGymConfig, PrivateConfigSnapshot, GeneratedTask],
+) -> None:
+    config, snapshot, qualified = budgeted_task
+    state_root = snapshot.configuration.sites[0].state_root
+    engine = RunEngine(state_root)
+    principal = Principal(principal_id=config.web.principal_id)
+    run = engine.prepare_task(qualified, snapshot, config.sessions[0].session_id, principal)
+    assert run.deadline is not None
+    journal = RunJournal.open(state_root / "runs" / run.run_id)
+    workspace = journal.state().workspace
+    time.sleep(max(0, (run.deadline - datetime.now(UTC)).total_seconds()) + 0.05)
+    with pytest.raises(EngineError):
+        engine.submit_intent(
+            run.run_id,
+            InteractionIntent(
+                intent_id="expired_edit", idempotency_key="expired_edit",
+                actor_id=principal.principal_id, kind=IntentKind.EDIT,
+                payload=EditPayload(path="dut.sv", content="This edit must not be committed."),
+            ),
+            principal,
+        )
+    state = journal.state()
+    assert state.projection.terminal_reason == EventKind.RUN_TIMED_OUT.value
+    assert state.workspace == workspace
+    assert not state.operations and not state.projection.accepted_intents
+    record = journal.record()
+    assert engine.resume(run.run_id, principal) == state.projection
+    assert journal.record() == record
+    assert engine.gc(run.run_id, principal)

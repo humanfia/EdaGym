@@ -329,12 +329,34 @@ The current control-plane boundary is `RunEngine`: browser, CLI, and agent
 adapters submit the same typed intents and read cursor-based projections. A
 private TOML configuration resolves user-owned tools and libraries into one
 immutable snapshot referenced by each `RunManifest`; execution views are
-derived from that snapshot. A version-4 manifest freezes both observed
+derived from that snapshot. A version-5 manifest freezes both observed
 `EnvironmentSpec` projections, including tool deployment attestations, runtime,
 resources, library content identities, and artifact policy. The original
 configuration digest remains unchanged when the selected snapshot is resolved
 again. An unavailable run can lack execution projections; resume never fills
 them from a later configuration.
+
+The manifest also freezes the selected session's `SessionBudget` projection.
+Opening the journal validates that budget, session identity, and harness against
+the private snapshot. For task runs, replay derives the episode deadline from
+the durable `RunStartedEvent` timestamp and the frozen wall-time limit. Each
+version-three invocation plan binds that same deadline. New work after expiry
+is refused, and a quiescent expired run records `RunTimedOutEvent`; recovery does
+not reset the clock. Qualification runs retain their operation resource policy
+without consuming a scored episode's wall-time window.
+
+A successful task evaluation is itself the terminal fact. There is no separate
+completion event whose absence after a controller crash could leave an already
+successful run vulnerable to timeout. Qualification reference passes remain
+nonterminal until the complete qualification evidence has been published.
+
+Rootless launch limits its systemd scope to the smaller of the operation limit
+and the remaining episode time. A container created after expiry is retained as
+a collectable timeout without starting its payload. Collection and fencing may
+finish after the deadline so diagnostics and ownership evidence survive.
+Other executors refuse absolute-deadline plans until they implement this
+contract. The old digest-only budget field has been removed; existing manifests
+and invocation bindings must be regenerated for the new versions.
 
 `project_environment` derives executor identity from the installed framework
 source and the observed container runtime. The framework identity covers the

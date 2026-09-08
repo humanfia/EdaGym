@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
@@ -165,6 +166,16 @@ class InvocationPlan(StrictModel):
     input_manifest_digest: Digest
     recipe: Annotated[tuple[RecipeCommand, ...], Field(max_length=256)] = ()
     outputs: tuple[OutputDeclaration, ...] = ()
+    deadline: datetime | None = None
+
+    @field_validator("deadline")
+    @classmethod
+    def normalize_deadline(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("invocation deadlines must be timezone-aware")
+        return value.astimezone(UTC)
 
     @field_validator("working_directory")
     @classmethod
@@ -225,7 +236,7 @@ class InvocationPlan(StrictModel):
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self, domain="invocation-plan-v2")
+        return canonical_digest(self, domain="invocation-plan-v3")
 
 
 class JobHandle(StrictModel):

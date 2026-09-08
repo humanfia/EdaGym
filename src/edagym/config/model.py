@@ -259,12 +259,23 @@ class ProfileConfig(StrictModel):
     storage: StoragePolicy = StoragePolicy()
 
 
-class SessionConfig(StrictModel):
+class SessionBudget(StrictModel):
+    """Configured limits shared by a session and its immutable run binding."""
+
+    max_requests: Annotated[int, Field(strict=True, ge=1)] = 1
+    max_wall_seconds: Annotated[int, Field(strict=True, ge=1)] = 3600
+
+
+class SessionConfig(SessionBudget):
     session_id: Identifier
     kind: SessionKind
     harness_id: Identifier | None = None
-    max_requests: Annotated[int, Field(strict=True, ge=1)] = 1
-    max_wall_seconds: Annotated[int, Field(strict=True, ge=1)] = 3600
+
+    @property
+    def budget(self) -> SessionBudget:
+        return SessionBudget.model_validate(
+            self.model_dump(include=set(SessionBudget.model_fields))
+        )
 
     @model_validator(mode="after")
     def validate_harness(self) -> Self:

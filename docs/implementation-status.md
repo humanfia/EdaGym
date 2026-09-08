@@ -337,6 +337,32 @@ unchanged when the observer receives a different reserved request key.
 This prepares the shared facts for RunEngine integration; it does not implement
 native harness operations or provider events in the new run journal.
 
+## Configured run deadlines
+
+RunManifest version 5 freezes the configured session budget as a typed value;
+opening a journal verifies it against the private snapshot. Task-run deadlines
+derive from the journaled start time. Invocation plan version 3 binds the same
+deadline, and rootless scopes enforce the remaining time independently of the
+controller. Expired idle runs reject edits, and recovery preserves the original
+deadline and publishes a distinct run timeout after collecting operation evidence.
+
+Seven focused configured-run and schema checks passed, including an actual
+controller SIGKILL followed by autonomous scope timeout and recovery without
+reexecution. An isolated probe verified that an already-expired container never
+starts its payload and still yields a collectable timeout. Further probes rejected
+frozen session/budget/harness mismatches and changed operation deadlines. Scope
+durations now use integer microseconds, verified with the installed systemd parser.
+Successful task evaluation now terminalizes the run atomically, while qualification
+passes remain nonterminal. The redundant run completion event has been removed,
+closing the crash window in which a timeout could supersede an already-recorded
+success. An isolated replay probe verified this boundary and refusal of an
+evaluation after the deadline.
+
+The final full regression run passed 351 tests in 944.07 seconds (exit 0), with
+source, tests, and schemas unchanged throughout. Ruff, strict mypy over 218 source
+files, generated schema consistency, and diff checks passed. No test-owned
+containers or mounts remained.
+
 ## Remaining integration
 
 Configuration schema version 4 now owns explicit provider profiles, defaults,
@@ -365,9 +391,9 @@ participants, and campaign linkage to RunEngine remain unfinished.
   outcome/event view, and broaden the rendered browser interaction checks.
 - Migrate the remaining release-trial controllers and projections to RunEngine.
   Shared physical journal storage does not complete that semantic migration.
-- Enforce configured episode budgets in RunEngine. Its manifest currently records
-  the session request and wall-time limits as a digest, while execution applies
-  operation resource limits; that is not session-level budget enforcement.
+- Bind the full BenchmarkSpec episode budget and provider-request accounting to
+  RunEngine. Configured session wall time is enforced; the frozen request limit
+  still awaits the new engine's provider consumer.
 - Connect harnesses and campaigns to the same engine and collect real benchmark
   evidence. No completed six-model campaign or qualified benchmark is claimed.
 

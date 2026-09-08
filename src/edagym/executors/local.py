@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
+import math
 import os
 import resource
 import secrets
@@ -59,6 +60,7 @@ from edagym.specs.common import ArtifactClass, Capability
 from edagym.specs.environment import (
     ArtifactDisclosure,
     EnvironmentSpec,
+    ExecutorKind,
     FilesystemScope,
 )
 from edagym.specs.environment import (
@@ -837,6 +839,8 @@ class BrokeredHostExecutor:
 
 
 def _validate_plan_binding(plan: InvocationPlan, environment: EnvironmentSpec) -> None:
+    if plan.deadline is not None and environment.executor.kind is not ExecutorKind.ROOTLESS_LOCAL:
+        raise ExecutorUnavailable("this executor does not enforce absolute operation deadlines")
     matches = [
         binding
         for binding in environment.tool_bindings
@@ -1446,9 +1450,10 @@ def _systemd_scope_command(
     unit: str,
     command: tuple[str, ...],
     *,
-    wall_seconds: int,
+    wall_seconds: int | float,
     delegate: bool = False,
 ) -> tuple[str, ...]:
+    runtime_microseconds = math.ceil(wall_seconds * 1_000_000)
     return (
         os.fspath(_SYSTEMD_RUN_PATH),
         "--user",
@@ -1456,7 +1461,7 @@ def _systemd_scope_command(
         "--quiet",
         f"--unit={unit}",
         "--property=KillMode=control-group",
-        f"--property=RuntimeMaxSec={wall_seconds}s",
+        f"--property=RuntimeMaxSec={runtime_microseconds}us",
         "--property=TimeoutStopSec=5s",
         *(("--property=Delegate=yes", "--property=KillSignal=SIGKILL") if delegate else ()),
         "--",

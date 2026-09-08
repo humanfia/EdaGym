@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -623,14 +623,18 @@ class RootlessContainerExecutor:
         with self._guard():
             return self._state(self._invocation_for(handle))
 
-    def cancel(self, handle: JobHandle) -> JobState:
+    def cancel(
+        self, handle: JobHandle, *, reason: ExecutionFailureKind = ExecutionFailureKind.CANCELLED
+    ) -> JobState:
+        if reason not in {ExecutionFailureKind.CANCELLED, ExecutionFailureKind.TIMEOUT}:
+            raise ValueError("rootless stop requires cancellation or timeout")
         with self._guard():
             receipt = self._invocation_for(handle)
             state = self._state(receipt)
             if state.state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
                 write_private(
                     self._job_directory(handle.job_id) / "stop.json",
-                    canonical_bytes(ExecutionFailureKind.CANCELLED),
+                    canonical_bytes(reason),
                 )
                 self._stop_container(receipt)
                 return self._state(receipt)
@@ -1214,6 +1218,16 @@ class RootlessContainerExecutor:
 
         if not _systemd_unit_is_quiescent(receipt.scope_unit):
             return
+        wall_seconds: float = receipt.environment.resources.wall_seconds
+        if receipt.plan.deadline is not None:
+            remaining = (receipt.plan.deadline - datetime.now(UTC)).total_seconds()
+            if remaining <= 0:
+                write_private(
+                    self._job_directory(receipt.plan.invocation_id) / "stop.json",
+                    canonical_bytes(ExecutionFailureKind.TIMEOUT),
+                )
+                return
+            wall_seconds = min(wall_seconds, remaining)
         _forget_isolation(receipt.scope_unit)
         runtime = self._capability.runtime
         assert runtime is not None
@@ -1225,7 +1239,7 @@ class RootlessContainerExecutor:
                     os.fspath(LOCAL_ENV_PATH), "--argv0=/usr/bin/podman",
                     f"/proc/self/fd/{descriptor}", "start", "--attach", receipt.container_name,
                 ),
-                wall_seconds=receipt.environment.resources.wall_seconds,
+                wall_seconds=wall_seconds,
                 delegate=True,
             )
             process = subprocess.Popen(

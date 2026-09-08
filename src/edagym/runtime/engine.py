@@ -45,6 +45,7 @@ from edagym.run.journal_storage import JournalError, locked_file, write_exclusiv
 from edagym.run.manifest import QualificationBinding, RunManifest, RunPurpose
 from edagym.run.materialization import populate_disposable_empty_directory
 from edagym.run.model import (
+    BUDGETED_EVENT_KINDS,
     RUN_EVENT,
     AcceptedEvent,
     CancelPayload,
@@ -64,6 +65,7 @@ from edagym.run.model import (
     RunInterface,
     RunProjection,
     RunState,
+    RunTimedOutEvent,
     SubmitPayload,
     ToolPayload,
     TransferPayload,
@@ -86,6 +88,10 @@ _POLL_SECONDS = 0.05
 
 class EngineError(JournalError):
     """A command cannot be accepted under its frozen run or execution policy."""
+
+
+class _RunDeadlineExceeded(EngineError):
+    """The run journal has recorded its exhausted episode deadline."""
 
 
 class RunEngine:
@@ -268,6 +274,7 @@ class RunEngine:
                     self._execute_operation(journal, operation)
                 else:
                     self._cleanup_operation(journal, operation)
+            self._finish_expired_run(journal)
             state = journal.state()
             if state.projection.phase is EnginePhase.RUNNING and state.projection.cancel_requested:
                 self._commit_event(journal, EventKind.RUN_CANCELLED, {"reason": "explicit_cancel"})
@@ -279,11 +286,6 @@ class RunEngine:
             elif state.projection.phase is EnginePhase.RUNNING:
                 for candidate in state.candidates:
                     self._evaluate_candidate(journal, candidate.candidate_id)
-                if journal.manifest.purpose is RunPurpose.TASK and any(
-                    item.outcome is OutcomeKind.PASSED
-                    for item in journal.state().projection.evaluations
-                ):
-                    self._commit_event(journal, EventKind.RUN_COMPLETED, {"reason": "task_passed"})
             return journal.state().projection
 
     @staticmethod
@@ -415,6 +417,8 @@ class RunEngine:
             if journal.manifest.purpose is not RunPurpose.TASK:
                 raise EngineError("qualification runs do not accept participant intents")
             self._bindings(journal)
+            if self._finish_expired_run(journal):
+                raise _RunDeadlineExceeded("run episode wall budget is exhausted")
             payload = intent.payload
             if isinstance(payload, EditPayload):
                 assert state.workspace is not None
@@ -463,6 +467,7 @@ class RunEngine:
                     arguments=payload.arguments,
                     working_directory=payload.working_directory,
                     input_manifest_digest=state.workspace.semantic_digest,
+                    deadline=state.projection.deadline,
                 )
                 event = self._prepare_operation(journal, plan, state.workspace, intent=intent)
                 self._execute_operation(journal, journal.state().operations[-1], recovery=False)
@@ -680,7 +685,9 @@ class RunEngine:
                     visibility=operation.prepared.visibility,
                 )
             while executor.inspect(handle).state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
-                if journal.state().projection.cancel_requested:
+                if plan.deadline is not None and datetime.now(UTC) >= plan.deadline:
+                    executor.cancel(handle, reason=ExecutionFailureKind.TIMEOUT)
+                elif journal.state().projection.cancel_requested:
                     executor.cancel(handle)
                 time.sleep(_POLL_SECONDS)
             if executor.inspect(handle).state is JobStateKind.LOST:
@@ -731,6 +738,7 @@ class RunEngine:
         executor.fence(plan, environment=environment)
         if lease is not None:
             lease.close()
+        self._finish_expired_run(journal)
         return result
 
     def _cleanup_operation(self, journal: RunJournal, operation: OperationState) -> None:
@@ -860,20 +868,52 @@ class RunEngine:
         intent: InteractionIntent | None = None,
         visibility: Visibility = Visibility.PARTICIPANT,
     ) -> RunEvent:
-        state = journal.transact(
-            lambda current: (
-                self._event(
-                    journal,
-                    kind,
-                    payload,
-                    actor_id=actor_id,
-                    intent=intent,
-                    visibility=visibility,
+        def commit(current: RunState) -> tuple[RunEvent, ...]:
+            event = self._event(
+                journal,
+                kind,
+                payload,
+                actor_id=actor_id,
+                intent=intent,
+                visibility=visibility,
+                sequence=current.projection.next_sequence,
+            )
+            deadline = current.projection.deadline
+            if (
+                deadline is not None
+                and event.timestamp >= deadline
+                and kind in BUDGETED_EVENT_KINDS
+            ):
+                event = self._event(
+                    journal, EventKind.RUN_TIMED_OUT, None,
                     sequence=current.projection.next_sequence,
+                )
+            return (event,)
+
+        event = journal.transact(commit).events[-1]
+        if isinstance(event, RunTimedOutEvent) and kind is not EventKind.RUN_TIMED_OUT:
+            raise _RunDeadlineExceeded("run episode wall budget is exhausted")
+        return event
+
+    def _finish_expired_run(self, journal: RunJournal) -> bool:
+        def finish(state: RunState) -> tuple[RunEvent, ...]:
+            deadline = state.projection.deadline
+            if (
+                state.projection.phase is not EnginePhase.RUNNING
+                or deadline is None
+                or datetime.now(UTC) < deadline
+                or any(operation.terminal is None for operation in state.operations)
+            ):
+                return ()
+            return (
+                self._event(
+                    journal, EventKind.RUN_TIMED_OUT, None,
+                    sequence=state.projection.next_sequence,
                 ),
             )
-        )
-        return state.events[-1]
+
+        state = journal.transact(finish)
+        return state.projection.terminal_reason == EventKind.RUN_TIMED_OUT.value
 
     def _event(
         self,
@@ -944,20 +984,22 @@ class RunEngine:
             {"candidate_id": payload.candidate_id, "submission": submission},
             intent=intent,
         )
-        evaluation = self._evaluate_candidate(journal, payload.candidate_id)
+        self._evaluate_candidate(journal, payload.candidate_id)
         if journal.state().projection.phase is EnginePhase.TERMINAL:
             return event
         if journal.state().projection.cancel_requested:
             self._commit_event(journal, EventKind.RUN_CANCELLED, {"reason": "explicit_cancel"})
-        elif evaluation is not None and evaluation.outcome is OutcomeKind.PASSED:
-            self._commit_event(journal, EventKind.RUN_COMPLETED, {"reason": "task_passed"})
         return event
 
     def _evaluate_candidate(
         self, journal: RunJournal, candidate_id: str
     ) -> EvaluationPayload | None:
         state = journal.state()
-        if state.projection.cancel_requested:
+        if (
+            state.projection.cancel_requested
+            or state.projection.phase is not EnginePhase.RUNNING
+            or self._finish_expired_run(journal)
+        ):
             return None
         existing = next(
             (item for item in state.projection.evaluations if item.candidate_id == candidate_id),
@@ -991,7 +1033,10 @@ class RunEngine:
             prefix + "_synthesis",
             candidate.submission.semantic_digest,
         )
-        result = self._ensure_operation(journal, synthesis, candidate.submission)
+        try:
+            result = self._ensure_operation(journal, synthesis, candidate.submission)
+        except _RunDeadlineExceeded:
+            return None
         if (
             journal.state().projection.cancel_requested
             or journal.state().projection.phase is EnginePhase.TERMINAL
@@ -1019,7 +1064,10 @@ class RunEngine:
             simulation = rtl_queue.simulation_plan(
                 environment, journal.manifest.digest, prefix + "_simulation", inputs.semantic_digest
             )
-            result = self._ensure_operation(journal, simulation, inputs)
+            try:
+                result = self._ensure_operation(journal, simulation, inputs)
+            except _RunDeadlineExceeded:
+                return None
             if (
                 journal.state().projection.cancel_requested
                 or journal.state().projection.phase is EnginePhase.TERMINAL
@@ -1039,6 +1087,7 @@ class RunEngine:
     def _ensure_operation(
         self, journal: RunJournal, plan: InvocationPlan, inputs: CommittedManifest
     ) -> ExecutionResult:
+        plan = plan.model_copy(update={"deadline": journal.state().projection.deadline})
         operation = next(
             (
                 item

@@ -54,8 +54,20 @@ class EventKind(StrEnum):
     QUALIFICATION_COMPLETED = "qualification_completed"
     RUN_CANCELLED = "run_cancelled"
     CANCEL_REQUESTED = "cancel_requested"
-    RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
+    RUN_TIMED_OUT = "run_timed_out"
+
+
+BUDGETED_EVENT_KINDS = frozenset(
+    {
+        EventKind.CONTROL_TRANSFERRED,
+        EventKind.WORKSPACE_COMMITTED,
+        EventKind.CHECKPOINT_COMMITTED,
+        EventKind.CANDIDATE_SUBMITTED,
+        EventKind.OPERATION_PREPARED,
+        EventKind.EVALUATION_COMPLETED,
+    }
+)
 
 
 class Principal(StrictModel):
@@ -309,9 +321,9 @@ class CancelRequestedEvent(EventBase):
     payload: ReasonPayload
 
 
-class RunCompletedEvent(EventBase):
-    kind: Literal[EventKind.RUN_COMPLETED] = EventKind.RUN_COMPLETED
-    payload: ReasonPayload
+class RunTimedOutEvent(EventBase):
+    kind: Literal[EventKind.RUN_TIMED_OUT] = EventKind.RUN_TIMED_OUT
+    payload: None = None
 
 
 class RunFailedEvent(EventBase):
@@ -334,8 +346,8 @@ RunEvent = Annotated[
     | QualificationCompletedEvent
     | CancelRequestedEvent
     | RunCancelledEvent
-    | RunCompletedEvent
-    | RunFailedEvent,
+    | RunFailedEvent
+    | RunTimedOutEvent,
     Field(discriminator="kind"),
 ]
 RUN_EVENT: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)
@@ -417,6 +429,7 @@ class RunProjection(StrictModel):
     evaluations: tuple[EvaluationPayload, ...] = ()
     cancel_requested: bool = False
     qualification_instance_id: Identifier | None = None
+    deadline: datetime | None = None
 
 
 class RunState(StrictModel):

@@ -9,7 +9,7 @@ from typing import Literal, Self
 from pydantic import field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.config.model import PrivateConfigSnapshot
+from edagym.config.model import PrivateConfigSnapshot, SessionBudget
 from edagym.specs.common import Capability, Digest, Identifier, StrictModel
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import TaskInstance
@@ -29,7 +29,7 @@ class QualificationBinding(StrictModel):
 class RunManifest(StrictModel):
     """One immutable binding for task, views, session, harness, and budgets."""
 
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     purpose: RunPurpose = RunPurpose.TASK
     qualification: QualificationBinding | None = None
     run_id: Identifier
@@ -43,7 +43,7 @@ class RunManifest(StrictModel):
     session_digest: Digest
     initial_writer: Identifier | None = None
     harness_id: Identifier | None = None
-    budget_digest: Digest
+    budget: SessionBudget
     capabilities: tuple[Capability, ...] = ()
     created_at: datetime
 
@@ -78,7 +78,7 @@ class RunManifest(StrictModel):
     @property
     def digest(self) -> Digest:
         return canonical_digest(
-            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v4"
+            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v5"
         )
 
     @classmethod
@@ -124,10 +124,7 @@ class RunManifest(StrictModel):
             session_digest=canonical_digest(session, domain="session-configuration-v1"),
             initial_writer=initial_writer,
             harness_id=session.harness_id,
-            budget_digest=canonical_digest(
-                {"requests": session.max_requests, "wall_seconds": session.max_wall_seconds},
-                domain="episode-budget-v1",
-            ),
+            budget=session.budget,
             capabilities=capabilities,
             created_at=timestamp,
         )
