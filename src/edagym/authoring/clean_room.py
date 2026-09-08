@@ -54,8 +54,8 @@ class CleanRoomCatalogAttestation(StrictModel):
         value: tuple[CleanRoomFamilyProjection, ...],
     ) -> tuple[CleanRoomFamilyProjection, ...]:
         identifiers = [item.family for item in value]
-        if len(identifiers) != 20 or len(identifiers) != len(set(identifiers)):
-            raise ValueError("clean-room attestation requires exactly 20 unique families")
+        if not value or len(identifiers) != len(set(identifiers)):
+            raise ValueError("clean-room attestation requires unique non-empty families")
         return tuple(sorted(value, key=lambda item: item.family))
 
     @staticmethod

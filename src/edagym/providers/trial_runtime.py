@@ -350,7 +350,7 @@ class ExecutorParticipantToolDispatcher:
             operation=operation,
             request_interaction_id=request_interaction_id,
         )
-        evidence, records, budget_failure = self._execute(
+        evidence, records, budget_failure, storage_lease = self._execute(
             plan=plan,
             binding=binding,
             operation=operation,
@@ -364,6 +364,8 @@ class ExecutorParticipantToolDispatcher:
             evidence=evidence,
             reservation=reservation.payload,
         )
+        if storage_lease is not None:
+            release_executor_storage(self._executor, storage_lease, plan.invocation_id)
         if budget_failure is not None:
             raise ParticipantAdapterError(budget_failure)
         return ToolObservation(
@@ -478,6 +480,7 @@ class ExecutorParticipantToolDispatcher:
         ParticipantToolExecutionEvidence,
         tuple[ArtifactRecord, ...],
         ParticipantFailureKind | None,
+        InvocationStorageLease | None,
     ]:
         started = self._monotonic()
         lease: LicenseLease | None = None
@@ -587,12 +590,6 @@ class ExecutorParticipantToolDispatcher:
                     collected,
                     maximum_bytes=self._environment.resources.disk_bytes,
                 )
-                release_executor_storage(
-                    self._executor,
-                    storage_lease,
-                    plan.invocation_id,
-                )
-                storage_lease = None
             result = collected
         except _ToolDeadlineExpired:
             pass
@@ -611,16 +608,6 @@ class ExecutorParticipantToolDispatcher:
                 abandonment_error = error
             else:
                 isolation_closed = True
-        if storage_lease is not None:
-            try:
-                release_executor_storage(
-                    self._executor,
-                    storage_lease,
-                    plan.invocation_id,
-                )
-            except Exception as error:
-                abandonment_error = error
-            storage_lease = None
         release_failed = False
         if lease is not None:
             release_failed = self._release_license(
@@ -688,7 +675,7 @@ class ExecutorParticipantToolDispatcher:
                 elapsed_milliseconds=elapsed_milliseconds,
                 license_milliseconds=license_milliseconds,
             )
-            return evidence, (), budget_failure
+            return evidence, (), budget_failure, storage_lease
 
         prefix = _derived_identifier(
             "tool-artifact",
@@ -735,7 +722,7 @@ class ExecutorParticipantToolDispatcher:
             stderr_artifact_id=stderr.logical_id,
             output_artifact_ids=tuple(record.logical_id for record in output_records),
         )
-        return evidence, (stdout, stderr, *output_records), budget_failure
+        return evidence, (stdout, stderr, *output_records), budget_failure, storage_lease
 
     def _acquire_license(
         self,

@@ -11,6 +11,9 @@ import yaml
 from pydantic import BaseModel
 from yaml.nodes import MappingNode
 
+from edagym.benchmark.model import BenchmarkQualityReport, BenchmarkSpec, TrialObservation
+from edagym.benchmark.schedule import BenchmarkSchedule
+from edagym.config.model import EdaGymConfig
 from edagym.drivers.qualification import BackendQualification
 from edagym.release_commands import ReleaseCommandReceipt
 from edagym.release_reporting import ReleaseReport
@@ -60,6 +63,11 @@ DocumentKind = Literal[
     "release_manifest",
     "release_command",
     "release_report",
+    "benchmark",
+    "benchmark_quality_report",
+    "benchmark_schedule",
+    "trial_observation",
+    "config",
 ]
 
 PersistedDocument = (
@@ -71,6 +79,11 @@ PersistedDocument = (
     | ReleaseManifest
     | ReleaseCommandReceipt
     | ReleaseReport
+    | BenchmarkSpec
+    | BenchmarkQualityReport
+    | BenchmarkSchedule
+    | TrialObservation
+    | EdaGymConfig
 )
 
 _MODEL_BY_KIND_AND_VERSION: Mapping[tuple[DocumentKind, int], type[PersistedDocument]] = {
@@ -82,6 +95,11 @@ _MODEL_BY_KIND_AND_VERSION: Mapping[tuple[DocumentKind, int], type[PersistedDocu
     ("release_manifest", 1): ReleaseManifest,
     ("release_command", 1): ReleaseCommandReceipt,
     ("release_report", 1): ReleaseReport,
+    ("benchmark", 1): BenchmarkSpec,
+    ("benchmark_quality_report", 1): BenchmarkQualityReport,
+    ("benchmark_schedule", 1): BenchmarkSchedule,
+    ("trial_observation", 1): TrialObservation,
+    ("config", 1): EdaGymConfig,
 }
 
 

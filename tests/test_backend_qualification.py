@@ -847,14 +847,27 @@ def test_version_exit_status_is_enforced_across_execution_transports(tmp_path: P
             accepted_exit_codes=accepted,
         )
         assert (None if inspected is None else inspected[0]) == expected
-        for transport in (rootless_image, site_container):
-            assert transport._run_bounded(
-                executable,
-                arguments,
-                environment,
-                tmp_path,
-                accepted_exit_codes=accepted,
-            ) == expected
+        assert site_container._run_bounded(
+            executable, arguments, environment, tmp_path, accepted_exit_codes=accepted
+        ) == expected
+
+
+def test_rootless_version_probe_honors_container_exit_status(tmp_path: Path) -> None:
+    from edagym.drivers.closure import rootless_image_arguments
+    from tests.test_executor_boundaries import _rootless_runtime
+
+    _, installation, _ = _rootless_runtime()
+    runtime = installation.execution_closure.rootless_image_runtime
+    assert runtime is not None
+    arguments = rootless_image_arguments(
+        tmp_path, runtime.image_reference, "/bin/sh",
+        ("-c", "printf 'Version: 1.2\\n'; exit 1"),
+    )
+    for accepted, expected in (((0,), None), ((0, 1), b"Version: 1.2\n")):
+        assert rootless_image._run_bounded(
+            runtime.engine_path, arguments, runtime.host_environment, tmp_path,
+            accepted_exit_codes=accepted,
+        ) == expected
 
 
 def test_version_probe_normalizes_only_its_standalone_process_identity() -> None:

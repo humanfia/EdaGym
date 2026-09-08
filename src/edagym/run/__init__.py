@@ -14,3 +14,6 @@ __all__ = [
     "RunState",
     "replay",
 ]
+from edagym.run.manifest import ManifestView, RunManifest
+
+__all__ = ["ManifestView", "RunManifest"]

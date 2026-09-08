@@ -16,6 +16,7 @@ from edagym.drivers.fixtures.model import (
     SemanticRejectionReason,
     ToolInvocation,
 )
+from edagym.drivers.semantic_claims import SemanticJoint, normalize_semantic_joints
 from edagym.specs.common import Capability
 
 _HSPICE_COMPLETION_MARKER = b"hspice job concluded"
@@ -288,6 +289,10 @@ Rbottom out 0 1k
 HSPICE_CIRCUIT_SIMULATION = QualificationFixture(
     tool_id="hspice",
     capability=Capability.CIRCUIT_SIMULATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.CIRCUIT_SIMULATION,
+        (SemanticJoint.CIRCUIT_SIMULATION_DC,),
+    ),
     inputs=(
         FixtureInput(
             logical_id="circuit_netlist",
@@ -387,6 +392,10 @@ metal_spacing @= { @ "minimum metal spacing";
 ICV_PHYSICAL_VERIFICATION = QualificationFixture(
     tool_id="ic_validator",
     capability=Capability.PHYSICAL_VERIFICATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.PHYSICAL_VERIFICATION,
+        (SemanticJoint.PHYSICAL_VERIFICATION_DRC,),
+    ),
     inputs=(
         FixtureInput(
             logical_id="layout_geometry",
@@ -448,6 +457,10 @@ rule M1_SPACING {
 PEGASUS_PHYSICAL_VERIFICATION = QualificationFixture(
     tool_id="pegasus",
     capability=Capability.PHYSICAL_VERIFICATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.PHYSICAL_VERIFICATION,
+        (SemanticJoint.PHYSICAL_VERIFICATION_DRC,),
+    ),
     inputs=(
         FixtureInput(
             logical_id="layout_geometry",

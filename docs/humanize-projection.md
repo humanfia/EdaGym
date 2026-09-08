@@ -99,3 +99,8 @@ session harness. `probe_humanize_runtime()` reports whether the optional `hmz`
 module is discoverable without importing or configuring it; an unavailable
 probe remains an honest capability downgrade. Every resulting action still
 passes through the journal-owned single-writer controller.
+
+Human-only and hybrid handoff runs are separate from the Agent-only benchmark
+roster. The browser uses the same `TransferControlIntent`, candidate, feedback,
+checkpoint, and cancel events as direct agents; local UI state never decides
+who owns a run or whether a result is eligible for scoring.

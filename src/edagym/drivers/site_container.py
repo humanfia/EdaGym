@@ -177,11 +177,7 @@ def inspect_site_container_tool(
             finally:
                 for descriptor in mount_descriptors:
                     os.close(descriptor)
-            if (
-                output is None
-                or not configuration.revalidate()
-                or not closure.revalidate()
-            ):
+            if output is None or not configuration.revalidate() or not closure.revalidate():
                 return None
             start = output.find(_VERSION_BEGIN)
             end = output.find(_VERSION_END, start + len(_VERSION_BEGIN))
@@ -304,19 +300,14 @@ def _run_bounded(
     descriptor = os.open(output_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.getuid()
-            or before.st_nlink != 1
-        ):
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1:
             return None
         os.fchmod(descriptor, 0o600)
         output_bytes = os.read(descriptor, _MAX_OUTPUT_BYTES + 1)
         after = os.fstat(descriptor)
-        if (
-            (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
-            or stat.S_IMODE(after.st_mode) != 0o600
-        ):
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino) or stat.S_IMODE(
+            after.st_mode
+        ) != 0o600:
             return None
     finally:
         os.close(descriptor)

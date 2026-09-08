@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from itertools import pairwise
 
 from edagym.drivers.fixtures.model import (
+    FixtureAssetInput,
     FixtureInput,
     FixtureObservation,
     FixtureOutput,
@@ -308,8 +309,7 @@ class OpenroadPowerIntegrityParser:
             or f"+ ROUTED {self.routing_layer} " not in grid
             or "END SPECIALNETS" not in grid
             or any(
-                f"- {instance} LOAD + PLACED" not in grid
-                for instance in self.expected_instances
+                f"- {instance} LOAD + PLACED" not in grid for instance in self.expected_instances
             )
         ):
             return None
@@ -360,9 +360,7 @@ class OpenroadPowerIntegrityParser:
 
     def accepts(self, observation: FixtureObservation) -> bool:
         worst_drop = self._worst_drop_microvolts(observation)
-        return worst_drop is not None and (
-            worst_drop <= self.maximum_accepted_drop_microvolts
-        )
+        return worst_drop is not None and (worst_drop <= self.maximum_accepted_drop_microvolts)
 
     def rejection(
         self,
@@ -382,12 +380,8 @@ class OpenroadPowerIntegrityParser:
             "routing_layer": self.routing_layer,
             "expected_instances": self.expected_instances,
             "supply_microvolts": self.supply_microvolts,
-            "maximum_accepted_drop_microvolts": (
-                self.maximum_accepted_drop_microvolts
-            ),
-            "minimum_rejected_drop_microvolts": (
-                self.minimum_rejected_drop_microvolts
-            ),
+            "maximum_accepted_drop_microvolts": (self.maximum_accepted_drop_microvolts),
+            "minimum_rejected_drop_microvolts": (self.minimum_rejected_drop_microvolts),
             "rejection_reason": SemanticRejectionReason.POWER_GRID_VIOLATION,
         }
 
@@ -959,97 +953,6 @@ def _input(logical_id: str, path: str, content: str) -> FixtureInput:
     return FixtureInput(logical_id, path, content.encode("ascii"))
 
 
-_OPENROAD_CELL_LEF = """\
-VERSION 5.8 ;
-BUSBITCHARS "[]" ;
-DIVIDERCHAR "/" ;
-UNITS
-  DATABASE MICRONS 1000 ;
-END UNITS
-MANUFACTURINGGRID 0.001 ;
-SITE CoreSite
-  CLASS CORE ;
-  SIZE 1 BY 1 ;
-END CoreSite
-LAYER metal1
-  TYPE ROUTING ;
-  DIRECTION HORIZONTAL ;
-  PITCH 0.10 ;
-  WIDTH 0.05 ;
-  SPACING 0.05 ;
-  RESISTANCE RPERSQ 0.10 ;
-  CAPACITANCE CPERSQDIST 0.0002 ;
-  EDGECAPACITANCE 0.0001 ;
-END metal1
-MACRO BUF
-  CLASS CORE ;
-  ORIGIN 0 0 ;
-  SIZE 1 BY 1 ;
-  SITE CoreSite ;
-  PIN A
-    DIRECTION INPUT ;
-    USE SIGNAL ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.10 0.10 0.20 0.20 ;
-    END
-  END A
-  PIN Y
-    DIRECTION OUTPUT ;
-    USE SIGNAL ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.80 0.80 0.90 0.90 ;
-    END
-  END Y
-END BUF
-END LIBRARY
-"""
-
-_OPENROAD_CELL_LIBERTY = """\
-library (edagym_backend_breadth) {
-  delay_model : table_lookup;
-  time_unit : "1ns";
-  voltage_unit : "1V";
-  current_unit : "1mA";
-  leakage_power_unit : "1uW";
-  capacitive_load_unit (1, pf);
-  nom_process : 1.0;
-  nom_temperature : 25.0;
-  nom_voltage : 1.0;
-  operating_conditions (typical) {
-    process : 1.0;
-    temperature : 25.0;
-    voltage : 1.0;
-  }
-  default_operating_conditions : typical;
-  power_lut_template (power_template) {
-    variable_1 : input_transition_time;
-    variable_2 : total_output_net_capacitance;
-    index_1 ("0.01");
-    index_2 ("0.01");
-  }
-  cell (BUF) {
-    area : 1.0;
-    cell_leakage_power : 2.0;
-    pin (A) {
-      direction : input;
-      capacitance : 0.01;
-    }
-    pin (Y) {
-      direction : output;
-      function : "A";
-      internal_power () {
-        related_pin : "A";
-        rise_power (power_template) { values ("0.5"); }
-        fall_power (power_template) { values ("0.5"); }
-      }
-    }
-  }
-}
-"""
-
-
 def _openroad_power_source(*, implemented: bool) -> str:
     implementation = "BUF instance(.A(a), .Y(y));" if implemented else "assign y = a;"
     return f"""\
@@ -1083,16 +986,26 @@ OPENROAD_POWER_ANALYSIS = QualificationFixture(
         ),
     ),
     inputs=(
-        _input("cell_abstract", "cells.lef", _OPENROAD_CELL_LEF),
-        _input("cell_library", "cells.lib", _OPENROAD_CELL_LIBERTY),
         _input("design_source", "top.v", _openroad_power_source(implemented=True)),
         _input("power_script", "power.tcl", _OPENROAD_POWER_SCRIPT),
     ),
     rejection_inputs=(
-        _input("cell_abstract", "cells.lef", _OPENROAD_CELL_LEF),
-        _input("cell_library", "cells.lib", _OPENROAD_CELL_LIBERTY),
         _input("design_source", "top.v", _openroad_power_source(implemented=False)),
         _input("power_script", "power.tcl", _OPENROAD_POWER_SCRIPT),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "cell_abstract",
+            "cells.lef",
+            "openroad_breadth_cell_abstract",
+            "text/x-lef",
+        ),
+        FixtureAssetInput(
+            "cell_library",
+            "cells.lib",
+            "openroad_breadth_timing_library",
+            "text/x-liberty",
+        ),
     ),
     rejection_reason=SemanticRejectionReason.DEGENERATE_IMPLEMENTATION,
     invocations=(ToolInvocation(("power.tcl",)),),
@@ -1119,50 +1032,6 @@ OPENROAD_POWER_ANALYSIS = QualificationFixture(
     ),
 )
 
-
-_OPENROAD_PDN_LEF = """\
-VERSION 5.8 ;
-BUSBITCHARS "[]" ;
-DIVIDERCHAR "/" ;
-UNITS
-  DATABASE MICRONS 1000 ;
-END UNITS
-SITE CoreSite
-  CLASS CORE ;
-  SIZE 1 BY 2 ;
-END CoreSite
-LAYER metal1
-  TYPE ROUTING ;
-  DIRECTION HORIZONTAL ;
-  PITCH 0.2 ;
-  WIDTH 0.1 ;
-  SPACING 0.1 ;
-  RESISTANCE RPERSQ 0.5 ;
-END metal1
-MACRO LOAD
-  CLASS CORE ;
-  ORIGIN 0 0 ;
-  SIZE 1 BY 2 ;
-  SITE CoreSite ;
-  PIN VDD
-    DIRECTION INOUT ;
-    USE POWER ;
-    PORT
-      LAYER metal1 ;
-      RECT 0 1.8 1 2 ;
-    END
-  END VDD
-  PIN VSS
-    DIRECTION INOUT ;
-    USE GROUND ;
-    PORT
-      LAYER metal1 ;
-      RECT 0 0 1 0.2 ;
-    END
-  END VSS
-END LOAD
-END LIBRARY
-"""
 
 _OPENROAD_PDN_DEF = """\
 VERSION 5.8 ;
@@ -1221,7 +1090,6 @@ OPENROAD_POWER_INTEGRITY = QualificationFixture(
         ),
     ),
     inputs=(
-        _input("power_grid_abstract", "power_grid.lef", _OPENROAD_PDN_LEF),
         _input("routed_power_grid", "power_grid.def", _OPENROAD_PDN_DEF),
         _input(
             "voltage_source",
@@ -1235,7 +1103,6 @@ OPENROAD_POWER_INTEGRITY = QualificationFixture(
         ),
     ),
     rejection_inputs=(
-        _input("power_grid_abstract", "power_grid.lef", _OPENROAD_PDN_LEF),
         _input("routed_power_grid", "power_grid.def", _OPENROAD_PDN_DEF),
         _input(
             "voltage_source",
@@ -1246,6 +1113,14 @@ OPENROAD_POWER_INTEGRITY = QualificationFixture(
             "power_grid_script",
             "power_grid.tcl",
             _openroad_power_grid_script("0.01"),
+        ),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "power_grid_abstract",
+            "power_grid.lef",
+            "openroad_power_grid_abstract",
+            "text/x-lef",
         ),
     ),
     rejection_reason=SemanticRejectionReason.POWER_GRID_VIOLATION,
@@ -1339,8 +1214,6 @@ OPENROAD_PARASITIC_EXTRACTION = QualificationFixture(
         ),
     ),
     inputs=(
-        _input("cell_abstract", "cells.lef", _OPENROAD_CELL_LEF),
-        _input("cell_library", "cells.lib", _OPENROAD_CELL_LIBERTY),
         _input(
             "placed_design",
             "design.def",
@@ -1349,14 +1222,26 @@ OPENROAD_PARASITIC_EXTRACTION = QualificationFixture(
         _input("extraction_script", "extract.tcl", _OPENROAD_EXTRACTION_SCRIPT),
     ),
     rejection_inputs=(
-        _input("cell_abstract", "cells.lef", _OPENROAD_CELL_LEF),
-        _input("cell_library", "cells.lib", _OPENROAD_CELL_LIBERTY),
         _input(
             "placed_design",
             "design.def",
             _openroad_extraction_def(include_required_net=False),
         ),
         _input("extraction_script", "extract.tcl", _OPENROAD_EXTRACTION_SCRIPT),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "cell_abstract",
+            "cells.lef",
+            "openroad_breadth_cell_abstract",
+            "text/x-lef",
+        ),
+        FixtureAssetInput(
+            "cell_library",
+            "cells.lib",
+            "openroad_breadth_timing_library",
+            "text/x-liberty",
+        ),
     ),
     rejection_reason=SemanticRejectionReason.MISSING_REQUIRED_STRUCTURE,
     invocations=(ToolInvocation(("extract.tcl",)),),
@@ -1390,11 +1275,10 @@ Mn out in 0 0 nmos W=2u L=0.18u
     )
     return f"""\
 * EdaGym inverter characterization qualification
+.include models/inverter.lib
 Vdd vdd 0 1.0
 Vin in 0 PULSE(0 1 1n 0.1n 0.1n 4n 10n)
 {devices}Cload out 0 20f
-.model nmos NMOS level=1 VTO=0.4 KP=200u LAMBDA=0.02
-.model pmos PMOS level=1 VTO=-0.4 KP=100u LAMBDA=0.02
 .tran 0.05n 12n
 .control
 set wr_singlescale
@@ -1411,6 +1295,13 @@ quit
 NGSPICE_CELL_CHARACTERIZATION = QualificationFixture(
     tool_id="ngspice",
     capability=Capability.CELL_CHARACTERIZATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.CELL_CHARACTERIZATION,
+        (
+            SemanticJoint.CELL_CHARACTERIZATION_ARCS,
+            SemanticJoint.CELL_CHARACTERIZATION_FAILED_ARC,
+        ),
+    ),
     inputs=(
         _input(
             "characterization_netlist",
@@ -1423,6 +1314,14 @@ NGSPICE_CELL_CHARACTERIZATION = QualificationFixture(
             "characterization_netlist",
             "inverter.cir",
             _ngspice_inverter_netlist(inverter=False),
+        ),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "device_models",
+            "models/inverter.lib",
+            "ngspice_inverter_device_models",
+            "text/x-spice",
         ),
     ),
     rejection_reason=SemanticRejectionReason.FUNCTIONAL_MISMATCH,
@@ -1453,6 +1352,10 @@ NGSPICE_CELL_CHARACTERIZATION = QualificationFixture(
 MODUS_DESIGN_FOR_TEST = QualificationFixture(
     tool_id="modus",
     capability=Capability.DESIGN_FOR_TEST,
+    semantic_joints=normalize_semantic_joints(
+        Capability.DESIGN_FOR_TEST,
+        (SemanticJoint.DFT_CHAIN_INTEGRITY,),
+    ),
     inputs=(
         _input("design_source", "candidate.v", modus_scan_design(complete_chain=True)),
         _input("pin_assignments", "pins.assign", MODUS_PIN_ASSIGNMENTS),

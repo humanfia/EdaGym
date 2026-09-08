@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import stat
 import subprocess
 import sys
@@ -15,8 +14,6 @@ from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
 _CHUNK_SIZE = 1024 * 1024
-_FIXED_IMAGE_TOOL_DIRECTORIES = ("/usr/local/bin", "/usr/bin", "/bin")
-_IMAGE_EXECUTABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,8 +52,7 @@ def _load_recipe(path: Path) -> dict[str, object]:
     if (
         not isinstance(value, dict)
         or value.get("schema_version") != 1
-        or set(value) - {"schema_version", "tool_resolution", "commands"}
-        or value.get("tool_resolution", "absolute") not in {"absolute", "fixed_image_path"}
+        or set(value) - {"schema_version", "commands"}
     ):
         raise ValueError("invalid composite recipe")
     commands = value.get("commands")
@@ -73,21 +69,14 @@ def _execute(recipe: dict[str, object]) -> list[dict[str, object]]:
     for raw in raw_commands:
         if not isinstance(raw, dict):
             raise TypeError("invalid command")
-        resolution = recipe.get("tool_resolution", "absolute")
-        if not isinstance(resolution, str):
-            raise TypeError("invalid tool resolution")
-        report = _execute_one(raw, tool_resolution=resolution)
+        report = _execute_one(raw)
         reports.append(report)
         if report["failure"] is not None or report["exit_code"] != 0:
             break
     return reports
 
 
-def _execute_one(
-    raw: dict[str, object],
-    *,
-    tool_resolution: str,
-) -> dict[str, object]:
+def _execute_one(raw: dict[str, object]) -> dict[str, object]:
     if set(raw) != {
         "kind",
         "identity_digest",
@@ -117,14 +106,8 @@ def _execute_one(
         executable = f"/proc/self/fd/{executable_descriptor}"
     elif raw.get("kind") != "tool":
         raise ValueError("invalid command kind")
-    elif tool_resolution == "absolute":
-        if not Path(executable).is_absolute():
-            raise ValueError("host tool executable must be absolute")
-    elif tool_resolution == "fixed_image_path":
-        executable_descriptor = _open_fixed_image_executable(executable)
-        executable = f"/proc/self/fd/{executable_descriptor}"
-    else:
-        raise ValueError("invalid tool resolution")
+    elif not Path(executable).is_absolute():
+        raise ValueError("resolved tool executable must be absolute")
 
     with tempfile.TemporaryDirectory(prefix=".edagym-command-", dir=".") as temporary:
         stdout_path = Path(temporary) / "stdout.bin"
@@ -193,40 +176,6 @@ def _open_workspace_executable(value: str) -> int:
         return descriptor
     finally:
         os.close(parent)
-
-
-def _open_fixed_image_executable(value: str) -> int:
-    if not _IMAGE_EXECUTABLE.fullmatch(value):
-        raise ValueError("image tool executable must be an opaque name")
-    for directory in _FIXED_IMAGE_TOOL_DIRECTORIES:
-        try:
-            parent = os.open(
-                directory,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
-            )
-        except OSError:
-            continue
-        try:
-            try:
-                descriptor = os.open(
-                    value,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                    dir_fd=parent,
-                )
-            except OSError:
-                continue
-            metadata = os.fstat(descriptor)
-            if (
-                stat.S_ISREG(metadata.st_mode)
-                and metadata.st_uid == 0
-                and metadata.st_mode & 0o111
-                and not metadata.st_mode & 0o022
-            ):
-                return descriptor
-            os.close(descriptor)
-        finally:
-            os.close(parent)
-    raise ValueError("image tool executable is outside the fixed trusted path")
 
 
 def _copy_and_digest(path: Path, destination: BinaryIO) -> tuple[str, int]:

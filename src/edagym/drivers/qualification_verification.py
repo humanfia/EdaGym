@@ -19,7 +19,7 @@ from edagym.drivers.fixtures.model import (
     qualification_artifact_id,
 )
 from edagym.drivers.model import BackendDefinition, QualificationState, Vendor
-from edagym.drivers.probe import probe_backend
+from edagym.drivers.probe import eula_acceptance_required, probe_backend
 from edagym.drivers.qualification import (
     _PARSER_CAPTURE_BYTES,
     BackendQualification,
@@ -77,9 +77,7 @@ class VerifiedBackendQualificationSource:
     ) -> None:
         if _issuer is not _VERIFIED_SOURCE_ISSUER:
             raise TypeError("verified qualification sources are issued only by live verification")
-        carries_artifacts = (
-            artifact_closure_digest is not None and artifact_store is not None
-        )
+        carries_artifacts = artifact_closure_digest is not None and artifact_store is not None
         if carries_artifacts != (source_kind is QualificationSourceKind.EVIDENCE_PAIR):
             raise TypeError("verified source kind differs from its live artifact closure")
         object.__setattr__(self, "_qualification", qualification)
@@ -334,7 +332,7 @@ def _verify_live_probe_gap_source(
         raise QualificationSourceVerificationError(
             "qualification gap differs from its current live probe"
         )
-    _verify_gap_reason(qualification, definition)
+    _verify_gap_reason(qualification, definition, deployment_configuration)
     _revalidate_runtime_configuration(
         deployment_configuration,
         rootless_image_configuration,
@@ -367,6 +365,7 @@ def _verify_live_probe_gap_source(
 def _verify_gap_reason(
     qualification: BackendQualification,
     definition: BackendDefinition,
+    deployment_configuration: BackendDeploymentConfiguration | None,
 ) -> None:
     reason = qualification.gaps[0].reason
     state = qualification.probe.state
@@ -378,7 +377,7 @@ def _verify_gap_reason(
             fixture_for(definition.tool_id, capability) is None
             and reason is QualificationGapReason.FIXTURE_UNAVAILABLE
         )
-    elif definition.workload_use_requires_eula_acceptance:
+    elif eula_acceptance_required(definition, deployment_configuration):
         valid = reason is QualificationGapReason.EULA_ACCEPTANCE_REQUIRED
     else:
         valid = reason in {
@@ -407,8 +406,7 @@ def _verify_evidence_deployment_binding(
         rootless_image_configuration,
     )
     if any(
-        evidence.deployment_record_digest != expected_digest
-        for evidence in qualification.evidence
+        evidence.deployment_record_digest != expected_digest for evidence in qualification.evidence
     ):
         raise QualificationSourceVerificationError(
             "qualification differs from its live deployment binding"
@@ -475,16 +473,14 @@ def _verify_environment_binding(
         )
     if rootless_image_configuration is not None and (
         not isinstance(binding.locator, ImageToolLocator)
-        or binding.locator.image_digest
-        != rootless_image_configuration.recipe.image_digest
+        or binding.locator.image_digest != rootless_image_configuration.recipe.image_digest
     ):
         raise QualificationSourceVerificationError(
             "rootless qualification differs from its exact image binding"
         )
     if any(
         evidence.resource_grant.limits != environment.resources
-        or evidence.artifact_policy_digest
-        != artifact_policy_digest(environment.artifact_policy)
+        or evidence.artifact_policy_digest != artifact_policy_digest(environment.artifact_policy)
         for evidence in qualification.evidence
     ):
         raise QualificationSourceVerificationError(

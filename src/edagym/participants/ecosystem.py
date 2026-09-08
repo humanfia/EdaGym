@@ -419,7 +419,8 @@ class CalibrationCommandChannel:
     ) -> subprocess.Popen[bytes]:
         command = rootless_podman_command(
             podman_path=self._podman_path,
-            environment=self._environment,
+            resources=self._environment.resources,
+            filesystem=self._environment.filesystem,
             workspace=self._workspace,
             artifact_directory=None,
             asset_paths={asset_id: snapshot.path for asset_id, snapshot in self._assets.items()},

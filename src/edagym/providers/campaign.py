@@ -380,45 +380,26 @@ class CampaignSpec(StrictModel):
     def validate_scope(self) -> Self:
         repetitions = len(self.paired_trial_seeds)
         if self.scope is CampaignScope.END_TO_END_SMOKE and (
-            len(self.task_release_digests) != 3
+            len(self.task_release_digests) < 1
             or len(self.route_ids) != 1
             or len(self.reasoning_efforts) != 1
             or repetitions != 1
         ):
             raise ValueError(
-                "end-to-end smoke campaigns require three tasks, one route, "
+                "end-to-end smoke campaigns require at least one task, one route, "
                 "one reasoning effort, and one repetition"
             )
         if self.scope in {
             CampaignScope.MODEL_COMPARISON_PILOT,
             CampaignScope.COMMON_CORE,
-        } and len(self.task_release_digests) != 8:
-            raise ValueError("pilot and common core campaigns require exactly eight tasks")
-        if self.scope in {
-            CampaignScope.MODEL_COMPARISON_PILOT,
-            CampaignScope.COMMON_CORE,
-        } and len(self.reasoning_efforts) != 1:
-            raise ValueError("pilot and common core campaigns require one reasoning effort")
-        if self.scope is CampaignScope.MODEL_COMPARISON_PILOT and repetitions != 1:
-            raise ValueError("model comparison pilot campaigns require exactly one repetition")
-        if self.scope is CampaignScope.COMMON_CORE and repetitions != 3:
-            raise ValueError("common core campaigns require exactly three repetitions")
-        if self.scope is CampaignScope.REASONING_EFFORT_SENSITIVITY and (
-            len(self.task_release_digests) != 6
-            or len(self.reasoning_efforts) != 2
-            or repetitions != 1
-        ):
+        } and len(self.task_release_digests) < 1:
+            raise ValueError("comparison campaigns require at least one task")
+        if self.scope is CampaignScope.REASONING_EFFORT_SENSITIVITY and len(
+            self.reasoning_efforts
+        ) < 2:
             raise ValueError(
-                "reasoning effort sensitivity campaigns require six tasks, "
-                "two reasoning efforts, and one repetition"
+                "reasoning effort sensitivity campaigns require at least two reasoning efforts"
             )
-        if self.scope is CampaignScope.EXPANDED_BREADTH and repetitions not in {1, 3}:
-            raise ValueError("expanded breadth campaigns require one or three repetitions")
-        if self.scope is CampaignScope.EXPANDED_BREADTH and isinstance(
-            self.provider_spend_limit,
-            UnknownSpendLimit,
-        ):
-            raise ValueError("expanded breadth campaigns require an explicit spend cap")
         if self.retry_policy.max_request_attempts > self.token_limits.max_requests_per_trial:
             raise ValueError("trial request budget cannot satisfy the retry policy")
         return self

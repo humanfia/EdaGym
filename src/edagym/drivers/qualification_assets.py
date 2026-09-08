@@ -314,8 +314,10 @@ def _bounded_source_names(
     account_entries: bool = True,
 ) -> list[str]:
     names: list[str] = []
-    maximum = MAX_ASSET_CAPTURE_ENTRIES - budget.entries if account_entries else (
-        MAX_ASSET_CAPTURE_ENTRIES
+    maximum = (
+        MAX_ASSET_CAPTURE_ENTRIES - budget.entries
+        if account_entries
+        else (MAX_ASSET_CAPTURE_ENTRIES)
     )
     with os.scandir(descriptor) as entries:
         for entry in entries:
@@ -331,11 +333,7 @@ def _copy_file_at(
     name: str,
     metadata: os.stat_result,
 ) -> None:
-    mode = (
-        _PRIVATE_EXECUTABLE_MODE
-        if metadata.st_mode & stat.S_IXUSR
-        else _PRIVATE_FILE_MODE
-    )
+    mode = _PRIVATE_EXECUTABLE_MODE if metadata.st_mode & stat.S_IXUSR else _PRIVATE_FILE_MODE
     destination = os.open(
         name,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
@@ -361,9 +359,7 @@ def _copy_file_at(
             _object_identity(completed) != _object_identity(opened)
             or stat.S_IMODE(completed.st_mode) != mode
         ):
-            raise AssetValidationError(
-                "materialized qualification asset file changed while copied"
-            )
+            raise AssetValidationError("materialized qualification asset file changed while copied")
     finally:
         os.close(destination)
 
@@ -449,9 +445,7 @@ def _require_private_tree_descriptor(descriptor: int) -> None:
     if stat.S_ISREG(metadata.st_mode):
         _require_owned_regular(metadata, "materialized qualification asset file")
         expected = (
-            _PRIVATE_EXECUTABLE_MODE
-            if metadata.st_mode & stat.S_IXUSR
-            else _PRIVATE_FILE_MODE
+            _PRIVATE_EXECUTABLE_MODE if metadata.st_mode & stat.S_IXUSR else _PRIVATE_FILE_MODE
         )
         if stat.S_IMODE(metadata.st_mode) != expected:
             raise AssetValidationError("materialized qualification asset file is not private")
@@ -476,9 +470,7 @@ def _require_private_tree_descriptor(descriptor: int) -> None:
         )
         try:
             if _identity(os.fstat(child)) != _identity(before):
-                raise AssetValidationError(
-                    "materialized qualification asset changed while opened"
-                )
+                raise AssetValidationError("materialized qualification asset changed while opened")
             _require_private_tree_descriptor(child)
             if _identity(os.fstat(child)) != _identity(before):
                 raise AssetValidationError(

@@ -262,3 +262,10 @@ A new task family defines semantics and reuses existing capabilities. A new
 executor implements the existing execution protocol. A new report consumes the
 journal. Extensions must not add parallel task schemas, process runners,
 scoreboards, or event stores.
+
+The current control-plane boundary is `RunEngine`: browser, CLI, and agent
+adapters submit the same typed intents and read cursor-based projections. A
+private TOML configuration resolves user-owned tools and libraries into one
+immutable snapshot referenced by each `RunManifest`; execution views are
+derived from that snapshot. Framework readiness, station campaign completion,
+and benchmark quality remain independent evidence states.

@@ -10,9 +10,8 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from contextlib import ExitStack
-from io import TextIOBase
 from pathlib import Path
-from typing import Any, Never, cast
+from typing import Any, Never
 
 from pydantic import BaseModel, ValidationError
 
@@ -27,6 +26,9 @@ from edagym.authoring.provider import (
     PrivateAuthoringCapability,
     QualificationProviderResponse,
 )
+from edagym.benchmark.model import BenchmarkQualityReport, BenchmarkSpec, TrialObservation
+from edagym.benchmark.schedule import BenchmarkSchedule
+from edagym.benchmark.store import load_instances, prepare_benchmark
 from edagym.canonical import canonical_bytes
 from edagym.cli_support.backends import (
     probe_declared_backends,
@@ -51,15 +53,12 @@ from edagym.cli_support.flows import (
     qualify_flow_pack,
 )
 from edagym.cli_support.runs import (
-    cancel_run,
-    checkpoint_run,
-    human_turn,
     open_run,
-    resume_run,
-    start_run,
-    state_payload,
-    submit_candidate,
 )
+from edagym.config import initialize_config, load_config
+from edagym.config.model import EdaGymConfig
+from edagym.config.qualification import qualify_profile
+from edagym.config.resolve import resolve_profile
 from edagym.drivers.catalog import (
     BACKEND_CATALOG,
     BACKENDS,
@@ -68,7 +67,7 @@ from edagym.drivers.catalog import (
 )
 from edagym.drivers.deployment import load_backend_deployment_registry
 from edagym.drivers.model import QualificationState
-from edagym.drivers.qualification import BackendQualification
+from edagym.drivers.qualification import BackendQualification, QualificationDisposition
 from edagym.executors.capabilities import probe_local_containment
 from edagym.executors.deployment import (
     load_executor_deployment_registry,
@@ -81,6 +80,7 @@ from edagym.policy.repository import (
     RepositoryPolicy,
     audit_repository,
 )
+from edagym.policy.runtime_storage import read_private
 from edagym.projections import (
     HumanizeTraceAudience,
     ProjectionUnavailable,
@@ -130,6 +130,7 @@ from edagym.task_families.catalog import (
     SAIL_RTL_FAMILIES,
     TaskFamilyDefinition,
 )
+from edagym.web import create_web_app
 
 _SUCCESS = 0
 _UNSATISFIED = 1
@@ -145,13 +146,59 @@ class _ArgumentParser(argparse.ArgumentParser):
 def _parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(prog="edagym", description="EDA task and evaluation runtime")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        type=Path,
+        help="select one private TOML configuration document",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
+
+    init = commands.add_parser("init", help="create a private configuration skeleton")
+    init.add_argument("--config", dest="config_path", required=True, type=Path)
+    init.add_argument("--root", required=True, type=Path)
+    init.set_defaults(handler=_init_config)
+
+    config = commands.add_parser("config", help="check, show, or import configuration")
+    config_commands = config.add_subparsers(dest="config_command", required=True)
+    for config_command in ("check", "show"):
+        checker = config_commands.add_parser(config_command)
+        checker.add_argument(
+            "--config",
+            dest="config_path",
+            required=False,
+            default=argparse.SUPPRESS,
+            type=Path,
+        )
+        checker.set_defaults(handler=_config_check)
+    importer = config_commands.add_parser("import", help="explicitly import a legacy document")
+    importer.add_argument("--source", required=True, type=Path)
+    importer.add_argument("--output", required=True, type=Path)
+    importer.set_defaults(handler=_config_import)
+
+    web = commands.add_parser("web", help="serve the authenticated browser shell")
+    web_commands = web.add_subparsers(dest="web_command", required=True)
+    serve = web_commands.add_parser("serve")
+    serve.add_argument(
+        "--config",
+        dest="config_path",
+        default=argparse.SUPPRESS,
+        type=Path,
+    )
+    serve.add_argument(
+        "--check",
+        action="store_true",
+        help="validate and print startup metadata without binding a socket",
+    )
+    serve.set_defaults(handler=_web_serve)
 
     doctor = commands.add_parser(
         "doctor",
         help="probe backends and durable local execution prerequisites",
     )
     doctor.add_argument("--json", action="store_true", help="emit canonical JSON")
+    doctor.add_argument("--config", dest="config_path", type=Path, default=argparse.SUPPRESS)
+    doctor.add_argument("--site", dest="site_id")
     doctor.add_argument(
         "--backend-deployment",
         type=Path,
@@ -165,7 +212,9 @@ def _parser() -> argparse.ArgumentParser:
     doctor.set_defaults(handler=_doctor)
 
     _add_backend_commands(commands)
+    _add_tool_commands(commands)
     _add_campaign_commands(commands)
+    _add_factory_benchmark_commands(commands)
     _add_task_commands(commands)
     _add_environment_commands(commands)
     _add_run_commands(commands)
@@ -254,6 +303,12 @@ def _parser() -> argparse.ArgumentParser:
             "release_manifest",
             "release_command",
             "release_report",
+            "benchmark",
+            "benchmark_quality_report",
+            "benchmark_schedule",
+            "trial_observation",
+            "config",
+            "run_manifest",
         ),
     )
     spec_validate.add_argument("path", type=Path)
@@ -404,6 +459,17 @@ def _add_backend_commands(commands: argparse._SubParsersAction[_ArgumentParser])
     qualify.set_defaults(handler=_backend_qualify)
 
 
+def _add_tool_commands(commands: argparse._SubParsersAction[_ArgumentParser]) -> None:
+    """Expose the configuration-first qualification entry point."""
+
+    tool = commands.add_parser("tool", help="qualify configured tool views")
+    tool_commands = tool.add_subparsers(dest="tool_command", required=True)
+    qualify = tool_commands.add_parser("qualify", help="check one configured profile")
+    qualify.add_argument("--profile", required=True)
+    qualify.add_argument("--json", action="store_true", help="emit canonical JSON")
+    qualify.set_defaults(handler=_tool_qualify)
+
+
 def _add_campaign_commands(commands: argparse._SubParsersAction[_ArgumentParser]) -> None:
     campaign = commands.add_parser(
         "campaign",
@@ -414,6 +480,38 @@ def _add_campaign_commands(commands: argparse._SubParsersAction[_ArgumentParser]
         command_parser = campaign_commands.add_parser(command.value)
         command_parser.add_argument("--request", required=True, type=Path)
         command_parser.set_defaults(handler=_campaign_command, campaign_operation=command)
+
+
+def _add_factory_benchmark_commands(
+    commands: argparse._SubParsersAction[_ArgumentParser],
+) -> None:
+    """Expose bounded calibration/benchmark lifecycle commands.
+
+    The commands validate the private configuration and report an explicit
+    unavailable state until a station campaign supplies real evidence. They do
+    not fabricate model observations or silently spend provider budget.
+    """
+
+    factory = commands.add_parser("factory", help="derive task-factory evidence")
+    factory_commands = factory.add_subparsers(dest="factory_command", required=True)
+    calibrate = factory_commands.add_parser("calibrate", help="derive a calibration report")
+    calibrate.add_argument("--campaign", required=True)
+    calibrate.set_defaults(handler=_factory_calibrate)
+
+    benchmark = commands.add_parser("benchmark", help="prepare, run, and report benchmarks")
+    benchmark_commands = benchmark.add_subparsers(dest="benchmark_command", required=True)
+    prepare = benchmark_commands.add_parser("prepare", help="freeze a benchmark matrix")
+    prepare.add_argument("--spec", required=True, type=Path)
+    prepare.add_argument("--phase", required=True)
+    prepare.add_argument("--instance", action="append", default=[])
+    prepare.set_defaults(handler=_benchmark_lifecycle)
+    evolve = benchmark_commands.add_parser("evolve", help="create a revision request")
+    evolve.add_argument("--from", dest="from_revision", required=True)
+    evolve.set_defaults(handler=_benchmark_lifecycle)
+    for name in ("run", "resume", "report"):
+        command_parser = benchmark_commands.add_parser(name)
+        command_parser.add_argument("--campaign", required=True)
+        command_parser.set_defaults(handler=_benchmark_lifecycle)
 
 
 def _add_task_commands(commands: argparse._SubParsersAction[_ArgumentParser]) -> None:
@@ -429,10 +527,15 @@ def _add_task_commands(commands: argparse._SubParsersAction[_ArgumentParser]) ->
     validate.set_defaults(handler=_validate_task)
 
     generate = task_commands.add_parser(
-        "generate", help="materialize the private Sail catalog through its provider"
+        "generate", help="generate task instances or materialize a private catalog"
     )
-    generate.add_argument("output", type=Path)
-    _add_private_authoring_provider_arguments(generate)
+    generate.add_argument("output", nargs="?", type=Path)
+    generate.add_argument("--family")
+    generate.add_argument("--difficulty", default="single_transaction")
+    generate.add_argument("--count", default=1, type=int)
+    generate.add_argument("--seed")
+    generate.add_argument("--profile")
+    _add_private_authoring_provider_arguments(generate, required=False)
     generate.set_defaults(handler=_task_generate)
 
     qualify = task_commands.add_parser("qualify", help="qualify a Sail catalog or EDA flow pack")
@@ -467,7 +570,7 @@ def _add_task_commands(commands: argparse._SubParsersAction[_ArgumentParser]) ->
     release = task_commands.add_parser("release", help="verify and emit one frozen task release")
     release.add_argument("catalog_root", type=Path)
     release.add_argument("family")
-    release.add_argument("instance", choices=("base", "advanced"))
+    release.add_argument("instance")
     release.set_defaults(handler=_task_release)
 
 
@@ -498,62 +601,9 @@ def _add_environment_commands(
 
 
 def _add_run_commands(commands: argparse._SubParsersAction[_ArgumentParser]) -> None:
-    run = commands.add_parser("run", help="operate a durable run journal")
-    run_commands = run.add_subparsers(dest="run_command", required=True)
+    from edagym.cli_run import add_run_commands
 
-    start = run_commands.add_parser("start", help="resolve and create one run journal")
-    _add_resolved_inputs(start)
-    start.add_argument("--state-root", required=True, type=Path)
-    start.set_defaults(handler=_run_start)
-
-    status = run_commands.add_parser("status", help="replay and summarize one run")
-    _add_run_locator(status)
-    status.set_defaults(handler=_run_status)
-
-    events = run_commands.add_parser("events", help="emit canonical run events")
-    _add_run_locator(events)
-    events.set_defaults(handler=_run_events)
-
-    checkpoint = run_commands.add_parser("checkpoint", help="commit a workspace checkpoint")
-    _add_run_locator(checkpoint)
-    _add_recovery_inputs(checkpoint)
-    checkpoint.add_argument("--workspace", required=True, type=Path)
-    checkpoint.add_argument("--checkpoint-id", required=True)
-    checkpoint.set_defaults(handler=_run_checkpoint)
-
-    resume = run_commands.add_parser("resume", help="restore a committed checkpoint")
-    _add_run_locator(resume)
-    _add_recovery_inputs(resume)
-    resume.add_argument("--destination", required=True, type=Path)
-    resume.add_argument("--checkpoint-id", required=True)
-    resume.set_defaults(handler=_run_resume)
-
-    submit = run_commands.add_parser("submit", help="submit one immutable candidate identity")
-    _add_run_locator(submit)
-    submit.add_argument("--environment", required=True, type=Path)
-    submit.add_argument("--session", required=True, type=Path)
-    submit.add_argument("--store-root", required=True, type=Path)
-    submit.add_argument("--artifact-key-file", type=Path)
-    submit.add_argument("--candidate-id", required=True)
-    submit.add_argument("--candidate-root", required=True, type=Path)
-    submit.add_argument("--parent-candidate-id")
-    submit.set_defaults(handler=_run_submit)
-
-    human = run_commands.add_parser(
-        "human-turn",
-        help="commit one bounded interactive human intent",
-    )
-    _add_run_locator(human)
-    human.add_argument("--session", required=True, type=Path)
-    human.add_argument("--environment", type=Path)
-    human.add_argument("--store-root", type=Path)
-    human.add_argument("--artifact-key-file", type=Path)
-    human.add_argument("--candidate-root", type=Path)
-    human.set_defaults(handler=_run_human_turn)
-
-    cancel = run_commands.add_parser("cancel", help="end an idle run as explicitly cancelled")
-    _add_run_locator(cancel)
-    cancel.set_defaults(handler=_run_cancel)
+    add_run_commands(commands)
 
 
 def _add_resolved_inputs(parser: argparse.ArgumentParser) -> None:
@@ -568,13 +618,6 @@ def _add_resolved_inputs(parser: argparse.ArgumentParser) -> None:
 def _add_run_locator(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--task", required=True, type=Path)
-
-
-def _add_recovery_inputs(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--environment", required=True, type=Path)
-    parser.add_argument("--session", required=True, type=Path)
-    parser.add_argument("--store-root", required=True, type=Path)
-    parser.add_argument("--artifact-key-file", type=Path)
 
 
 def _emit(value: object, *, as_json: bool = True) -> None:
@@ -600,7 +643,59 @@ def _model_json(model: BaseModel) -> dict[str, Any]:
     )
 
 
+def _config_path(arguments: argparse.Namespace) -> Path:
+    path = getattr(arguments, "config_path", None)
+    if not isinstance(path, Path):
+        raise CliFailure("config-required", status=_INVALID_INVOCATION)
+    return path
+
+
+def _init_config(arguments: argparse.Namespace) -> int:
+    config = initialize_config(arguments.config_path, arguments.root)
+    _emit(config.redacted_view())
+    return _SUCCESS
+
+
+def _config_check(arguments: argparse.Namespace) -> int:
+    config = load_config(_config_path(arguments))
+    _emit(config.redacted_view())
+    return _SUCCESS
+
+
+def _config_import(arguments: argparse.Namespace) -> int:
+    from edagym.config.load import import_legacy_config
+
+    config = import_legacy_config(arguments.source, arguments.output)
+    _emit(config.redacted_view())
+    return _SUCCESS
+
+
+def _web_serve(arguments: argparse.Namespace) -> int:
+    config = load_config(_config_path(arguments))
+    application = create_web_app(config)
+    print(canonical_bytes(application.startup_info).decode("utf-8"))
+    if arguments.check:
+        return _SUCCESS
+    import uvicorn
+
+    uvicorn.run(
+        application,
+        host=config.web.host,
+        port=config.web.port,
+        log_level="info",
+    )
+    return _SUCCESS
+
+
 def _doctor(arguments: argparse.Namespace) -> int:
+    config_payload: dict[str, object] | None = None
+    if getattr(arguments, "config_path", None) is not None:
+        config = load_config(arguments.config_path)
+        if arguments.site_id is not None:
+            from edagym.config.resolve import resolve_site
+
+            resolve_site(config, arguments.site_id)
+        config_payload = config.redacted_view()
     validate_catalog()
     probes = probe_declared_backends(
         BACKENDS,
@@ -618,6 +713,7 @@ def _doctor(arguments: argparse.Namespace) -> int:
         except (OSError, RuntimeError, ValueError):
             raise CliFailure("invalid-executor-deployment", status=_UNSATISFIED) from None
     payload = {
+        "config": config_payload,
         "local_containment": _model_json(local_containment),
         "executors": [_model_json(status) for status in executor_statuses],
         "backends": [_model_json(probe) for probe in probes],
@@ -712,6 +808,31 @@ def _backend_qualify(arguments: argparse.Namespace) -> int:
     return qualification_status(qualification)
 
 
+def _tool_qualify(arguments: argparse.Namespace) -> int:
+    """Run controlled tool probes and persist private qualification receipts."""
+
+
+    try:
+        config = load_config(_config_path(arguments))
+        resolved = resolve_profile(config, arguments.profile)
+    except (OSError, ValueError, ValidationError):
+        raise CliFailure("tool-qualification-unavailable", status=_INCOMPLETE) from None
+    receipts = qualify_profile(resolved)
+    available = bool(receipts) and all(
+        item.disposition is QualificationDisposition.CONFORMANT for item in receipts
+    )
+    reasons = tuple(sorted({item.failure.value for item in receipts if item.failure is not None}))
+    _emit(
+        {
+            "profile_id": resolved.profile_id,
+            "status": "available" if available else "unavailable",
+            "reasons": reasons or ("execution_qualification_required",),
+            "receipt_count": len(receipts),
+        }
+    )
+    return _SUCCESS if available else _UNSATISFIED
+
+
 def _campaign_command(arguments: argparse.Namespace) -> int:
     result, status = execute_campaign_command(
         arguments.campaign_operation,
@@ -719,6 +840,72 @@ def _campaign_command(arguments: argparse.Namespace) -> int:
     )
     _emit(result)
     return status
+
+
+def _factory_calibrate(arguments: argparse.Namespace) -> int:
+    config = load_config(_config_path(arguments))
+    _emit(
+        {
+            "status": "incomplete",
+            "reason": "station_campaign_evidence_required",
+            "campaign_id": arguments.campaign,
+            "config_digest": config.digest,
+            "framework_ready": False,
+            "station_campaign_complete": False,
+            "benchmark_quality_qualified": False,
+        }
+    )
+    return _INCOMPLETE
+
+
+def _benchmark_lifecycle(arguments: argparse.Namespace) -> int:
+    config = load_config(_config_path(arguments))
+    if arguments.benchmark_command == "prepare":
+        if not arguments.instance:
+            _emit({
+                "status": "incomplete",
+                "reason": "qualified_instance_ids_required",
+                "framework_ready": True,
+                "station_campaign_complete": False,
+                "benchmark_quality_qualified": False,
+            })
+            return _INCOMPLETE
+        try:
+            spec = BenchmarkSpec.model_validate_json(read_private(arguments.spec))
+            if spec.phase.value != arguments.phase:
+                raise ValueError("benchmark phase does not match the frozen specification")
+            profile_id = config.profiles[0].profile_id
+            resolved = resolve_profile(config, profile_id)
+            instances = load_instances(resolved.site.state_root, tuple(arguments.instance))
+            schedule = prepare_benchmark(spec, instances, resolved.site.state_root)
+        except (OSError, ValueError, ValidationError):
+            raise CliFailure("benchmark-preparation-failed", status=_INCOMPLETE) from None
+        _emit({
+            "status": "prepared",
+            "benchmark_digest": spec.digest,
+            "schedule_digest": schedule.digest,
+            "entries": schedule.size,
+            "phase": spec.phase.value,
+            "framework_ready": True,
+            "station_campaign_complete": False,
+            "benchmark_quality_qualified": False,
+        })
+        return _SUCCESS
+    identifier = getattr(arguments, "campaign", None) or getattr(arguments, "spec", None)
+    identifier = identifier or getattr(arguments, "from_revision", None)
+    _emit(
+        {
+            "status": "incomplete",
+            "reason": "real_station_and_frozen_evidence_required",
+            "operation": arguments.benchmark_command,
+            "identifier": identifier,
+            "config_digest": config.digest,
+            "framework_ready": False,
+            "station_campaign_complete": False,
+            "benchmark_quality_qualified": False,
+        }
+    )
+    return _INCOMPLETE
 
 
 def _task_catalog(arguments: argparse.Namespace) -> int:
@@ -766,6 +953,57 @@ def _validate_task(arguments: argparse.Namespace) -> int:
 
 
 def _task_generate(arguments: argparse.Namespace) -> int:
+    if arguments.family is not None:
+        from edagym.authoring.factory import GenerationRequest, generate_task
+        from edagym.config.resolve import resolve_profile
+        from edagym.specs.release import QualificationStatus
+
+        try:
+            config = load_config(_config_path(arguments))
+            if arguments.profile is None and not config.profiles:
+                from edagym.config.resolve import resolve_site
+
+                resolved_site = resolve_site(config, config.sites[0].site_id)
+            else:
+                profile_id = arguments.profile or config.profiles[0].profile_id
+                resolved_site = resolve_profile(config, profile_id).site
+            seed = arguments.seed or ("0" * 32)
+            request = GenerationRequest(
+                family=arguments.family,
+                difficulty=arguments.difficulty,
+                seed=seed,
+                count=arguments.count,
+            )
+            generated = generate_task(request, resolved_site)
+        except CliFailure:
+            raise
+        except (OSError, ValueError, ValidationError):
+            raise CliFailure("task-generation-failed", status=_INCOMPLETE) from None
+        _emit(
+            [
+                {
+                    "instance_digest": item.instance.digest,
+                    "instance_id": item.instance_id,
+                    "task_family": item.instance.identity.task_family,
+                    "difficulty": arguments.difficulty,
+                    "qualification": item.instance.qualification.status.value
+                    if item.instance.qualification is not None
+                    else None,
+                }
+                for item in generated
+            ]
+        )
+        return (
+            _SUCCESS
+            if all(
+                item.instance.qualification is not None
+                and item.instance.qualification.status is QualificationStatus.QUALIFIED
+                for item in generated
+            )
+            else _INCOMPLETE
+        )
+    if arguments.output is None:
+        raise CliFailure("task-generation-arguments-required", status=_INVALID_INVOCATION)
     try:
         receipt = materialize_private_catalog(
             _authoring_provider(arguments),
@@ -897,111 +1135,6 @@ def _environment_verify(arguments: argparse.Namespace) -> int:
     return _SUCCESS if verified else _UNSATISFIED
 
 
-def _run_start(arguments: argparse.Namespace) -> int:
-    task, instance, release, environment, session = _load_resolved_inputs(arguments)
-    journal, _ = start_run(
-        task=task,
-        instance=instance,
-        release=release,
-        environment=environment,
-        session=session,
-        trial_key=arguments.trial_key,
-        state_root=arguments.state_root,
-    )
-    payload = state_payload(journal)
-    payload["directory"] = journal.directory.as_posix()
-    _emit(payload)
-    return _SUCCESS
-
-
-def _run_status(arguments: argparse.Namespace) -> int:
-    _emit(state_payload(open_run(arguments.directory, arguments.task)))
-    return _SUCCESS
-
-
-def _run_events(arguments: argparse.Namespace) -> int:
-    journal = open_run(arguments.directory, arguments.task)
-    _emit(journal.read_events())
-    return _SUCCESS
-
-
-def _run_checkpoint(arguments: argparse.Namespace) -> int:
-    journal = open_run(arguments.directory, arguments.task)
-    environment, session = _load_recovery_inputs(arguments)
-    marker, _ = checkpoint_run(
-        journal,
-        environment,
-        session,
-        workspace=arguments.workspace,
-        store_root=arguments.store_root,
-        key_file=arguments.artifact_key_file,
-        checkpoint_id=arguments.checkpoint_id,
-    )
-    _emit({"checkpoint": marker, "run": state_payload(journal)})
-    return _SUCCESS
-
-
-def _run_resume(arguments: argparse.Namespace) -> int:
-    journal = open_run(arguments.directory, arguments.task)
-    environment, session = _load_recovery_inputs(arguments)
-    marker = resume_run(
-        journal,
-        environment,
-        session,
-        destination=arguments.destination,
-        store_root=arguments.store_root,
-        key_file=arguments.artifact_key_file,
-        checkpoint_id=arguments.checkpoint_id,
-    )
-    _emit({"checkpoint": marker, "run_id": journal.header.run_id})
-    return _SUCCESS
-
-
-def _run_submit(arguments: argparse.Namespace) -> int:
-    journal = open_run(arguments.directory, arguments.task)
-    environment = load_model(arguments.environment, "environment", EnvironmentSpec)
-    session = load_model(arguments.session, "session", SessionSpec)
-    state = submit_candidate(
-        journal,
-        environment,
-        session,
-        candidate_id=arguments.candidate_id,
-        candidate_root=arguments.candidate_root,
-        store_root=arguments.store_root,
-        key_file=arguments.artifact_key_file,
-        parent_candidate_id=arguments.parent_candidate_id,
-    )
-    _emit({"candidate_id": arguments.candidate_id, "run": state})
-    return _SUCCESS
-
-
-def _run_human_turn(arguments: argparse.Namespace) -> int:
-    journal = open_run(arguments.directory, arguments.task)
-    session = load_model(arguments.session, "session", SessionSpec)
-    environment = (
-        None
-        if arguments.environment is None
-        else load_model(arguments.environment, "environment", EnvironmentSpec)
-    )
-    human_turn(
-        journal,
-        session,
-        input_stream=cast(TextIOBase, sys.stdin),
-        output_stream=cast(TextIOBase, sys.stdout),
-        environment=environment,
-        candidate_root=arguments.candidate_root,
-        store_root=arguments.store_root,
-        key_file=arguments.artifact_key_file,
-    )
-    return _SUCCESS
-
-
-def _run_cancel(arguments: argparse.Namespace) -> int:
-    journal = open_run(arguments.directory, arguments.task)
-    _emit(cancel_run(journal))
-    return _SUCCESS
-
-
 def _evaluate(arguments: argparse.Namespace) -> int:
     environment = load_model(arguments.environment, "environment", EnvironmentSpec)
     release = load_model(arguments.release, "release_manifest", ReleaseManifest)
@@ -1104,6 +1237,11 @@ def _validate_path(path: Path, kind: DocumentKind) -> int:
         "release_manifest": ReleaseManifest,
         "release_command": ReleaseCommandReceipt,
         "release_report": ReleaseReport,
+        "benchmark": BenchmarkSpec,
+        "benchmark_quality_report": BenchmarkQualityReport,
+        "benchmark_schedule": BenchmarkSchedule,
+        "trial_observation": TrialObservation,
+        "config": EdaGymConfig,
     }
     document = load_model(path, kind, expected[kind])
     payload: dict[str, object] = {"kind": kind, "status": "valid"}
@@ -1460,15 +1598,6 @@ def _load_resolved_inputs(
         load_model(arguments.task, "task", TaskSpec),
         load_model(arguments.instance, "task_instance", TaskInstance),
         load_model(arguments.release, "release_manifest", ReleaseManifest),
-        load_model(arguments.environment, "environment", EnvironmentSpec),
-        load_model(arguments.session, "session", SessionSpec),
-    )
-
-
-def _load_recovery_inputs(
-    arguments: argparse.Namespace,
-) -> tuple[EnvironmentSpec, SessionSpec]:
-    return (
         load_model(arguments.environment, "environment", EnvironmentSpec),
         load_model(arguments.session, "session", SessionSpec),
     )

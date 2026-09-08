@@ -11,9 +11,26 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 _EXPECTED_DISTRIBUTION = "edagym"
+_EXPECTED_STATIC_MEMBERS = {
+    "edagym/web/static/index.html",
+    "edagym/web/static/app.js",
+    "edagym/web/static/style.css",
+}
+_FORBIDDEN_RELEASE_PARTS = (
+    "containerfile",
+    "bootstrap_sail",
+    "install_eda",
+    "openroad/",
+    "klayout/",
+    ".lef",
+    ".lib",
+    ".sp",
+    ".sdc",
+)
 
 
 def _file_digest(path: Path) -> str:
@@ -170,6 +187,21 @@ def main() -> int:
         )
         if not wheels:
             return 1
+        package_wheels = [
+            path for path in wheelhouse.iterdir()
+            if path.name.startswith(f"{_EXPECTED_DISTRIBUTION}-") and path.suffix == ".whl"
+        ]
+        if len(package_wheels) != 1:
+            return 1
+        with zipfile.ZipFile(package_wheels[0]) as archive:
+            members = set(archive.namelist())
+            if not members >= _EXPECTED_STATIC_MEMBERS:
+                return 1
+            if any(
+                any(part in name.casefold() for part in _FORBIDDEN_RELEASE_PARTS)
+                for name in archive.namelist()
+            ):
+                return 1
         print(
             json.dumps(
                 {

@@ -108,7 +108,8 @@ def _vcd_final_unsigned_values(
         in_definitions
         or not saw_zero_time
         or not saw_positive_time
-        or set(identifiers.values()) != {
+        or set(identifiers.values())
+        != {
             ("a", 4),
             ("b", 4),
             ("y", 5),
@@ -352,9 +353,7 @@ _VCS_REJECTION_MARKER = b"EDAGYM_VCS_RTL_SIMULATION_REJECTED"
 
 VCS_SIMULATION = _simulation_fixture(
     tool_id="vcs",
-    invocation=ToolInvocation(
-        ("-full64", "-sverilog", "-top", "tb", "-R", "dut.sv", "tb.sv")
-    ),
+    invocation=ToolInvocation(("-full64", "-sverilog", "-top", "tb", "-R", "dut.sv", "tb.sv")),
     completion_marker=_VCS_COMPLETION_MARKER,
     acceptance_marker=_VCS_ACCEPTANCE_MARKER,
     rejection_marker=_VCS_REJECTION_MARKER,

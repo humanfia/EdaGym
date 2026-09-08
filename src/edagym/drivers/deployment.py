@@ -137,6 +137,7 @@ class _HostModuleDeploymentBinding(StrictModel):
     kind: Literal[DeploymentBindingKind.HOST_MODULE] = DeploymentBindingKind.HOST_MODULE
     tool_id: Identifier
     module_name: str
+    license_agreement_accepted: bool = Field(default=False, exclude_if=lambda value: not value)
 
     @field_validator("module_name")
     @classmethod
@@ -150,6 +151,7 @@ class _SiteContainerDeploymentBinding(StrictModel):
     kind: Literal[DeploymentBindingKind.SITE_CONTAINER] = DeploymentBindingKind.SITE_CONTAINER
     tool_id: Identifier
     module_name: str
+    license_agreement_accepted: bool = Field(default=False, exclude_if=lambda value: not value)
     requirement_id: Identifier
     operating_system: SiteContainerOperatingSystem
     launcher_kind: SiteContainerLauncherKind
@@ -246,9 +248,7 @@ class MountRootSnapshot:
     """Private identity of one exact readonly deployment mount root."""
 
     path: Path
-    chain_identities: tuple[
-        tuple[str, tuple[int, int, int, int, int, int, int, int, int]], ...
-    ]
+    chain_identities: tuple[tuple[str, tuple[int, int, int, int, int, int, int, int, int]], ...]
 
     def revalidate(self) -> bool:
         try:
@@ -265,12 +265,17 @@ class MountRootSnapshot:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class HostModuleConfiguration:
-    """Private selection of one module-backed host installation."""
+    """Private selection of one module-backed host installation.
+
+    ``license_agreement_accepted`` records the owner's explicit assent to a tool's
+    license agreement in the owner-only registry; it never lives in the public catalog.
+    """
 
     tool_id: str
     module_name: str
     deployment_id: str
     deployment_digest: str
+    license_agreement_accepted: bool
     _registry_digest: str
     _deployment_snapshot: DeploymentRegistrySnapshot
 
@@ -348,10 +353,10 @@ class SiteContainerBroker:
         raise TypeError("site-container brokers cannot be serialized")
 
     def revalidate_mounts(self) -> bool:
-        return _root_owned_immutable_executable(
-            self.launcher
-        ) and _root_owned_immutable_executable(self.image_inspector) and all(
-            item.revalidate() for item in self.mount_snapshots
+        return (
+            _root_owned_immutable_executable(self.launcher)
+            and _root_owned_immutable_executable(self.image_inspector)
+            and all(item.revalidate() for item in self.mount_snapshots)
         )
 
     def path_has_trusted_owner(self, path: Path) -> bool:
@@ -378,6 +383,7 @@ class SiteContainerConfiguration:
     requirement: ExecutionClosureRequirementRef
     recipe: SiteContainerExecutionRecipe
     broker: SiteContainerBroker
+    license_agreement_accepted: bool
     _registry_digest: str
     _deployment_snapshot: DeploymentRegistrySnapshot
 
@@ -559,6 +565,7 @@ def _configuration_from_binding(
             module_name=binding.module_name,
             deployment_id=document.deployment_id,
             deployment_digest=binding_digest,
+            license_agreement_accepted=binding.license_agreement_accepted,
             _registry_digest=document.digest,
             _deployment_snapshot=deployment_snapshot,
         )
@@ -568,8 +575,7 @@ def _configuration_from_binding(
             root_environment_variable=binding.root_environment_variable,
             entrypoint_relative_path=binding.entrypoint_relative_path,
             components=tuple(
-                ClosureRecipeComponent(item.role, item.relative_path)
-                for item in binding.components
+                ClosureRecipeComponent(item.role, item.relative_path) for item in binding.components
             ),
             tool_environment_names=binding.tool_environment_names,
             environment_bindings=tuple(
@@ -607,6 +613,7 @@ def _configuration_from_binding(
             requirement=requirement,
             recipe=recipe,
             broker=broker,
+            license_agreement_accepted=binding.license_agreement_accepted,
             _registry_digest=document.digest,
             _deployment_snapshot=deployment_snapshot,
         )
@@ -762,8 +769,7 @@ def _trusted_readonly_mount(path: Path, trusted_owner_uid: int) -> bool:
         if path.stat().st_uid != trusted_owner_uid:
             return False
         if not all(
-            _owned_nonwritable_path(component, {0, trusted_owner_uid})
-            for component in components
+            _owned_nonwritable_path(component, {0, trusted_owner_uid}) for component in components
         ):
             return False
         return stat.S_ISDIR(path.stat().st_mode)
@@ -800,9 +806,7 @@ def _mount_set_is_bounded(
     if (
         len(sources) != len(set(sources))
         or len(targets) != len(set(targets))
-        or any(
-            not _trusted_readonly_mount(source, trusted_owner_uid) for source in sources
-        )
+        or any(not _trusted_readonly_mount(source, trusted_owner_uid) for source in sources)
         or any(
             source.as_posix() != target.as_posix()
             for source, target in zip(sources, targets, strict=True)

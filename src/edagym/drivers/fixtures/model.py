@@ -16,8 +16,8 @@ from edagym.canonical import canonical_digest
 from edagym.drivers.model import qualification_fixture_id
 from edagym.drivers.semantic_claims import (
     SemanticJoint,
-    claim_id_for_joints,
     normalize_semantic_joints,
+    semantic_claim_id,
 )
 from edagym.specs.common import (
     Capability,
@@ -308,7 +308,7 @@ class QualificationFixtureSnapshot(StrictModel):
 
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
-        if self.semantic_claim_id != claim_id_for_joints(
+        if self.semantic_claim_id != semantic_claim_id(
             self.capability,
             self.semantic_joints,
         ):
@@ -1097,7 +1097,7 @@ class QualificationFixture:
 
     @property
     def resolved_semantic_claim_id(self) -> str:
-        return claim_id_for_joints(self.capability, self.semantic_joints)
+        return semantic_claim_id(self.capability, self.semantic_joints)
 
     def inputs_for(self, role: FixtureRole) -> tuple[FixtureInput, ...]:
         if role is FixtureRole.ACCEPTANCE:

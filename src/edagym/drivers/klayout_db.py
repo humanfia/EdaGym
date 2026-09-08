@@ -168,9 +168,11 @@ def _secure_generated_output(path: Path) -> tuple[int, tuple[int, int, int, int]
         os.fchmod(descriptor, 0o600)
         after = os.fstat(descriptor)
         if (
-            (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != identity
-            or stat.S_IMODE(after.st_mode) != 0o600
-        ):
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) != identity or stat.S_IMODE(after.st_mode) != 0o600:
             raise ValueError("native results database changed while secured")
         return descriptor, identity
     except BaseException:
@@ -184,10 +186,11 @@ def _require_unchanged_output(
 ) -> None:
     metadata = os.fstat(descriptor)
     if (
-        (metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
-        != identity
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-    ):
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    ) != identity or stat.S_IMODE(metadata.st_mode) != 0o600:
         raise ValueError("native results database changed during replay")
 
 
@@ -199,11 +202,7 @@ def _write_private_summary(path: Path, content: bytes) -> None:
     )
     try:
         before = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.getuid()
-            or before.st_nlink != 1
-        ):
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid() or before.st_nlink != 1:
             raise ValueError("physical-verification summary is not a private file")
         os.fchmod(descriptor, 0o600)
         view = memoryview(content)

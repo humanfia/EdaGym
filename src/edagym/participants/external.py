@@ -479,6 +479,202 @@ class CodexExecParticipantAdapter:
         return self._adapter.next_intent(view)
 
 
+class ClaudeCodeSandbox(StrEnum):
+    WORKSPACE_WRITE = "workspace-write"
+
+
+class ClaudeCodeHarnessSpec(StrictModel):
+    """Versioned native Claude Code CLI binding with an injected transport."""
+
+    harness_id: Identifier
+    requested_model_route: ModelRoute
+    cli_version: Annotated[str, Field(min_length=1, max_length=120, pattern=r"^[ -~]+$")]
+    executable_digest: Digest
+    transport_digest: Digest
+    instruction_digest: Digest
+    workspace_target: GuestTarget
+    sandbox: Literal[ClaudeCodeSandbox.WORKSPACE_WRITE] = ClaudeCodeSandbox.WORKSPACE_WRITE
+    ephemeral: Literal[True] = True
+    maximum_response_bytes: Annotated[
+        int, Field(strict=True, ge=1, le=_MAXIMUM_RESPONSE_BYTES)
+    ] = _MAXIMUM_RESPONSE_BYTES
+
+    @model_validator(mode="after")
+    def require_control_target_separation(self) -> ClaudeCodeHarnessSpec:
+        if _targets_overlap(self.workspace_target, "/edagym-control"):
+            raise ValueError("CLI control files must be outside the participant workspace")
+        return self
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(
+            {"protocol": "claude-code-cli-v1", "intent_schema_digest": _INTENT_SCHEMA_DIGEST,
+             "spec": self},
+            domain="claude-code-participant-harness-v1",
+        )
+
+
+class ClaudeCodeInvocation(StrictModel):
+    requested_model_route: ModelRoute
+    cli_version: Annotated[str, Field(min_length=1, max_length=120, pattern=r"^[ -~]+$")]
+    executable_digest: Digest
+    transport_digest: Digest
+    instruction_digest: Digest
+    prompt_digest: Digest
+    output_schema_digest: Digest = _INTENT_SCHEMA_DIGEST
+    workspace_target: GuestTarget
+    sandbox: Literal[ClaudeCodeSandbox.WORKSPACE_WRITE] = ClaudeCodeSandbox.WORKSPACE_WRITE
+    ephemeral: Literal[True] = True
+
+    @field_validator("output_schema_digest")
+    @classmethod
+    def require_intent_schema(cls, value: Digest) -> Digest:
+        if value != _INTENT_SCHEMA_DIGEST:
+            raise ValueError("Claude Code invocation requires the canonical intent schema")
+        return value
+
+    @property
+    def arguments(self) -> tuple[str, ...]:
+        return (
+            "--print", "--output-format", "json", "--model", self.requested_model_route,
+            "--permission-mode", "acceptEdits", "--add-dir", self.workspace_target,
+        )
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self, domain="claude-code-invocation-v1")
+
+
+class ClaudeCodeTransport(Protocol):
+    @property
+    def executable_digest(self) -> Digest: ...
+
+    @property
+    def transport_digest(self) -> Digest: ...
+
+    @property
+    def cli_version(self) -> str: ...
+
+    def execute(
+        self,
+        invocation: ClaudeCodeInvocation,
+        *,
+        stdin: bytes,
+        output_schema: bytes,
+        maximum_response_bytes: int,
+    ) -> bytes: ...
+
+
+class ClaudeCodeChannel(ParticipantChannel):
+    """Invoke Claude Code only through a transport that owns process isolation."""
+
+    def __init__(
+        self,
+        *,
+        harness: ClaudeCodeHarnessSpec,
+        transport: ClaudeCodeTransport,
+        instruction: str,
+    ) -> None:
+        if participant_instruction_digest(instruction) != harness.instruction_digest:
+            raise ValueError("Claude Code instruction differs from its harness binding")
+        identity = _claude_transport_identity(transport)
+        if identity != (harness.executable_digest, harness.transport_digest, harness.cli_version):
+            raise ValueError("Claude Code transport differs from its harness binding")
+        self._harness = harness
+        self._transport = transport
+        self._instruction = instruction
+
+    def exchange(self, view: bytes, *, maximum_response_bytes: int) -> bytes:
+        response_bound = min(
+            self._harness.maximum_response_bytes,
+            _response_bound(maximum_response_bytes),
+        )
+        participant_view = _decode_participant_view(view)
+        if participant_view is None:
+            raise ParticipantAdapterError(ParticipantFailureKind.CHANNEL_FAILURE)
+        prompt = _participant_prompt(self._instruction, participant_view).encode("utf-8")
+        invocation = ClaudeCodeInvocation(
+            requested_model_route=self._harness.requested_model_route,
+            cli_version=self._harness.cli_version,
+            executable_digest=self._harness.executable_digest,
+            transport_digest=self._harness.transport_digest,
+            instruction_digest=self._harness.instruction_digest,
+            prompt_digest=canonical_digest(
+                {"prompt": prompt.decode("utf-8")}, domain="claude-code-prompt-v1"
+            ),
+            workspace_target=self._harness.workspace_target,
+        )
+        try:
+            response = self._transport.execute(
+                invocation, stdin=prompt, output_schema=_INTENT_SCHEMA_BYTES,
+                maximum_response_bytes=response_bound,
+            )
+        except ParticipantAdapterError:
+            raise
+        except Exception:
+            raise ParticipantAdapterError(ParticipantFailureKind.CHANNEL_FAILURE) from None
+        if len(response) > response_bound:
+            raise ParticipantAdapterError(ParticipantFailureKind.RESPONSE_BOUND)
+        envelope = _decode_intent_envelope(response)
+        if envelope is None:
+            raise ParticipantAdapterError(ParticipantFailureKind.INVALID_INTENT)
+        return canonical_bytes(envelope.intent)
+
+
+class ClaudeCodeParticipantAdapter:
+    """Bind one ephemeral Claude Code process to a benchmark harness actor."""
+
+    def __init__(
+        self,
+        *,
+        actor_id: str,
+        journal: RunJournal,
+        environment: EnvironmentSpec,
+        session: SessionSpec,
+        harness: ClaudeCodeHarnessSpec,
+        transport: ClaudeCodeTransport,
+        instruction: str,
+    ) -> None:
+        _validate_run_bindings(journal, environment, session)
+        if not isinstance(session.mode, BenchmarkMode):
+            raise ValueError("ephemeral CLI participants require benchmark mode")
+        actor = _bound_harness(journal, session, actor_id)
+        if (
+            actor.harness_digest != harness.digest
+            or actor.scaffold_digest != harness.instruction_digest
+            or actor.requested_model_route != harness.requested_model_route
+            or harness.workspace_target != environment.filesystem.workspace_target
+            or not _codex_control_target_is_disjoint(environment)
+        ):
+            raise ValueError("Claude Code harness differs from the run binding")
+        if harness.harness_id != _session_harness(session, actor_id).harness_id:
+            raise ValueError("Claude Code harness identifier differs from the session")
+        self.actor_id = actor_id
+        self._run_id = journal.header.run_id
+        self._adapter = CommandAgentAdapter(
+            actor_id=actor_id,
+            channel=ClaudeCodeChannel(
+                harness=harness,
+                transport=transport,
+                instruction=instruction,
+            ),
+            maximum_response_bytes=harness.maximum_response_bytes,
+        )
+
+    @property
+    def actor_kinds(self) -> Mapping[str, ActorKind]:
+        return self._adapter.actor_kinds
+
+    @property
+    def campaign_admission(self) -> CampaignParticipantAdmission | None:
+        return None
+
+    def next_intent(self, view: ParticipantView) -> ParticipantIntent:
+        if view.run_id != self._run_id:
+            raise ParticipantAdapterError(ParticipantFailureKind.ACTOR_MISMATCH)
+        return self._adapter.next_intent(view)
+
+
 def _participant_prompt(instruction: str, view: ParticipantView) -> str:
     return "\n".join(
         (
@@ -506,6 +702,15 @@ def _codex_transport_identity(
             transport.transport_digest,
             transport.cli_version,
         )
+    except Exception:
+        return None
+
+
+def _claude_transport_identity(
+    transport: ClaudeCodeTransport,
+) -> tuple[Digest, Digest, str] | None:
+    try:
+        return transport.executable_digest, transport.transport_digest, transport.cli_version
     except Exception:
         return None
 

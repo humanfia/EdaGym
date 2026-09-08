@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -9,6 +10,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from edagym.config import initialize_config, resolve_profile
+from edagym.config.execution import project_environment
+from edagym.config.model import ConfigView, EdaGymConfig
+from edagym.config.qualification import resolve_profile_tools
 from edagym.drivers.catalog import BACKENDS
 from edagym.drivers.probe import probe_backend
 from edagym.drivers.rootless_image import (
@@ -384,13 +389,54 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
     monkeypatch.setenv("SYNTHETIC_SECRET", "must-not-reach-container")
     _, _, jobs, cas = _directories(tmp_path)
     environment, installation, capability = _rootless_runtime()
+    document = initialize_config(tmp_path / "config.toml", tmp_path / "state").model_dump(
+        mode="python"
+    )
+    document["runtimes"] = [{
+        "runtime_id": "tools",
+        "image_reference": _OPEN_EDA_REFERENCE,
+        "image_digest": _OPEN_EDA_DIGEST,
+        "architecture": "amd64",
+        "launcher_executable": "python3.12",
+    }]
+    document["tools"] = [{
+        "tool_id": "synthesis",
+        "adapter_id": "yosys",
+        "version_label": installation.version_label,
+        "capabilities": [Capability.ASIC_SYNTHESIS],
+        "source": {
+            "kind": "user_image", "runtime_id": "tools",
+            "executable": "yosys", "image_digest": _OPEN_EDA_DIGEST,
+        },
+    }]
+    document["profiles"][0]["participant"] = {"runtime_id": "tools", "tool_ids": ["synthesis"]}
+    document["profiles"][0]["resources"] = {
+        "cpu_millicores": 250, "memory_bytes": 128 * 1024**2,
+        "process_count": 32, "wall_seconds": 15,
+    }
+    document["profiles"][0]["storage"] = {
+        "max_bytes": 64 * 1024**2, "output_max_bytes": 1024**2,
+    }
+    pair = resolve_profile(EdaGymConfig.model_validate(document), "default")
+    selected, = resolve_profile_tools(pair)
+    assert selected.receipt.view is ConfigView.PARTICIPANT
+    assert selected.receipt.failure is None
+    assert selected.installation is not None and selected.capability is not None
+    installation, capability = selected.installation, selected.capability
+    assert installation.tool_id == "synthesis" and installation.definition.tool_id == "yosys"
+    assert installation.execution_closure_digest == selected.receipt.execution_closure_digest
+    assert installation.package_manifest_digest is None
+    assert isinstance(environment.executor, RootlessLocalExecutor)
+    environment = project_environment(
+        pair, ConfigView.PARTICIPANT, (selected,), environment.executor
+    )
     binding = environment.tool_bindings[0]
     store = ContentAddressedStore(cas, policy=environment.artifact_policy)
     executor = RootlessContainerExecutor(
         executor_id="podman_rootless",
         implementation_digest=environment.executor.implementation_digest,
         capability=capability,
-        tool_installations={installation.definition.tool_id: installation},
+        tool_installations={installation.tool_id: installation},
         storage_provider=RootlessStorageProvider(maximum_quota_bytes=2 * 1024**3),
         asset_source_policy=load_system_asset_source_policy(),
         artifact_store=store,
@@ -414,6 +460,12 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
         "#!/bin/sh\nset -eu\n"
         'test -z "${SYNTHETIC_SECRET:-}"\n'
         "test ! -e /site-assets\n"
+        "read quota period < /sys/fs/cgroup/cpu.max\n"
+        'test "$((quota * 4))" -eq "$period"\n'
+        "read memory < /sys/fs/cgroup/memory.max\n"
+        'test "$memory" -eq 134217728\n'
+        "read pids < /sys/fs/cgroup/pids.max\n"
+        'test "$pids" -eq 32\n'
         "test -s result.v\n"
         "printf container-ok > result.txt\n",
         encoding="ascii",
@@ -470,9 +522,37 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
         result = executor.collect(handle)
         output = next(item for item in result.outputs if item.logical_id == "result")
         assert store.read_bytes(output.blob, maximum_bytes=32) == b"container-ok"
+        receipt = jobs / f"{invocation_id}.cid"
+        container_id = receipt.read_text(encoding="ascii")
+        retained = subprocess.run(
+            ["/usr/bin/podman", "inspect", "--format", "{{.State.Status}}", container_id],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert retained.stdout.strip() == "exited"
+        entrypoint = subprocess.run(
+            ["/usr/bin/podman", "inspect", "--format",
+             "{{index .Config.Entrypoint 0}}", container_id],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        image_runtime = installation.execution_closure.rootless_image_runtime
+        assert image_runtime is not None
+        assert entrypoint.stdout.strip() == image_runtime.supervisor_entrypoint
+        assert Path(image_runtime.supervisor_entrypoint).name == "python3.12"
+        assert executor.collect(handle) == result
     finally:
         executor.abandon(invocation_id)
         lease.close()
+    assert not receipt.exists()
+    removed = subprocess.run(
+        ["/usr/bin/podman", "container", "exists", container_id],
+        check=False,
+        capture_output=True,
+    )
+    assert removed.returncode == 1
 
 
 def test_output_collection_never_follows_workspace_links(tmp_path: Path) -> None:

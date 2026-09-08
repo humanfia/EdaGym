@@ -11,6 +11,13 @@ from edagym.authoring.determinism import (
     VerifiedAuthoringDeterminism,
     verify_determinism,
 )
+from edagym.authoring.factory import (
+    GeneratedTask,
+    GenerationRequest,
+    Qualifier,
+    TaskFactory,
+    generate_task,
+)
 from edagym.authoring.materialization import (
     CatalogMaterializationReceipt,
     materialize_private_catalog,
@@ -35,6 +42,10 @@ from edagym.authoring.provider import (
     authoring_provider_schema_digest,
 )
 from edagym.authoring.public_benchmarks import import_public_calibration_task
+from edagym.authoring.qualification import (
+    qualify_from_canaries,
+)
+from edagym.specs.release import TaskCanaryObservation
 
 __all__ = [
     "AuthoringContractReceipt",
@@ -49,19 +60,26 @@ __all__ = [
     "ExternalAuthoringProvider",
     "FlowCandidateAttestation",
     "FlowCandidateInventory",
+    "GeneratedTask",
+    "GenerationRequest",
     "OpaqueTaskInstanceReference",
     "PrivateAuthoringCapability",
     "PrivateDerivationScope",
     "PrivateProviderSecurityQualification",
+    "Qualifier",
     "SealedCatalogAttestation",
     "SealedFamilyAttestation",
     "SealedInstanceQualification",
+    "TaskCanaryObservation",
+    "TaskFactory",
     "VerifiedAuthoringDeterminism",
     "authoring_provider_schema_digest",
+    "generate_task",
     "import_public_calibration_task",
     "materialize_private_catalog",
     "parse_authoring_contract_output",
     "parse_catalog_verification_output",
+    "qualify_from_canaries",
     "verify_determinism",
     "verify_materialized_catalog",
 ]

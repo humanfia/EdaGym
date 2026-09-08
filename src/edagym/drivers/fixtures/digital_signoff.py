@@ -19,8 +19,15 @@ from edagym.drivers.fixtures.model import (
     ToolInvocation,
 )
 from edagym.drivers.semantic_claims import SemanticJoint, normalize_semantic_joints
-from edagym.fixtures import OPENROAD_LEF, OPENROAD_LIBRARY, SEQUENTIAL_NETLIST
-from edagym.fixtures.synthesis_toy import SYNTHESIS_LIBRARY
+from edagym.fixtures import (
+    OPENROAD_LEF_ASSET_ID,
+    OPENROAD_LIBRARY_ASSET_ID,
+    SEQUENTIAL_NETLIST,
+)
+from edagym.fixtures.synthesis_toy import (
+    SYNTHESIS_LIBRARY_ASSET_ID,
+    SYNTHESIS_LIBRARY_PATH,
+)
 from edagym.specs.common import Capability, validate_relative_path
 
 
@@ -50,8 +57,7 @@ def _content(
 
 def _nonempty_outputs(observation: FixtureObservation, paths: tuple[str, ...]) -> bool:
     return all(
-        (output := observation.file(path)) is not None and output.size_bytes > 0
-        for path in paths
+        (output := observation.file(path)) is not None and output.size_bytes > 0 for path in paths
     )
 
 
@@ -441,9 +447,7 @@ def _def_component_count(content: bytes) -> int | None:
         return None
     start, declared = headers[0]
     ends = [
-        index
-        for index in range(start + 1, len(lines))
-        if lines[index].strip() == "END COMPONENTS"
+        index for index in range(start + 1, len(lines)) if lines[index].strip() == "END COMPONENTS"
     ]
     if len(ends) != 1:
         return None
@@ -500,8 +504,7 @@ class SequentialImplementationParser:
     def accepts(self, observation: FixtureObservation) -> bool:
         counts = self._counts(observation)
         return counts is not None and (
-            counts[0] >= self.minimum_cell_count
-            and counts[1] >= self.minimum_sequential_cell_count
+            counts[0] >= self.minimum_cell_count and counts[1] >= self.minimum_sequential_cell_count
         )
 
     def rejection(
@@ -607,16 +610,22 @@ GENUS_SYNTHESIS = QualificationFixture(
         ),
     ),
     inputs=(
-        _input("synthesis_library", "cells.lib", SYNTHESIS_LIBRARY),
         _input("dut_source", "dut.v", _GENUS_SEQUENTIAL_SOURCE),
         _input("timing_constraints", "constraints.sdc", _SYNTHESIS_CONSTRAINTS),
         _input("synthesis_script", "synthesize.tcl", _GENUS_SYNTHESIS_SCRIPT),
     ),
     rejection_inputs=(
-        _input("synthesis_library", "cells.lib", SYNTHESIS_LIBRARY),
         _input("dut_source", "dut.v", _GENUS_CONSTANT_SOURCE),
         _input("timing_constraints", "constraints.sdc", _SYNTHESIS_CONSTRAINTS),
         _input("synthesis_script", "synthesize.tcl", _GENUS_SYNTHESIS_SCRIPT),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "synthesis_library",
+            SYNTHESIS_LIBRARY_PATH,
+            SYNTHESIS_LIBRARY_ASSET_ID,
+            "text/x-liberty",
+        ),
     ),
     rejection_reason=SemanticRejectionReason.MISSING_REQUIRED_STRUCTURE,
     invocations=(ToolInvocation(("-batch", "-files", "synthesize.tcl")),),
@@ -684,6 +693,13 @@ exit
 FORMALITY_EQUIVALENCE = QualificationFixture(
     tool_id="formality",
     capability=Capability.EQUIVALENCE,
+    semantic_joints=normalize_semantic_joints(
+        Capability.EQUIVALENCE,
+        (
+            SemanticJoint.EQUIVALENCE_EQUIVALENT,
+            SemanticJoint.EQUIVALENCE_MISMATCH,
+        ),
+    ),
     inputs=(
         _input("golden_source", "golden.v", _EQUIVALENCE_GOLDEN_SOURCE),
         _input("revised_source", "revised.v", _EQUIVALENCE_REVISED_SOURCE),
@@ -739,6 +755,13 @@ exit -force
 CONFORMAL_EQUIVALENCE = QualificationFixture(
     tool_id="conformal",
     capability=Capability.EQUIVALENCE,
+    semantic_joints=normalize_semantic_joints(
+        Capability.EQUIVALENCE,
+        (
+            SemanticJoint.EQUIVALENCE_EQUIVALENT,
+            SemanticJoint.EQUIVALENCE_MISMATCH,
+        ),
+    ),
     inputs=(
         _input("golden_source", "golden.v", _EQUIVALENCE_GOLDEN_SOURCE),
         _input("revised_source", "revised.v", _EQUIVALENCE_REVISED_SOURCE),
@@ -752,9 +775,7 @@ CONFORMAL_EQUIVALENCE = QualificationFixture(
     rejection_reason=SemanticRejectionReason.EQUIVALENCE_MISMATCH,
     rejection_exit_code=_CONFORMAL_REJECTION_EXIT_CODE,
     invocations=(ToolInvocation(("-nogui", "-dofile", "equivalence.do")),),
-    outputs=(
-        FixtureOutput("equivalence_report", "equivalence.rpt", media_type="text/plain"),
-    ),
+    outputs=(FixtureOutput("equivalence_report", "equivalence.rpt", media_type="text/plain"),),
     parser=ConformalReportParser(
         output_path="equivalence.rpt",
         completion_marker=_CONFORMAL_COMPLETION_MARKER,
@@ -827,6 +848,14 @@ exit
 VC_FORMAL_PROPERTY = QualificationFixture(
     tool_id="vc_formal",
     capability=Capability.FORMAL_PROPERTY,
+    semantic_joints=normalize_semantic_joints(
+        Capability.FORMAL_PROPERTY,
+        (
+            SemanticJoint.FORMAL_PROPERTY_PROVED,
+            SemanticJoint.FORMAL_PROPERTY_COUNTEREXAMPLE,
+            SemanticJoint.FORMAL_PROPERTY_NONVACUOUS,
+        ),
+    ),
     inputs=(
         _input("formal_source", "formal.sv", _VC_FORMAL_ACCEPTANCE_SOURCE),
         _input("formal_script", "formal.tcl", _VC_FORMAL_SCRIPT),
@@ -847,9 +876,7 @@ VC_FORMAL_PROPERTY = QualificationFixture(
 )
 
 
-_OPENROAD_IMPLEMENTATION_COMPLETION_MARKER = (
-    b"EDAGYM_OPENROAD_DIGITAL_IMPLEMENTATION_COMPLETE"
-)
+_OPENROAD_IMPLEMENTATION_COMPLETION_MARKER = b"EDAGYM_OPENROAD_DIGITAL_IMPLEMENTATION_COMPLETE"
 
 _OPENROAD_COMBINATIONAL_NETLIST = """\
 module top(input clk, input d, output q);
@@ -898,19 +925,33 @@ exit
 OPENROAD_DIGITAL_IMPLEMENTATION = QualificationFixture(
     tool_id="openroad",
     capability=Capability.DIGITAL_IMPLEMENTATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.DIGITAL_IMPLEMENTATION,
+        (SemanticJoint.DIGITAL_IMPLEMENTATION_ROUTED_DATABASE,),
+    ),
     inputs=(
-        _input("physical_library", "cells.lef", OPENROAD_LEF),
-        _input("timing_library", "cells.lib", OPENROAD_LIBRARY),
         _input("mapped_netlist", "top.v", SEQUENTIAL_NETLIST),
         _input("timing_constraints", "constraints.sdc", _OPENROAD_IMPLEMENTATION_CONSTRAINTS),
         _input("implementation_script", "implement.tcl", _OPENROAD_IMPLEMENTATION_SCRIPT),
     ),
     rejection_inputs=(
-        _input("physical_library", "cells.lef", OPENROAD_LEF),
-        _input("timing_library", "cells.lib", OPENROAD_LIBRARY),
         _input("mapped_netlist", "top.v", _OPENROAD_COMBINATIONAL_NETLIST),
         _input("timing_constraints", "constraints.sdc", _OPENROAD_IMPLEMENTATION_CONSTRAINTS),
         _input("implementation_script", "implement.tcl", _OPENROAD_IMPLEMENTATION_SCRIPT),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "physical_library",
+            "cells.lef",
+            OPENROAD_LEF_ASSET_ID,
+            "text/x-lef",
+        ),
+        FixtureAssetInput(
+            "timing_library",
+            "cells.lib",
+            OPENROAD_LIBRARY_ASSET_ID,
+            "text/x-liberty",
+        ),
     ),
     rejection_reason=SemanticRejectionReason.MISSING_REQUIRED_STRUCTURE,
     invocations=(ToolInvocation(("-no_init", "-exit", "implement.tcl")),),
@@ -1036,6 +1077,10 @@ exit
 TEMPUS_STATIC_TIMING = QualificationFixture(
     tool_id="tempus",
     capability=Capability.STATIC_TIMING,
+    semantic_joints=normalize_semantic_joints(
+        Capability.STATIC_TIMING,
+        (SemanticJoint.STATIC_TIMING_SETUP,),
+    ),
     inputs=(
         _input("timing_constraints", "constraints.sdc", _TIMING_ACCEPTANCE_CONSTRAINTS),
         _input("timing_script", "timing.tcl", _TEMPUS_SCRIPT),
@@ -1094,6 +1139,10 @@ exit
 PRIMETIME_STATIC_TIMING = QualificationFixture(
     tool_id="primetime",
     capability=Capability.STATIC_TIMING,
+    semantic_joints=normalize_semantic_joints(
+        Capability.STATIC_TIMING,
+        (SemanticJoint.STATIC_TIMING_SETUP,),
+    ),
     inputs=(
         _input("timing_constraints", "constraints.sdc", _TIMING_ACCEPTANCE_CONSTRAINTS),
         _input("timing_script", "timing.tcl", _PRIMETIME_SCRIPT),
@@ -1178,6 +1227,10 @@ exit
 INNOVUS_DIGITAL_IMPLEMENTATION = QualificationFixture(
     tool_id="innovus",
     capability=Capability.DIGITAL_IMPLEMENTATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.DIGITAL_IMPLEMENTATION,
+        (SemanticJoint.DIGITAL_IMPLEMENTATION_ROUTED_DATABASE,),
+    ),
     inputs=(
         _input(
             "mapped_design_selection",
@@ -1259,6 +1312,10 @@ exit
 ICC2_DIGITAL_IMPLEMENTATION = QualificationFixture(
     tool_id="icc2",
     capability=Capability.DIGITAL_IMPLEMENTATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.DIGITAL_IMPLEMENTATION,
+        (SemanticJoint.DIGITAL_IMPLEMENTATION_ROUTED_DATABASE,),
+    ),
     inputs=(
         _input(
             "mapped_design_selection",

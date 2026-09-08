@@ -93,3 +93,10 @@ Policy denial, security violation, candidate rejection, tool crash, timeout,
 license failure, and infrastructure loss remain distinct outcomes. Redaction is
 defense in depth and cannot replace isolation. A missing verifier result or a
 failed security check never becomes a candidate result by inference.
+
+Web state is not a second database: the UI renders authenticated projections
+of the journal and allowed artifacts. Tokens are sent only in an
+`Authorization` header, state-changing requests require a matching `Origin`
+and idempotency key, and evaluator or secret visibility is filtered before an
+event leaves the control plane. The package contains no EDA installer or
+functional technology-library payload.

@@ -1,12 +1,11 @@
-# Open EDA runtime image
+# User-supplied EDA runtime
 
-This image is the rootless execution substrate for participant-controlled open
-EDA tasks. The Containerfile fixes the base image digest and every directly
-requested package version. It also records the complete installed Debian
-package manifest and its SHA-256 digest inside `/usr/share/edagym`.
+EdaGym does not build or distribute an EDA runtime image. Supply an image that
+you already own, record its immutable OCI digest in a private configuration,
+and grant only the task-specific tool and library view to the rootless
+executor. The framework never pulls, updates, or installs software in that
+image.
 
-The Ubuntu package repositories are not snapshot-pinned. The Containerfile is
-therefore an auditable build recipe, not a claim that a later build will be
-byte-for-byte identical or that these package versions will remain available.
-Every released environment binds the resulting OCI manifest digest and uses a
-local `repository@sha256:...` reference with pulling disabled.
+The image must satisfy the runtime contract documented in
+`docs/environment-contract.md`. Keep its package inventory and installation
+paths outside the repository and outside public reports.

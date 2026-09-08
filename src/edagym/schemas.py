@@ -11,11 +11,15 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from edagym.benchmark.model import BenchmarkQualityReport, BenchmarkSpec, TrialObservation
+from edagym.benchmark.schedule import BenchmarkSchedule
+from edagym.config.model import EdaGymConfig
 from edagym.drivers.qualification import BackendQualification
 from edagym.providers.campaign import CampaignSpec
 from edagym.providers.campaign_runner import CampaignRecord, CampaignReport
 from edagym.release_commands import ReleaseCommandReceipt
 from edagym.release_reporting import ReleaseReport
+from edagym.run.manifest import RunManifest
 from edagym.run.model import RunRecord
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import ReleaseManifest, TaskInstance
@@ -24,6 +28,11 @@ from edagym.specs.task import TaskSpec
 
 SchemaName = Literal[
     "backend_qualification",
+    "benchmark",
+    "benchmark_quality_report",
+    "benchmark_schedule",
+    "trial_observation",
+    "config",
     "campaign",
     "campaign_record",
     "campaign_report",
@@ -35,11 +44,16 @@ SchemaName = Literal[
     "task_instance",
     "release_manifest",
     "run_record",
+    "run_manifest",
 ]
 
 SCHEMA_MODELS: Mapping[SchemaName, type[BaseModel]] = MappingProxyType(
     {
         "backend_qualification": BackendQualification,
+        "benchmark": BenchmarkSpec,
+        "benchmark_quality_report": BenchmarkQualityReport,
+        "benchmark_schedule": BenchmarkSchedule,
+        "config": EdaGymConfig,
         "campaign": CampaignSpec,
         "campaign_record": CampaignRecord,
         "campaign_report": CampaignReport,
@@ -51,6 +65,8 @@ SCHEMA_MODELS: Mapping[SchemaName, type[BaseModel]] = MappingProxyType(
         "task_instance": TaskInstance,
         "release_manifest": ReleaseManifest,
         "run_record": RunRecord,
+        "run_manifest": RunManifest,
+        "trial_observation": TrialObservation,
     }
 )
 

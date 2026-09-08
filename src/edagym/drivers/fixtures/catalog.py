@@ -19,6 +19,7 @@ from edagym.drivers.fixtures.model import (
     AbcEquivalenceParser,
     AbcSynthesisParser,
     FirtoolLoweringParser,
+    FixtureAssetInput,
     FixtureInput,
     FixtureOutput,
     JasperCdcStatusParser,
@@ -41,7 +42,10 @@ from edagym.drivers.fixtures.open_simulation import (
     VERILATOR_SIMULATION,
 )
 from edagym.drivers.semantic_claims import SemanticJoint, normalize_semantic_joints
-from edagym.fixtures.synthesis_toy import SYNTHESIS_LIBRARY
+from edagym.fixtures.synthesis_toy import (
+    SYNTHESIS_LIBRARY_ASSET_ID,
+    SYNTHESIS_LIBRARY_PATH,
+)
 from edagym.specs.common import Capability
 
 
@@ -61,6 +65,13 @@ _JASPER_PROPERTY_REJECTION_MARKER = b"EDAGYM_JASPER_PROPERTY_STATUS formal_probe
 JASPER_FORMAL_PROPERTY = QualificationFixture(
     tool_id="jaspergold",
     capability=Capability.FORMAL_PROPERTY,
+    semantic_joints=normalize_semantic_joints(
+        Capability.FORMAL_PROPERTY,
+        (
+            SemanticJoint.FORMAL_PROPERTY_PROVED,
+            SemanticJoint.FORMAL_PROPERTY_COUNTEREXAMPLE,
+        ),
+    ),
     inputs=(
         _input(
             "formal_source",
@@ -118,6 +129,14 @@ _JASPER_CDC_MARKER = b"EDAGYM_CDC_PASS"
 JASPER_CDC = QualificationFixture(
     tool_id="jaspergold",
     capability=Capability.CDC_RDC,
+    semantic_joints=normalize_semantic_joints(
+        Capability.CDC_RDC,
+        (
+            SemanticJoint.CDC_RDC_CDC,
+            SemanticJoint.CDC_RDC_CLEAN,
+            SemanticJoint.CDC_RDC_VIOLATION,
+        ),
+    ),
     inputs=(
         _input(
             "cdc_source",
@@ -208,6 +227,13 @@ _SPYGLASS_REJECTION_MARKER = b"SpyGlass Exit Code 0 (Rule-checking completed wit
 SPYGLASS_LINT = QualificationFixture(
     tool_id="spyglass",
     capability=Capability.RTL_LINT,
+    semantic_joints=normalize_semantic_joints(
+        Capability.RTL_LINT,
+        (
+            SemanticJoint.RTL_LINT_CLEAN,
+            SemanticJoint.RTL_LINT_RULE_VIOLATION,
+        ),
+    ),
     inputs=(
         _input(
             "lint_source",
@@ -245,6 +271,14 @@ set_option enableSV yes
 SPYGLASS_CDC = QualificationFixture(
     tool_id="spyglass",
     capability=Capability.CDC_RDC,
+    semantic_joints=normalize_semantic_joints(
+        Capability.CDC_RDC,
+        (
+            SemanticJoint.CDC_RDC_CDC,
+            SemanticJoint.CDC_RDC_CLEAN,
+            SemanticJoint.CDC_RDC_VIOLATION,
+        ),
+    ),
     inputs=(
         _input(
             "cdc_source",
@@ -300,6 +334,14 @@ set_option enableSV yes
 VERILATOR_LINT = QualificationFixture(
     tool_id="verilator",
     capability=Capability.RTL_LINT,
+    semantic_joints=normalize_semantic_joints(
+        Capability.RTL_LINT,
+        (
+            SemanticJoint.RTL_LINT_CLEAN,
+            SemanticJoint.RTL_LINT_RULE_VIOLATION,
+            SemanticJoint.RTL_LINT_NATIVE_DIAGNOSTICS,
+        ),
+    ),
     inputs=(
         _input(
             "lint_source",
@@ -355,6 +397,14 @@ endmodule
 YOSYS_SYNTHESIS = QualificationFixture(
     tool_id="yosys",
     capability=Capability.ASIC_SYNTHESIS,
+    semantic_joints=normalize_semantic_joints(
+        Capability.ASIC_SYNTHESIS,
+        (
+            SemanticJoint.ASIC_SYNTHESIS_RTL,
+            SemanticJoint.ASIC_SYNTHESIS_NETLIST,
+            SemanticJoint.ASIC_SYNTHESIS_CELLS,
+        ),
+    ),
     inputs=(
         _input("dut_source", "dut.sv", _ADDER),
         _input(
@@ -382,6 +432,13 @@ log EDAGYM_ASIC_SYNTHESIS_PASS
 YOSYS_EQUIVALENCE = QualificationFixture(
     tool_id="yosys",
     capability=Capability.EQUIVALENCE,
+    semantic_joints=normalize_semantic_joints(
+        Capability.EQUIVALENCE,
+        (
+            SemanticJoint.EQUIVALENCE_EQUIVALENT,
+            SemanticJoint.EQUIVALENCE_MISMATCH,
+        ),
+    ),
     inputs=(
         _input(
             "equivalence_source",
@@ -419,6 +476,13 @@ log EDAGYM_EQUIVALENCE_COMPLETE
 YOSYS_FORMAL = QualificationFixture(
     tool_id="yosys",
     capability=Capability.FORMAL_PROPERTY,
+    semantic_joints=normalize_semantic_joints(
+        Capability.FORMAL_PROPERTY,
+        (
+            SemanticJoint.FORMAL_PROPERTY_PROVED,
+            SemanticJoint.FORMAL_PROPERTY_COUNTEREXAMPLE,
+        ),
+    ),
     inputs=(
         _input(
             "formal_source",
@@ -458,6 +522,13 @@ log EDAGYM_FORMAL_PROPERTY_COMPLETE
 ABC_SYNTHESIS = QualificationFixture(
     tool_id="abc",
     capability=Capability.ASIC_SYNTHESIS,
+    semantic_joints=normalize_semantic_joints(
+        Capability.ASIC_SYNTHESIS,
+        (
+            SemanticJoint.ASIC_SYNTHESIS_NETLIST,
+            SemanticJoint.ASIC_SYNTHESIS_CELLS,
+        ),
+    ),
     inputs=(
         _input(
             "logic_network",
@@ -504,6 +575,13 @@ ABC_SYNTHESIS = QualificationFixture(
 ABC_EQUIVALENCE = QualificationFixture(
     tool_id="abc",
     capability=Capability.EQUIVALENCE,
+    semantic_joints=normalize_semantic_joints(
+        Capability.EQUIVALENCE,
+        (
+            SemanticJoint.EQUIVALENCE_EQUIVALENT,
+            SemanticJoint.EQUIVALENCE_MISMATCH,
+        ),
+    ),
     inputs=(
         _input(
             "golden_network",
@@ -598,6 +676,10 @@ _SPECTRE_ZERO_ERROR_MARKER = b"spectre completes with 0 errors"
 SPECTRE_CIRCUIT_SIMULATION = QualificationFixture(
     tool_id="spectre",
     capability=Capability.CIRCUIT_SIMULATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.CIRCUIT_SIMULATION,
+        (SemanticJoint.CIRCUIT_SIMULATION_TRANSIENT,),
+    ),
     inputs=(
         _input(
             "circuit_checker",
@@ -673,85 +755,11 @@ save out
 OPENROAD_STATIC_TIMING = QualificationFixture(
     tool_id="openroad",
     capability=Capability.STATIC_TIMING,
+    semantic_joints=normalize_semantic_joints(
+        Capability.STATIC_TIMING,
+        (SemanticJoint.STATIC_TIMING_SETUP,),
+    ),
     inputs=(
-        _input("timing_library", "cells.lib", SYNTHESIS_LIBRARY),
-        _input(
-            "physical_library",
-            "cells.lef",
-            """\
-VERSION 5.8 ;
-BUSBITCHARS "[]" ;
-DIVIDERCHAR "/" ;
-UNITS
-  DATABASE MICRONS 1000 ;
-END UNITS
-MANUFACTURINGGRID 0.001 ;
-SITE CoreSite
-  CLASS CORE ;
-  SIZE 1 BY 1 ;
-END CoreSite
-LAYER metal1
-  TYPE ROUTING ;
-  DIRECTION HORIZONTAL ;
-  PITCH 0.10 ;
-  WIDTH 0.05 ;
-  SPACING 0.05 ;
-END metal1
-MACRO BUF
-  CLASS CORE ;
-  ORIGIN 0 0 ;
-  SIZE 1 BY 1 ;
-  SITE CoreSite ;
-  PIN A
-    DIRECTION INPUT ;
-    USE SIGNAL ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.10 0.10 0.20 0.20 ;
-    END
-  END A
-  PIN Y
-    DIRECTION OUTPUT ;
-    USE SIGNAL ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.80 0.80 0.90 0.90 ;
-    END
-  END Y
-END BUF
-MACRO DFF
-  CLASS CORE ;
-  ORIGIN 0 0 ;
-  SIZE 1 BY 1 ;
-  SITE CoreSite ;
-  PIN CLK
-    DIRECTION INPUT ;
-    USE CLOCK ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.10 0.10 0.20 0.20 ;
-    END
-  END CLK
-  PIN D
-    DIRECTION INPUT ;
-    USE SIGNAL ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.10 0.70 0.20 0.80 ;
-    END
-  END D
-  PIN Q
-    DIRECTION OUTPUT ;
-    USE SIGNAL ;
-    PORT
-      LAYER metal1 ;
-      RECT 0.80 0.40 0.90 0.50 ;
-    END
-  END Q
-END DFF
-END LIBRARY
-""",
-        ),
         _input(
             "timing_netlist",
             "top.v",
@@ -778,8 +786,8 @@ set_output_delay 0.1 -clock clk [get_ports q]
             "timing_script",
             "sta.tcl",
             """\
-read_lef cells.lef
-read_liberty cells.lib
+read_lef technology/cells.lef
+read_liberty technology/cells.lib
 read_verilog top.v
 link_design top
 read_sdc constraints.sdc
@@ -787,6 +795,20 @@ report_checks -path_delay max > sta.rpt
 puts EDAGYM_STATIC_TIMING_PASS
 exit
 """,
+        ),
+    ),
+    restricted_assets=(
+        FixtureAssetInput(
+            "timing_library",
+            SYNTHESIS_LIBRARY_PATH,
+            SYNTHESIS_LIBRARY_ASSET_ID,
+            "text/x-liberty",
+        ),
+        FixtureAssetInput(
+            "physical_library",
+            "technology/cells.lef",
+            "openroad_static_timing_abstract",
+            "text/x-lef",
         ),
     ),
     invocations=(ToolInvocation(("-no_init", "-exit", "sta.tcl")),),
@@ -805,6 +827,10 @@ _NGSPICE_REJECTION_MARKER = b"EDAGYM_NGSPICE_DIVIDER_REJECT"
 NGSPICE_CIRCUIT_SIMULATION = QualificationFixture(
     tool_id="ngspice",
     capability=Capability.CIRCUIT_SIMULATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.CIRCUIT_SIMULATION,
+        (SemanticJoint.CIRCUIT_SIMULATION_DC,),
+    ),
     inputs=(
         _input(
             "circuit_netlist",
@@ -841,6 +867,10 @@ quit
 KLAYOUT_PHYSICAL_VERIFICATION = QualificationFixture(
     tool_id="klayout",
     capability=Capability.PHYSICAL_VERIFICATION,
+    semantic_joints=normalize_semantic_joints(
+        Capability.PHYSICAL_VERIFICATION,
+        (SemanticJoint.PHYSICAL_VERIFICATION_DRC,),
+    ),
     inputs=(
         _input(
             "layout_geometry",

@@ -74,3 +74,9 @@ campaign dispatcher may wrap its admitted harness with
 derives the current writer and latest handoff from replayed journal events,
 exposes the original metered admission, and cannot authorize a different
 harness or session.
+
+Native Claude Code and Codex adapters, when configured, are evaluated as
+`model + harness` cells with their own qualification and hard budget. A
+controlled provider adapter is a separate experimental class; its observations
+are never silently substituted for an unavailable native cell. Credentials and
+raw provider transcripts remain in the private run store.

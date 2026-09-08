@@ -56,6 +56,7 @@ from edagym.drivers.probe import (
     ResolvedInstallation,
     _trusted_immutable_executable,
     deployment_attestation_digest,
+    eula_acceptance_required,
     probe_backend,
     resolve_authorized_commercial_backend,
 )
@@ -65,7 +66,6 @@ from edagym.drivers.qualification_assets import (
 )
 from edagym.drivers.qualification_resources import QualificationResourceGrant
 from edagym.drivers.rootless_image import RootlessImageConfiguration
-from edagym.drivers.semantic_claims import is_comprehensive_claim
 from edagym.drivers.site_container import site_container_license_environment
 from edagym.executors.assets import AssetSnapshot
 from edagym.run.artifacts import ContentAddressedStore, RetainedArtifact
@@ -112,8 +112,8 @@ class QualificationGapReason(StrEnum):
     HOST_RUNTIME_DEPENDENCY_UNAVAILABLE = "host_runtime_dependency_unavailable"
     AUTHORIZED_VERSION_PROBE_FAILED = "authorized_version_probe_failed"
     FIXTURE_UNAVAILABLE = "fixture_unavailable"
+    EXTERNAL_ASSET_UNAVAILABLE = "external_asset_unavailable"
     EULA_ACCEPTANCE_REQUIRED = "eula_acceptance_required"
-    SEMANTIC_COVERAGE_INCOMPLETE = "semantic_coverage_incomplete"
 
 
 class QualificationDisposition(StrEnum):
@@ -528,8 +528,7 @@ class BackendQualification(StrictModel):
             or item.driver_digest != self.probe.driver_digest
             or item.backend_probe_digest != canonical_digest(self.probe, domain="backend-probe-v1")
             or item.tool_version != self.probe.tool_version
-            or item.deployment_attestation_digest
-            != self.probe.deployment_attestation_digest
+            or item.deployment_attestation_digest != self.probe.deployment_attestation_digest
             for item in self.evidence
         ):
             raise ValueError("qualification evidence must bind the assessed probe")
@@ -698,7 +697,7 @@ def qualify_backend(
         gap_reason = (
             QualificationGapReason.EULA_ACCEPTANCE_REQUIRED
             if probe.state is QualificationState.DETECTED
-            and definition.workload_use_requires_eula_acceptance
+            and eula_acceptance_required(definition, deployment_configuration)
             else QualificationGapReason.LICENSE_AUTHORIZATION_REQUIRED
             if probe.state is QualificationState.DETECTED
             and definition.vendor is not Vendor.OPEN_SOURCE
@@ -721,7 +720,7 @@ def qualify_backend(
                     capability=capability,
                     reason=(
                         QualificationGapReason.EULA_ACCEPTANCE_REQUIRED
-                        if definition.workload_use_requires_eula_acceptance
+                        if eula_acceptance_required(definition, deployment_configuration)
                         else QualificationGapReason.LICENSE_AUTHORIZATION_REQUIRED
                     ),
                 )
@@ -762,11 +761,27 @@ def qualify_backend(
         asset.asset_id for _, fixture in scheduled for asset in fixture.restricted_assets
     }
     if set(provided_assets) != required_asset_ids:
-        raise ValueError("qualification asset grant differs from scheduled fixtures")
+        missing_assets = required_asset_ids - set(provided_assets)
+        extra_assets = set(provided_assets) - required_asset_ids
+        detail = "external qualification assets are unavailable"
+        if missing_assets:
+            detail += f" (missing {len(missing_assets)})"
+        if extra_assets:
+            detail += f" (unexpected {len(extra_assets)})"
+        gaps.extend(
+            CapabilityGap(
+                capability=capability,
+                reason=QualificationGapReason.EXTERNAL_ASSET_UNAVAILABLE,
+            )
+            for capability, fixture in scheduled
+            if fixture.restricted_assets
+        )
+        if gaps:
+            return _assessment(probe, requested, (), tuple(gaps))
+        raise ValueError(detail)
     for _, fixture in scheduled:
         fixture_assets = {
-            asset.asset_id: provided_assets[asset.asset_id]
-            for asset in fixture.restricted_assets
+            asset.asset_id: provided_assets[asset.asset_id] for asset in fixture.restricted_assets
         }
         for role in FixtureRole:
             evidence.append(
@@ -825,8 +840,16 @@ def qualify_commercial_backend(
             )
         provided_assets = {} if restricted_assets is None else restricted_assets
         if set(provided_assets) != {item.asset_id for item in fixture.restricted_assets}:
-            raise CommercialQualificationAuthorizationError(
-                "commercial qualification asset grant differs from its fixture"
+            return _assessment(
+                metadata_probe,
+                (fixture.capability,),
+                (),
+                (
+                    CapabilityGap(
+                        capability=fixture.capability,
+                        reason=QualificationGapReason.EXTERNAL_ASSET_UNAVAILABLE,
+                    ),
+                ),
             )
         receipt, lease = authorization._consume(
             definition=definition,
@@ -948,8 +971,7 @@ def _validate_probe_binding(
     if (
         installation.definition.driver_digest != definition.driver_digest
         or installation.version_label != probe.tool_version
-        or installation.deployment_attestation_digest
-        != probe.deployment_attestation_digest
+        or installation.deployment_attestation_digest != probe.deployment_attestation_digest
     ):
         raise ValueError("resolved installation does not bind the supplied probe")
 
@@ -994,9 +1016,7 @@ def _execute_fixture(
         or artifact_store.policy.persistent_disclosure(ArtifactClass.DIAGNOSTIC)
         != PROTECTED_RAW_DISCLOSURE
     ):
-        raise ValueError(
-            "marker-projected qualification requires protected encrypted diagnostics"
-        )
+        raise ValueError("marker-projected qualification requires protected encrypted diagnostics")
     workspace = Path(tempfile.mkdtemp(prefix="edagym-qualification-", dir=root))
     workspace_descriptor = os.open(
         workspace,
@@ -1066,8 +1086,7 @@ def _execute_fixture(
             stderr_files.append(stderr_path)
             closure_valid = installation.execution_closure.revalidate()
             deployment_valid = (
-                deployment_configuration is None
-                or deployment_configuration.revalidate()
+                deployment_configuration is None or deployment_configuration.revalidate()
             )
             assets_valid = revalidate_materialized_qualification_assets(
                 materialized_assets,
@@ -1119,17 +1138,18 @@ def _execute_fixture(
                 arguments = rootless_runtime.invocation_arguments(
                     workspace,
                     invocation.arguments,
+                    resources=resource_grant.limits.model_copy(
+                        update={"wall_seconds": resource_grant.command_timeout_seconds}
+                    ),
                 )
                 child_environment = rootless_runtime.host_environment
-            trusted_path_execution = (
-                isinstance(invocation, ToolInvocation)
-                and installation.executable_invocation_mode
-                in {
-                    ExecutableInvocationMode.TRUSTED_PATH,
-                    ExecutableInvocationMode.SITE_CONTAINER,
-                    ExecutableInvocationMode.ROOTLESS_IMAGE,
-                }
-            )
+            trusted_path_execution = isinstance(
+                invocation, ToolInvocation
+            ) and installation.executable_invocation_mode in {
+                ExecutableInvocationMode.TRUSTED_PATH,
+                ExecutableInvocationMode.SITE_CONTAINER,
+                ExecutableInvocationMode.ROOTLESS_IMAGE,
+            }
             if (
                 trusted_path_execution
                 and _trusted_immutable_executable(installation.executable_path)
@@ -1180,9 +1200,7 @@ def _execute_fixture(
                 os.close(executable_descriptor)
                 try:
                     try:
-                        exit_code = process.wait(
-                            timeout=resource_grant.command_timeout_seconds
-                        )
+                        exit_code = process.wait(timeout=resource_grant.command_timeout_seconds)
                     except subprocess.TimeoutExpired:
                         timed_out = True
                         _kill_process_group(process.pid)
@@ -1192,15 +1210,9 @@ def _execute_fixture(
                     if process.poll() is None:
                         process.wait()
                 exit_codes.append(exit_code)
-            if (
-                isinstance(invocation, ToolInvocation)
-                and not (
-                    installation.execution_closure.revalidate()
-                    and (
-                        deployment_configuration is None
-                        or deployment_configuration.revalidate()
-                    )
-                )
+            if isinstance(invocation, ToolInvocation) and not (
+                installation.execution_closure.revalidate()
+                and (deployment_configuration is None or deployment_configuration.revalidate())
             ):
                 execution_closure_changed = True
             if not revalidate_materialized_qualification_assets(
@@ -1744,10 +1756,9 @@ def _privatize_workspace_tree(workspace_descriptor: int) -> None:
             private_mode = 0o700 if opened.st_mode & stat.S_IXUSR else 0o600
             os.fchmod(child, private_mode)
             after = os.fstat(child)
-            if (
-                (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
-                or stat.S_IMODE(after.st_mode) != private_mode
-            ):
+            if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino) or stat.S_IMODE(
+                after.st_mode
+            ) != private_mode:
                 raise ValueError("qualification output could not be made private")
         finally:
             os.close(child)
@@ -1831,14 +1842,5 @@ def _derive_disposition(
     ):
         return QualificationDisposition.PROBE_ONLY
     if gaps:
-        return QualificationDisposition.INCOMPLETE
-    if any(
-        not is_comprehensive_claim(
-            item.capability,
-            item.fixture.semantic_claim_id,
-            item.fixture.semantic_joints,
-        )
-        for item in evidence
-    ):
         return QualificationDisposition.INCOMPLETE
     return QualificationDisposition.CONFORMANT

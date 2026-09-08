@@ -1,4 +1,4 @@
-"""Rootless container and sealed host-tool process execution."""
+"""Contained host-tool processes shared by executor implementations."""
 
 from __future__ import annotations
 
@@ -54,21 +54,15 @@ from edagym.executors.model import (
     ToolRecipeCommand,
     WorkspaceRecipeCommand,
 )
-from edagym.executors.podman import rootless_podman_command
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.specs.common import ArtifactClass, Capability
 from edagym.specs.environment import (
     ArtifactDisclosure,
-    ContainerRuntime,
     EnvironmentSpec,
     FilesystemScope,
-    HostAllowlistNetwork,
 )
 from edagym.specs.environment import (
     BrokeredHostToolExecutor as BrokeredExecutorSpec,
-)
-from edagym.specs.environment import (
-    RootlessLocalExecutor as RootlessExecutorSpec,
 )
 
 _PRIVATE_DIRECTORY_MODE = 0o700
@@ -82,7 +76,6 @@ _SYSTEMD_POLL_SECONDS = 0.05
 _SYSTEMD_TIMEOUT_RESULT = "timeout"
 _INVOCATION_STATE_TOKEN_HEX_LENGTH = 24
 _PR_SET_PDEATHSIG = 1
-_CONTAINER_OWNER_LABEL = "io.edagym.execution"
 
 
 class ExecutorUnavailable(RuntimeError):
@@ -168,11 +161,6 @@ class _ProcessManager:
         pass_fds: tuple[int, ...] = (),
         transient_files: tuple[_PrivateTransientFile, ...] = (),
         post_execution_validators: tuple[Callable[[], bool], ...] = (),
-        pre_spawn_validator: Callable[
-            [tuple[str, ...], Mapping[str, str], tuple[int, ...]],
-            None,
-        ]
-        | None = None,
     ) -> JobHandle:
         with self._launch_lock, self._provider_guard():
             return self._launch_command_locked(
@@ -186,7 +174,6 @@ class _ProcessManager:
                 pass_fds=pass_fds,
                 transient_files=transient_files,
                 post_execution_validators=post_execution_validators,
-                pre_spawn_validator=pre_spawn_validator,
             )
 
     def _launch_command_locked(
@@ -202,11 +189,6 @@ class _ProcessManager:
         pass_fds: tuple[int, ...],
         transient_files: tuple[_PrivateTransientFile, ...],
         post_execution_validators: tuple[Callable[[], bool], ...],
-        pre_spawn_validator: Callable[
-            [tuple[str, ...], Mapping[str, str], tuple[int, ...]],
-            None,
-        ]
-        | None,
     ) -> JobHandle:
         job_id = plan.invocation_id
         with self._lock:
@@ -259,12 +241,6 @@ class _ProcessManager:
         launch_environment = _systemd_launch_environment(process_environment)
         inherited_descriptors = (*pass_fds, working_descriptor)
         try:
-            if pre_spawn_validator is not None:
-                pre_spawn_validator(
-                    supervised_command,
-                    launch_environment,
-                    inherited_descriptors,
-                )
             process = subprocess.Popen(
                 supervised_command,
                 cwd=f"/proc/self/fd/{working_descriptor}",
@@ -909,193 +885,6 @@ class BrokeredHostExecutor:
         self._manager.abandon(invocation_id)
 
 
-class RootlessContainerExecutor:
-    """Execute an invocation inside a locked-down rootless Podman container."""
-
-    def __init__(
-        self,
-        *,
-        executor_id: str,
-        podman_path: Path,
-        image_references: Mapping[str, str],
-        asset_source_policy: AssetSourcePolicy,
-        artifact_store: ContentAddressedStore,
-        job_state_root: Path,
-    ) -> None:
-        self.executor_id = executor_id
-        self._podman_path = podman_path
-        self._image_references = MappingProxyType(dict(image_references))
-        if not podman_path.is_file() or not os.access(podman_path, os.X_OK):
-            raise ExecutorUnavailable("Podman executable is unavailable")
-        self._manager = _ProcessManager(
-            executor_id=executor_id,
-            asset_source_policy=asset_source_policy,
-            artifact_store=artifact_store,
-            job_state_root=job_state_root,
-        )
-
-    def launch(
-        self,
-        plan: InvocationPlan,
-        *,
-        environment: EnvironmentSpec,
-        workspace: Path,
-        artifact_directory: Path,
-        asset_paths: dict[str, Path],
-        scope: FilesystemScope,
-        license_lease: LicenseLease | None = None,
-    ) -> JobHandle:
-        executor = environment.executor
-        if (
-            not isinstance(executor, RootlessExecutorSpec)
-            or executor.executor_id != self.executor_id
-        ):
-            raise ExecutorUnavailable("environment does not bind this rootless executor")
-        if plan.recipe:
-            raise ExecutorUnavailable(
-                "composite recipes require an executor with a trusted recipe supervisor"
-            )
-        if executor.runtime is not ContainerRuntime.PODMAN:
-            raise ExecutorUnavailable("this provider implements rootless Podman only")
-        if isinstance(environment.network, HostAllowlistNetwork):
-            raise ExecutorUnavailable("host allowlist networking requires a configured enforcer")
-        if license_lease is not None:
-            raise ExecutorUnavailable("license leases cannot enter participant containers")
-        _validate_plan_binding(plan, environment)
-        _validate_scope(plan, scope)
-        _require_owned_directory(artifact_directory)
-        asset_snapshots = _bind_asset_closure(
-            self._manager,
-            environment=environment,
-            asset_paths=asset_paths,
-            scope=scope,
-            writable_paths=(workspace, artifact_directory),
-        )
-        bound_asset_paths = MappingProxyType(
-            {asset_id: snapshot.path for asset_id, snapshot in asset_snapshots.items()}
-        )
-        image = self._image_references.get(executor.image_digest)
-        if image is None or not image.endswith(f"@{executor.image_digest}"):
-            raise ExecutorUnavailable("environment image digest has no trusted local reference")
-        environment_fd = _sealed_environment_file(plan.environment)
-        try:
-            command = self._podman_command(
-                plan=plan,
-                environment=environment,
-                workspace=workspace,
-                artifact_directory=artifact_directory,
-                asset_paths=bound_asset_paths,
-                scope=scope,
-                image=image,
-                environment_fd=environment_fd,
-            )
-            _revalidate_bound_assets(
-                asset_snapshots,
-                self._manager,
-                writable_paths=(workspace, artifact_directory),
-            )
-            return self._manager.launch_command(
-                plan=plan,
-                environment=environment,
-                command=command,
-                process_environment=_minimal_host_environment(),
-                workspace=workspace,
-                artifact_directory=artifact_directory,
-                apply_host_limits=False,
-                pass_fds=(() if environment_fd is None else (environment_fd,)),
-            )
-        finally:
-            if environment_fd is not None:
-                os.close(environment_fd)
-
-    def inspect(self, handle: JobHandle) -> JobState:
-        return self._manager.inspect(handle)
-
-    def cancel(self, handle: JobHandle) -> JobState:
-        return self._manager.cancel(handle)
-
-    def collect(self, handle: JobHandle) -> ExecutionResult:
-        return self._manager.collect(handle)
-
-    def abandon(self, invocation_id: str) -> None:
-        self._manager.abandon(invocation_id)
-        self._remove_container(invocation_id)
-
-    def _podman_command(
-        self,
-        *,
-        plan: InvocationPlan,
-        environment: EnvironmentSpec,
-        workspace: Path,
-        artifact_directory: Path,
-        asset_paths: Mapping[str, Path],
-        scope: FilesystemScope,
-        image: str,
-        environment_fd: int | None,
-    ) -> tuple[str, ...]:
-        return rootless_podman_command(
-            podman_path=self._podman_path,
-            environment=environment,
-            workspace=workspace,
-            artifact_directory=artifact_directory,
-            asset_paths=asset_paths,
-            scope=scope,
-            image=image,
-            environment_fd=environment_fd,
-            executable=plan.executable,
-            arguments=plan.arguments,
-            working_directory=plan.working_directory,
-            exact_entrypoint=True,
-            container_name=_container_name(self.executor_id, plan.invocation_id),
-            container_labels={
-                _CONTAINER_OWNER_LABEL: _container_owner(self.executor_id, plan.invocation_id)
-            },
-        )
-
-    def _remove_container(self, invocation_id: str) -> None:
-        name = _container_name(self.executor_id, invocation_id)
-        expected_owner = _container_owner(self.executor_id, invocation_id)
-        exists = self._run_podman("container", "exists", name)
-        if exists.returncode == 1:
-            return
-        if exists.returncode != 0:
-            raise ExecutorUnavailable("container recovery state is unavailable")
-        inspected = self._run_podman(
-            "container",
-            "inspect",
-            "--format",
-            f'{{{{ index .Config.Labels "{_CONTAINER_OWNER_LABEL}" }}}}',
-            name,
-        )
-        if inspected.returncode != 0 or inspected.stdout.strip() != expected_owner:
-            raise ExecutorUnavailable("container recovery ownership does not match")
-        removed = self._run_podman("rm", "--force", "--time=0", name)
-        if removed.returncode != 0:
-            raise ExecutorUnavailable("container recovery could not remove the invocation")
-        deadline = time.monotonic() + _SYSTEMD_QUIESCENCE_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            exists = self._run_podman("container", "exists", name)
-            if exists.returncode == 1:
-                return
-            if exists.returncode != 0:
-                raise ExecutorUnavailable("container recovery state is unavailable")
-            time.sleep(_SYSTEMD_POLL_SECONDS)
-        raise ExecutorUnavailable("container recovery did not become quiescent")
-
-    def _run_podman(self, *arguments: str) -> subprocess.CompletedProcess[str]:
-        try:
-            return subprocess.run(
-                (os.fspath(self._podman_path), *arguments),
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                env=_minimal_host_environment(),
-                timeout=_SYSTEMD_OPERATION_TIMEOUT_SECONDS,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            raise ExecutorUnavailable("container recovery control is unavailable") from None
 
 
 def _validate_plan_binding(plan: InvocationPlan, environment: EnvironmentSpec) -> None:
@@ -1636,19 +1425,8 @@ def _isolation_unit(executor_id: str, invocation_id: str) -> str:
     return f"edagym-{identity}.scope"
 
 
-def _container_name(executor_id: str, invocation_id: str) -> str:
-    identity = canonical_digest(
-        {"executor_id": executor_id, "invocation_id": invocation_id},
-        domain="executor-container-name-v1",
-    ).removeprefix("sha256:")
-    return f"edagym-{identity}"
 
 
-def _container_owner(executor_id: str, invocation_id: str) -> str:
-    return canonical_digest(
-        {"executor_id": executor_id, "invocation_id": invocation_id},
-        domain="executor-container-owner-v1",
-    )
 
 
 def _systemd_scope_command(

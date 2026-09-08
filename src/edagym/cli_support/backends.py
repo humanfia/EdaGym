@@ -509,7 +509,7 @@ def _binding_matches_installation(
 ) -> bool:
     return (
         isinstance(binding.locator, AttestedHostToolLocator)
-        and installation.definition.tool_id == binding.tool_id
+        and installation.tool_id == binding.tool_id
         and installation.definition.driver_digest == binding.driver_digest
         and installation.version_label == binding.tool_version
         and installation.executable_name == binding.locator.executable

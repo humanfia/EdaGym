@@ -24,9 +24,7 @@ _KLAYOUT_LVS_DATABASE_PATH = "lvs-results.l2n"
 _KLAYOUT_SUMMARY_PATH = "physical-verification.json"
 _KLAYOUT_DRC_MEDIA_TYPE = "application/vnd.klayout.report-database+xml"
 _KLAYOUT_LVS_MEDIA_TYPE = "application/vnd.klayout.layout-to-netlist"
-_KLAYOUT_SUMMARY_MEDIA_TYPE = (
-    "application/vnd.edagym.physical-verification-summary+json"
-)
+_KLAYOUT_SUMMARY_MEDIA_TYPE = "application/vnd.edagym.physical-verification-summary+json"
 _KLAYOUT_MAXIMUM_DATABASE_BYTES = 64 * 1024 * 1024
 _KLAYOUT_MAXIMUM_SUMMARY_BYTES = 64 * 1024
 _KLAYOUT_MINIMUM_SPACING_NM = 200
@@ -237,9 +235,7 @@ class KlayoutPhysicalVerificationParser:
         for raw_id, raw_name in raw_nets:
             net_id = int(raw_id)
             name = (
-                raw_name[1:-1]
-                if raw_name.startswith("'") and raw_name.endswith("'")
-                else raw_name
+                raw_name[1:-1] if raw_name.startswith("'") and raw_name.endswith("'") else raw_name
             )
             components = tuple(part.strip() for part in name.split(","))
             if (

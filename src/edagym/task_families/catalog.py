@@ -7,7 +7,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, StrictInt, StrictStr, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.specs.common import Capability, Identifier, StrictModel
@@ -77,17 +77,75 @@ CLEAN_ROOM_EXCLUSION = CleanRoomExclusionSpec(
 )
 
 
+DifficultyValue = StrictBool | StrictInt | StrictStr
+
+
+class DifficultyLevel(StrictModel):
+    """One named generator value; ordering is an empirical label, not a score."""
+
+    level_id: Identifier
+    value: DifficultyValue
+
+
 class ParameterAxis(StrictModel):
+    """A derived view of one TaskSpec parameter domain."""
+
     axis_id: Identifier
-    base_value: Annotated[int, Field(strict=True, ge=0)]
-    advanced_value: Annotated[int, Field(strict=True, ge=0)]
+    levels: tuple[DifficultyLevel, ...]
     role: AxisRole = AxisRole.ARCHITECTURAL
 
-    @model_validator(mode="after")
-    def require_distinct_values(self) -> Self:
-        if self.advanced_value <= self.base_value:
-            raise ValueError("advanced task family axes must be greater than base axes")
-        return self
+    @field_validator("levels")
+    @classmethod
+    def normalize_levels(cls, value: tuple[DifficultyLevel, ...]) -> tuple[DifficultyLevel, ...]:
+        identifiers = [item.level_id for item in value]
+        if not value or len(identifiers) != len(set(identifiers)):
+            raise ValueError("parameter axes require unique named levels")
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_values(cls, value: object) -> object:
+        if (
+            isinstance(value, dict)
+            and "levels" not in value
+            and "base_value" in value
+            and "advanced_value" in value
+        ):
+            migrated = dict(value)
+            migrated["levels"] = (
+                {"level_id": "base", "value": value["base_value"]},
+                {"level_id": "advanced", "value": value["advanced_value"]},
+            )
+            migrated.pop("base_value", None)
+            migrated.pop("advanced_value", None)
+            return migrated
+        return value
+
+    def value_for(self, level_id: str) -> DifficultyValue:
+        for level in self.levels:
+            if level.level_id == level_id:
+                return level.value
+        raise ValueError(f"unknown difficulty level {level_id!r} for axis {self.axis_id!r}")
+
+    @property
+    def level_ids(self) -> tuple[str, ...]:
+        return tuple(item.level_id for item in self.levels)
+
+    # Compatibility projections for old private authoring readers. They are
+    # derived from the first and last declared levels and are not schema fields.
+    @property
+    def base_value(self) -> int:
+        value = self.levels[0].value
+        if type(value) is not int:
+            raise ValueError("legacy integer projection is unavailable for this axis")
+        return value
+
+    @property
+    def advanced_value(self) -> int:
+        value = self.levels[-1].value
+        if type(value) is not int:
+            raise ValueError("legacy integer projection is unavailable for this axis")
+        return value
 
 
 class TaskFamilyDefinition(StrictModel):
@@ -99,7 +157,28 @@ class TaskFamilyDefinition(StrictModel):
     semantic_contract: Annotated[str, Field(min_length=20, max_length=500)]
     difficulty_axes: tuple[ParameterAxis, ...]
     required_capabilities: tuple[Capability, ...]
-    instance_names: tuple[Literal["base"], Literal["advanced"]] = ("base", "advanced")
+    # The catalog exposes currently materialized names; TaskSpec owns the
+    # parameter domain and a factory may add further levels without changing
+    # this registration schema.
+    instance_names: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def derive_instance_names(cls, value: object) -> object:
+        if isinstance(value, dict) and not value.get("instance_names"):
+            axes = value.get("difficulty_axes", ())
+            names = sorted(
+                {
+                    level.level_id if isinstance(level, DifficultyLevel) else level.get("level_id")
+                    for axis in axes
+                    for level in (axis.levels if isinstance(axis, ParameterAxis) else axis.get("levels", ()))
+                }
+            )
+            if names:
+                updated = dict(value)
+                updated["instance_names"] = tuple(names)
+                return updated
+        return value
 
     @field_validator("difficulty_axes")
     @classmethod
@@ -116,16 +195,17 @@ class TaskFamilyDefinition(StrictModel):
             raise ValueError("task capabilities must be unique and non-empty")
         return tuple(sorted(value, key=lambda item: item.value))
 
+    @field_validator("instance_names")
+    @classmethod
+    def normalize_instance_names(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or len(value) != len(set(value)) or any(not item.strip() for item in value):
+            raise ValueError("task family instance names must be unique and non-empty")
+        return tuple(value)
+
     @model_validator(mode="after")
     def validate_root(self) -> Self:
         if (self.root is TaskRoot.SAIL_RTL) != (self.interface_profile is not None):
             raise ValueError("only Sail-rooted RTL families own an interface profile")
-        if self.instance_names != ("base", "advanced"):
-            raise ValueError("task families require canonical base and advanced instances")
-        if self.root is TaskRoot.EDA_FLOW and any(
-            axis.role is not AxisRole.ARCHITECTURAL for axis in self.difficulty_axes
-        ):
-            raise ValueError("flow task axes use their canonical authoring interpretation")
         return self
 
     @property
@@ -168,10 +248,6 @@ class PublicTaskCatalog(StrictModel):
 
     @model_validator(mode="after")
     def validate_roots(self) -> Self:
-        sail_count = sum(item.root is TaskRoot.SAIL_RTL for item in self.families)
-        flow_count = sum(item.root is TaskRoot.EDA_FLOW for item in self.families)
-        if sail_count != 20 or flow_count != 12:
-            raise ValueError("public task catalog requires 20 Sail and 12 flow families")
         return self
 
     @property
@@ -187,8 +263,10 @@ def _axis(
 ) -> ParameterAxis:
     return ParameterAxis(
         axis_id=name,
-        base_value=base,
-        advanced_value=advanced,
+        levels=(
+            DifficultyLevel(level_id="base", value=base),
+            DifficultyLevel(level_id="advanced", value=advanced),
+        ),
         role=role,
     )
 
@@ -499,8 +577,6 @@ def families_for_root(root: TaskRoot) -> tuple[TaskFamilyDefinition, ...]:
 
 def validate_catalog() -> None:
     identifiers = [family.family for family in ALL_FAMILIES]
-    if len(SAIL_RTL_FAMILIES) != 20 or len(EDA_FLOW_FAMILIES) != 12:
-        raise ValueError("task catalog requires exactly 20 Sail and 12 EDA-flow families")
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("task family catalog identifiers must be unique")
 

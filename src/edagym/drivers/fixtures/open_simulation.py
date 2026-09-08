@@ -22,9 +22,7 @@ _REJECTED_MARKER = b"EDAGYM_RTL_SIMULATION_REJECTED"
 _MAXIMUM_TRACE_BYTES = 4096
 _MAXIMUM_WAVEFORM_BYTES = 128 * 1024
 _VECTOR_SCHEDULE = ((0, 0), (3, 5), (9, 7), (15, 1))
-_VCD_VARIABLE = re.compile(
-    r"^\$var\s+\S+\s+([0-9]+)\s+(\S+)\s+(\S+)(?:\s+.*?)?\s+\$end$"
-)
+_VCD_VARIABLE = re.compile(r"^\$var\s+\S+\s+([0-9]+)\s+(\S+)\s+(\S+)(?:\s+.*?)?\s+\$end$")
 
 
 def _input(logical_id: str, path: str, content: str) -> FixtureInput:
@@ -83,8 +81,7 @@ class RtlTraceWaveformParser:
             return None
         correct = all(actual == expected for _, _, _, actual, expected in rows)
         known_mutant = all(
-            actual == ((left - right) & 0x1F)
-            for _, left, right, actual, _expected in rows
+            actual == ((left - right) & 0x1F) for _, left, right, actual, _expected in rows
         )
         if accepted_count == 1 and correct:
             return "accepted"
@@ -101,9 +98,7 @@ class RtlTraceWaveformParser:
             return None
         if len(rows) != len(_VECTOR_SCHEDULE) or any(len(row) != 5 for row in rows):
             return None
-        normalized = tuple(
-            (row[0], row[1], row[2], row[3], row[4]) for row in rows
-        )
+        normalized = tuple((row[0], row[1], row[2], row[3], row[4]) for row in rows)
         for index, (left, right) in enumerate(_VECTOR_SCHEDULE):
             row = normalized[index]
             if row[:3] != (index, left, right) or row[4] != left + right:
@@ -158,9 +153,7 @@ class RtlTraceWaveformParser:
             or any(len(codes) != 1 for codes in signal_codes.values())
         ):
             return False
-        code_to_signal = {
-            next(iter(codes)): signal for signal, codes in signal_codes.items()
-        }
+        code_to_signal = {next(iter(codes)): signal for signal, codes in signal_codes.items()}
         times: list[int] = []
         transitions: dict[str, list[int]] = {"a": [], "b": [], "y": []}
         for line in lines[definitions_end + 1 :]:

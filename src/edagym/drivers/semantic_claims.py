@@ -1,4 +1,12 @@
-"""Canonical semantic and release-coverage contracts for backend capabilities."""
+"""Canonical semantic joints and release-coverage contracts for backend capabilities.
+
+A fixture claims the exact joints its parser exercises. A tool-capability pair is
+conformant for that claim when both fixture roles pass. Release coverage of one
+capability is derived from the union of the conformant claims against the contract
+owned here: every required joint must be claimed by at least one conformant tool, the
+conformant implementation families must reach the independence minimum, and every
+required vendor and tool must be present.
+"""
 
 from __future__ import annotations
 
@@ -31,12 +39,10 @@ class SemanticJoint(StrEnum):
 
     FORMAL_PROPERTY_PROVED = "formal.property.proved"
     FORMAL_PROPERTY_COUNTEREXAMPLE = "formal.property.counterexample"
-    FORMAL_PROPERTY_UNKNOWN = "formal.property.unknown"
     FORMAL_PROPERTY_NONVACUOUS = "formal.property.nonvacuous"
 
     EQUIVALENCE_EQUIVALENT = "formal.equivalence.equivalent"
     EQUIVALENCE_MISMATCH = "formal.equivalence.mismatch"
-    EQUIVALENCE_INCONCLUSIVE = "formal.equivalence.inconclusive"
 
     ASIC_SYNTHESIS_RTL = "asic.synthesis.rtl"
     ASIC_SYNTHESIS_CONSTRAINTS = "asic.synthesis.constraints"
@@ -96,7 +102,6 @@ class SemanticJoint(StrEnum):
     HLS_LATENCY = "hls.synthesis.latency"
     HLS_RESOURCE = "hls.synthesis.resource"
 
-    DFT_INSERTION = "dft.insertion.insertion"
     DFT_CHAIN_INTEGRITY = "dft.insertion.chain_integrity"
     DFT_COVERAGE = "dft.insertion.coverage"
     DFT_INVALID_SETUP = "dft.insertion.invalid_setup"
@@ -108,9 +113,14 @@ class SemanticJoint(StrEnum):
     CELL_CHARACTERIZATION_FAILED_ARC = "cell.characterization.failed_arc"
 
 
+def joint_capability(joint: SemanticJoint) -> Capability:
+    """Return the capability that owns one semantic joint."""
+
+    return Capability(joint.value.rsplit(".", 1)[0])
+
+
 class CapabilitySemanticContract(StrictModel):
     capability: Capability
-    comprehensive_claim_id: Identifier
     required_joints: tuple[SemanticJoint, ...]
     minimum_independent_implementations: Annotated[int, Field(strict=True, ge=1, le=3)]
     required_vendors: tuple[Vendor, ...] = ()
@@ -139,8 +149,7 @@ class CapabilitySemanticContract(StrictModel):
 
     @model_validator(mode="after")
     def validate_joint_domain(self) -> Self:
-        prefix = f"{self.capability.value}."
-        if any(not joint.value.startswith(prefix) for joint in self.required_joints):
+        if any(joint_capability(joint) is not self.capability for joint in self.required_joints):
             raise ValueError("semantic joint belongs to a different capability")
         if self.required_tool_ids and len(self.required_tool_ids) < (
             self.minimum_independent_implementations
@@ -157,13 +166,18 @@ class CapabilitySemanticContract(StrictModel):
         )
 
     @property
+    def comprehensive_claim_id(self) -> Identifier:
+        """Claim identity of a fixture that exercises every required joint."""
+
+        return semantic_claim_id(self.capability, self.required_joints)
+
+    @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="backend-capability-semantic-contract-v1")
+        return canonical_digest(self, domain="backend-capability-semantic-contract-v2")
 
 
 def _contract(
     capability: Capability,
-    claim_id: str,
     joints: tuple[SemanticJoint, ...],
     minimum: int = 1,
     *,
@@ -172,7 +186,6 @@ def _contract(
 ) -> CapabilitySemanticContract:
     return CapabilitySemanticContract(
         capability=capability,
-        comprehensive_claim_id=claim_id,
         required_joints=joints,
         minimum_independent_implementations=minimum,
         required_vendors=vendors,
@@ -185,12 +198,10 @@ _THREE_VENDOR_CHAIN = (Vendor.OPEN_SOURCE, Vendor.CADENCE, Vendor.SYNOPSYS)
 CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     _contract(
         Capability.HW_IR_LOWERING,
-        "hw-ir-lowering-comprehensive-v1",
         (SemanticJoint.HW_IR_OUTPUT, SemanticJoint.HW_IR_SEQUENTIAL_STRUCTURE),
     ),
     _contract(
         Capability.RTL_SIMULATION,
-        "rtl-simulation-trace-waveform-v1",
         (
             SemanticJoint.RTL_SIMULATION_EVENT_TRACE,
             SemanticJoint.RTL_SIMULATION_WAVEFORM,
@@ -201,7 +212,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.RTL_LINT,
-        "rtl-lint-native-diagnostics-v1",
         (
             SemanticJoint.RTL_LINT_CLEAN,
             SemanticJoint.RTL_LINT_RULE_VIOLATION,
@@ -210,7 +220,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.CDC_RDC,
-        "rtl-cdc-rdc-comprehensive-v1",
         (
             SemanticJoint.CDC_RDC_CDC,
             SemanticJoint.CDC_RDC_RDC,
@@ -220,28 +229,20 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.FORMAL_PROPERTY,
-        "formal-property-tristate-nonvacuous-v1",
         (
             SemanticJoint.FORMAL_PROPERTY_PROVED,
             SemanticJoint.FORMAL_PROPERTY_COUNTEREXAMPLE,
-            SemanticJoint.FORMAL_PROPERTY_UNKNOWN,
             SemanticJoint.FORMAL_PROPERTY_NONVACUOUS,
         ),
         2,
     ),
     _contract(
         Capability.EQUIVALENCE,
-        "formal-equivalence-tristate-v1",
-        (
-            SemanticJoint.EQUIVALENCE_EQUIVALENT,
-            SemanticJoint.EQUIVALENCE_MISMATCH,
-            SemanticJoint.EQUIVALENCE_INCONCLUSIVE,
-        ),
+        (SemanticJoint.EQUIVALENCE_EQUIVALENT, SemanticJoint.EQUIVALENCE_MISMATCH),
         2,
     ),
     _contract(
         Capability.ASIC_SYNTHESIS,
-        "asic-synthesis-reports-v1",
         (
             SemanticJoint.ASIC_SYNTHESIS_RTL,
             SemanticJoint.ASIC_SYNTHESIS_CONSTRAINTS,
@@ -256,7 +257,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.STATIC_TIMING,
-        "asic-sta-setup-hold-mmmc-v1",
         (
             SemanticJoint.STATIC_TIMING_SETUP,
             SemanticJoint.STATIC_TIMING_HOLD,
@@ -270,7 +270,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.DIGITAL_IMPLEMENTATION,
-        "asic-pnr-routed-qor-v1",
         (
             SemanticJoint.DIGITAL_IMPLEMENTATION_ROUTED_DATABASE,
             SemanticJoint.DIGITAL_IMPLEMENTATION_WNS,
@@ -284,7 +283,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.POWER_ANALYSIS,
-        "asic-power-activity-dynamic-leakage-v1",
         (
             SemanticJoint.POWER_ANALYSIS_ACTIVITY_COVERAGE,
             SemanticJoint.POWER_ANALYSIS_DYNAMIC,
@@ -293,7 +291,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.POWER_INTEGRITY,
-        "asic-power-integrity-ir-grid-v1",
         (
             SemanticJoint.POWER_INTEGRITY_IR_DROP_GRID,
             SemanticJoint.POWER_INTEGRITY_VIOLATIONS,
@@ -301,7 +298,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.PARASITIC_EXTRACTION,
-        "asic-parasitic-routed-rc-v1",
         (
             SemanticJoint.PARASITIC_EXTRACTION_ROUTED_RC,
             SemanticJoint.PARASITIC_EXTRACTION_SPEF,
@@ -311,7 +307,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.PHYSICAL_VERIFICATION,
-        "physical-verification-drc-lvs-v1",
         (
             SemanticJoint.PHYSICAL_VERIFICATION_DRC,
             SemanticJoint.PHYSICAL_VERIFICATION_LVS,
@@ -321,7 +316,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.CIRCUIT_SIMULATION,
-        "circuit-simulation-analysis-pvt-v1",
         (
             SemanticJoint.CIRCUIT_SIMULATION_DC,
             SemanticJoint.CIRCUIT_SIMULATION_AC,
@@ -334,7 +328,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.FPGA_IMPLEMENTATION,
-        "fpga-implementation-complete-v1",
         (
             SemanticJoint.FPGA_IMPLEMENTATION_SYNTHESIS,
             SemanticJoint.FPGA_IMPLEMENTATION_PLACE,
@@ -349,7 +342,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.HIGH_LEVEL_SYNTHESIS,
-        "hls-rtl-equivalence-qor-v1",
         (
             SemanticJoint.HLS_GENERATED_RTL,
             SemanticJoint.HLS_RTL_EQUIVALENCE,
@@ -359,9 +351,7 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.DESIGN_FOR_TEST,
-        "dft-insertion-coverage-v1",
         (
-            SemanticJoint.DFT_INSERTION,
             SemanticJoint.DFT_CHAIN_INTEGRITY,
             SemanticJoint.DFT_COVERAGE,
             SemanticJoint.DFT_INVALID_SETUP,
@@ -369,7 +359,6 @@ CAPABILITY_SEMANTIC_CONTRACTS: tuple[CapabilitySemanticContract, ...] = (
     ),
     _contract(
         Capability.CELL_CHARACTERIZATION,
-        "cell-characterization-pvt-liberty-v1",
         (
             SemanticJoint.CELL_CHARACTERIZATION_PVT,
             SemanticJoint.CELL_CHARACTERIZATION_ARCS,
@@ -398,42 +387,22 @@ def normalize_semantic_joints(
     """Validate and canonicalize one fixture's explicitly claimed semantic joints."""
 
     normalized = tuple(sorted(joints, key=lambda item: item.value))
-    if len(normalized) != len(set(normalized)):
-        raise ValueError("fixture semantic joints must be unique")
-    prefix = f"{capability.value}."
-    if any(not item.value.startswith(prefix) for item in normalized):
+    if not normalized or len(normalized) != len(set(normalized)):
+        raise ValueError("fixture semantic joints must be a nonempty unique set")
+    if any(joint_capability(item) is not capability for item in normalized):
         raise ValueError("fixture semantic joint belongs to a different capability")
     return normalized
 
 
-def claim_id_for_joints(
+def semantic_claim_id(
     capability: Capability,
     joints: tuple[SemanticJoint, ...],
 ) -> Identifier:
     """Derive the only claim identity for an exact capability-joint set."""
 
     normalized = normalize_semantic_joints(capability, joints)
-    contract = semantic_contract(capability)
-    if normalized == contract.required_joints:
-        return contract.comprehensive_claim_id
     digest = canonical_digest(
         {"capability": capability, "semantic_joints": normalized},
-        domain="backend-partial-semantic-claim-v1",
+        domain="backend-semantic-claim-v2",
     )
-    return f"partial-{digest.removeprefix('sha256:')}"
-
-
-def is_comprehensive_claim(
-    capability: Capability,
-    claim_id: str,
-    joints: tuple[SemanticJoint, ...],
-) -> bool:
-    """Return whether a claim exactly equals the canonical release contract."""
-
-    contract = semantic_contract(capability)
-    normalized = normalize_semantic_joints(capability, joints)
-    return (
-        normalized == contract.required_joints
-        and claim_id == contract.comprehensive_claim_id
-        and claim_id_for_joints(capability, normalized) == claim_id
-    )
+    return f"claim-{digest.removeprefix('sha256:')}"

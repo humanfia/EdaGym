@@ -17,6 +17,7 @@ from edagym.drivers.model import BackendDefinition, BackendProbe, QualificationS
 from edagym.drivers.probe import (
     VERSION_PROBE_TIMEOUT_SECONDS,
     _module_environment,
+    eula_acceptance_required,
     probe_backend,
 )
 from edagym.executors.licenses import LeaseState, LicenseLease, LicenseProvider, LicenseUnavailable
@@ -140,9 +141,7 @@ class HostModuleLicenseProvider:
             try:
                 if not self._deployment_configuration.revalidate():
                     raise OSError("deployment configuration changed")
-                environment = _module_environment(
-                    self._deployment_configuration.module_name
-                )
+                environment = _module_environment(self._deployment_configuration.module_name)
             except (OSError, subprocess.SubprocessError, UnicodeError):
                 raise LicenseUnavailable("license environment is unavailable") from None
             self._counter += 1
@@ -329,7 +328,7 @@ class CommercialQualificationLicenseBroker:
         from edagym.drivers.catalog import backend_by_id
         from edagym.drivers.fixtures import fixture_for
 
-        if definition.workload_use_requires_eula_acceptance:
+        if eula_acceptance_required(definition, self._deployment_configuration):
             raise CommercialQualificationAuthorizationError(
                 "commercial workload use requires explicit EULA acceptance"
             )

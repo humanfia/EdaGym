@@ -1025,9 +1025,6 @@ class RunOrchestrator:
                 lease = None
             artifacts = self._record_execution_artifacts(context, plan, execution)
             result = self._interpret_result(evaluator, context, execution, artifacts)
-            if storage_lease is not None:
-                release_executor_storage(self.executor, storage_lease, plan.invocation_id)
-                storage_lease = None
             state = self._evaluation_completed(
                 candidate_id=candidate.candidate_id,
                 job_id=context.job_id,
@@ -1050,6 +1047,7 @@ class RunOrchestrator:
                 InfrastructureFailureOutcome(),
                 "artifact_quota_exceeded",
             )
+            evaluation_committed = True
             return self._end(StopReason.STORAGE_BUDGET)
         except (ArtifactIntegrityError, ArtifactPolicyViolation):
             if evaluation_committed:
@@ -1063,6 +1061,7 @@ class RunOrchestrator:
                 SecurityViolationOutcome(),
                 "artifact_policy_violation",
             )
+            evaluation_committed = True
             return self._end(StopReason.SECURITY_FAILURE)
         except Exception:
             if evaluation_committed:
@@ -1070,12 +1069,14 @@ class RunOrchestrator:
             if lease is not None:
                 self._release_license(context.job_id, lease)
                 lease = None
-            return self._abort_evaluation(
+            state = self._abort_evaluation(
                 context,
                 handle,
                 InfrastructureFailureOutcome(),
                 "execution_failed",
             )
+            evaluation_committed = True
+            return state
         finally:
             with self._active_lock:
                 if self._active_handle == handle:
@@ -1083,7 +1084,7 @@ class RunOrchestrator:
             if lease is not None:
                 with suppress(Exception):
                     self._release_license(context.job_id, lease)
-            if storage_lease is not None:
+            if storage_lease is not None and evaluation_committed:
                 release_executor_storage(self.executor, storage_lease, context.job_id)
 
     def _wait_for_terminal(self, handle: JobHandle) -> tuple[JobState, StopReason | None]:

@@ -11,6 +11,7 @@ from pytest import CaptureFixture
 
 from edagym.canonical import canonical_bytes
 from edagym.cli import main
+from edagym.config import initialize_config
 from edagym.participants import json_line_human_adapter_digest
 from edagym.specs.session import (
     HandoffWriter,
@@ -29,6 +30,20 @@ from tests.factories import (
 
 def _write_document(path: Path, value: object) -> None:
     path.write_bytes(canonical_bytes(value) + b"\n")
+
+
+def test_tool_qualification_requires_execution_evidence(
+    tmp_path: Path, capfd: CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "config.toml"
+    initialize_config(config_path, tmp_path / "state")
+    status = main(["--config", str(config_path), "tool", "qualify", "--profile", "default"])
+    output = json.loads(capfd.readouterr().out)
+    assert status != 0
+    assert output["status"] == "unavailable"
+    assert output["reasons"] == ["execution_qualification_required"]
+    assert str(tmp_path) not in json.dumps(output)
+    assert "config_digest" not in output
 
 
 def _documents(root: Path) -> dict[str, Path]:

@@ -15,7 +15,7 @@ import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, SupportsIndex
+from typing import Any, ClassVar, SupportsIndex
 
 from edagym.canonical import canonical_digest
 from edagym.drivers.closure import (
@@ -81,9 +81,58 @@ class AuthorizedBackendResolutionError(RuntimeError):
         super().__init__(f"authorized commercial resolution failed: {reason.value}")
 
 
+class _InspectionFailure:
+    """Why a version invocation produced no stable identity."""
+
+    VERSION_PROBE_FAILED: ClassVar[_InspectionFailure]
+    RUNTIME_DEPENDENCY_UNAVAILABLE: ClassVar[_InspectionFailure]
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __getitem__(self, index: int) -> None:
+        if index in (0, 1):
+            return None
+        raise IndexError(index)
+
+
+_InspectionFailure.VERSION_PROBE_FAILED = _InspectionFailure("version_probe_failed")
+_InspectionFailure.RUNTIME_DEPENDENCY_UNAVAILABLE = _InspectionFailure(
+    "runtime_dependency_unavailable"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _Inspection:
+    version_identity: bytes
+    executable_digest: str
+
+    def __getitem__(self, index: int) -> bytes | str:
+        if index == 0:
+            return self.version_identity
+        if index == 1:
+            return self.executable_digest
+        raise IndexError(index)
+
+
+_DYNAMIC_LOADER_FAILURE = b"error while loading shared libraries"
+
+
+def eula_acceptance_required(
+    definition: BackendDefinition,
+    configuration: BackendDeploymentConfiguration | None,
+) -> bool:
+    """Return whether running this backend still lacks the owner's license-agreement assent."""
+
+    return definition.workload_use_requires_eula_acceptance and (
+        configuration is None or not configuration.license_agreement_accepted
+    )
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class ResolvedInstallation:
     definition: BackendDefinition
+    tool_id: str
     module_name: str | None
     executable_name: str
     environment: dict[str, str]
@@ -123,7 +172,7 @@ class ResolvedInstallation:
     @property
     def deployment_attestation_digest(self) -> str:
         return deployment_attestation_digest(
-            tool_id=self.definition.tool_id,
+            tool_id=self.tool_id,
             driver_digest=self.definition.driver_digest,
             deployment_record_digest=self.deployment_record_digest,
             tool_version=self.version_label,
@@ -138,7 +187,7 @@ class ResolvedInstallation:
     def __repr__(self) -> str:
         return (
             "ResolvedInstallation("
-            f"tool_id={self.definition.tool_id!r}, "
+            f"tool_id={self.tool_id!r}, "
             f"version_label={self.version_label!r}, "
             "selection=<restricted>, environment=<restricted>)"
         )
@@ -250,6 +299,7 @@ def _resolve_rootless_image(
     version_label = _version_label(version_identity)
     return ResolvedInstallation(
         definition=definition,
+        tool_id=definition.tool_id,
         module_name=None,
         executable_name=executable_name,
         environment=dict(runtime.host_environment),
@@ -279,7 +329,7 @@ def resolve_authorized_commercial_backend(
 ) -> tuple[BackendProbe, ResolvedInstallation]:
     """Resolve and version a commercial tool only under an active opaque lease."""
 
-    if definition.workload_use_requires_eula_acceptance:
+    if eula_acceptance_required(definition, deployment_configuration):
         raise AuthorizedBackendResolutionError(
             AuthorizedBackendResolutionReason.EULA_ACCEPTANCE_REQUIRED
         )
@@ -483,15 +533,17 @@ def _resolve_module(
             definition.version_identity_pattern,
             accepted_exit_codes=definition.accepted_version_exit_codes,
         )
-        if inspection is None:
+        if isinstance(inspection, _InspectionFailure):
             continue
-        version_identity, executable_digest = inspection
+        version_identity = inspection.version_identity
+        executable_digest = inspection.executable_digest
         execution_closure = descriptor_execution_closure(executable, executable_digest)
         module_show = _module_show(module_name)
         modulefile_digest = _digest_bytes(module_show)
         version_label = _version_label(version_identity)
         return ResolvedInstallation(
             definition=definition,
+            tool_id=definition.tool_id,
             module_name=module_name,
             executable_name=executable_name,
             environment=environment,
@@ -572,6 +624,7 @@ def _resolve_authorized_environment(
         version_label = _version_label(version_identity)
         return ResolvedInstallation(
             definition=definition,
+            tool_id=definition.tool_id,
             module_name=module_name,
             executable_name=executable_name,
             environment=dict(runtime.tool_environment),
@@ -610,7 +663,7 @@ def _resolve_authorized_environment(
             accepted_exit_codes=definition.accepted_version_exit_codes,
         )
         execution_closure: ResolvedExecutionClosure | None = None
-        if inspection is None:
+        if isinstance(inspection, _InspectionFailure):
             trusted_executable = _trusted_immutable_executable(executable)
             if trusted_executable is not None:
                 execution_closure = trusted_path_execution_closure(trusted_executable)
@@ -622,11 +675,12 @@ def _resolve_authorized_environment(
                     accepted_exit_codes=definition.accepted_version_exit_codes,
                     trusted_path=True,
                 )
-        else:
-            trusted_executable = None
-        if inspection is None:
+        if isinstance(inspection, _InspectionFailure):
+            if inspection is _InspectionFailure.RUNTIME_DEPENDENCY_UNAVAILABLE:
+                missing_runtime_dependency = True
             continue
-        version_identity, executable_digest = inspection
+        version_identity = inspection.version_identity
+        executable_digest = inspection.executable_digest
         if execution_closure is None:
             execution_closure = descriptor_execution_closure(executable, executable_digest)
         elif execution_closure.evidence.entrypoint_digest != executable_digest:
@@ -634,6 +688,7 @@ def _resolve_authorized_environment(
         version_label = _version_label(version_identity)
         return ResolvedInstallation(
             definition=definition,
+            tool_id=definition.tool_id,
             module_name=module_name,
             executable_name=executable_name,
             environment=environment,
@@ -676,13 +731,15 @@ def _resolve_direct(
         definition.version_identity_pattern,
         accepted_exit_codes=definition.accepted_version_exit_codes,
     )
-    if inspection is None:
+    if isinstance(inspection, _InspectionFailure):
         return None
-    version_identity, executable_digest = inspection
+    version_identity = inspection.version_identity
+    executable_digest = inspection.executable_digest
     execution_closure = descriptor_execution_closure(executable, executable_digest)
     version_label = _version_label(version_identity)
     return ResolvedInstallation(
         definition=definition,
+        tool_id=definition.tool_id,
         module_name=None,
         executable_name=executable_name,
         environment=environment,
@@ -781,20 +838,23 @@ def _inspect_executable(
     *,
     accepted_exit_codes: tuple[int, ...],
     trusted_path: bool = False,
-) -> tuple[bytes, str] | None:
+) -> _Inspection | _InspectionFailure:
+    """Run the version command once and bind its stable identity to the executable bytes."""
+
+    failed = _InspectionFailure.VERSION_PROBE_FAILED
     if trusted_path:
         trusted_executable = _trusted_immutable_executable(executable)
         if trusted_executable is None:
-            return None
+            return failed
         executable = trusted_executable
     try:
         descriptor = os.open(executable, os.O_RDONLY | os.O_CLOEXEC)
     except OSError:
-        return None
+        return failed
     try:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode):
-            return None
+            return failed
         digest = hashlib.sha256()
         while chunk := os.read(descriptor, 1024 * 1024):
             digest.update(chunk)
@@ -840,36 +900,40 @@ def _inspect_executable(
                     except subprocess.TimeoutExpired:
                         _kill_process_group(process.pid)
                         process.wait()
-                        return None
+                        return failed
                 finally:
                     _kill_process_group(process.pid)
                     if process.poll() is None:
                         process.wait()
-            if exit_code not in accepted_exit_codes:
-                return None
             output_descriptor = os.open(
                 output_path,
                 os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
             try:
                 if not stat.S_ISREG(os.fstat(output_descriptor).st_mode):
-                    return None
+                    return failed
                 version = os.read(output_descriptor, _MAX_VERSION_OUTPUT_BYTES + 1)
             finally:
                 os.close(output_descriptor)
+            if exit_code not in accepted_exit_codes:
+                return (
+                    _InspectionFailure.RUNTIME_DEPENDENCY_UNAVAILABLE
+                    if _DYNAMIC_LOADER_FAILURE in version
+                    else failed
+                )
             if not version.strip() or len(version) > _MAX_VERSION_OUTPUT_BYTES:
-                return None
+                return failed
             version = _normalize_version_output(version, process.pid)
             version_identity = _version_identity(version, version_identity_pattern)
             if version_identity is None:
-                return None
+                return failed
             if trusted_path and _digest_regular_file(executable) != f"sha256:{digest.hexdigest()}":
-                return None
+                return failed
     except (OSError, subprocess.SubprocessError):
-        return None
+        return failed
     finally:
         os.close(descriptor)
-    return version_identity, f"sha256:{digest.hexdigest()}"
+    return _Inspection(version_identity, f"sha256:{digest.hexdigest()}")
 
 
 def _trusted_immutable_executable(path: Path) -> Path | None:
@@ -910,7 +974,11 @@ def _digest_bytes(value: bytes) -> str:
 
 
 def _version_label(output: bytes) -> str:
-    lines = [line.strip() for line in output.decode("utf-8", errors="replace").splitlines()]
+    """Project the first semantic identity line with all whitespace runs normalized."""
+
+    lines = [
+        " ".join(line.split()) for line in output.decode("utf-8", errors="replace").splitlines()
+    ]
     nonempty = [line for line in lines if line]
     semantic = next(
         (line for line in nonempty if any(character.isalnum() for character in line)),

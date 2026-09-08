@@ -135,3 +135,9 @@ difficulty belongs to the complete tuple of task instance, environment,
 participant and harness, feedback policy, and budget. Reports therefore retain
 success counts, evaluator funnel, first-success cost, compute time, license
 time, and artifact footprint instead of treating an author label as a score.
+
+Generated instances carry immutable lineage and `TaskQualificationEvidence`.
+Only an independently reference-passing instance with rejected semantic
+mutants, independent evidence digests, and tool-visibility evidence can enter
+a scoring matrix. The catalog is a registry of families and capabilities; it
+does not impose a fixed task count or a two-level difficulty model.

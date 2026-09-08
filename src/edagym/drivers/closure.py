@@ -18,12 +18,22 @@ from typing import Annotated, Any, Literal, Self, SupportsIndex
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
+from edagym.executors.podman import rootless_podman_command
 from edagym.specs.common import Digest, Identifier, StrictModel
+from edagym.specs.environment import FilesystemPolicy, FilesystemScope, ResourceLimits
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _MAX_SYMLINK_DEPTH = 32
-ROOTLESS_IMAGE_FILE_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
+ROOTLESS_IMAGE_PROBE_LIMITS = ResourceLimits(
+    cpu_millicores=4000,
+    memory_bytes=8 * 1024**3,
+    pids=512,
+    disk_bytes=64 * 1024**2,
+    wall_seconds=30,
+)
+ROOTLESS_IMAGE_FILE_SIZE_LIMIT_BYTES = ROOTLESS_IMAGE_PROBE_LIMITS.disk_bytes
+_ROOTLESS_SUPERVISOR_ENTRYPOINT = "/usr/bin/python3"
 
 
 class ExecutionClosureKind(StrEnum):
@@ -117,6 +127,8 @@ class SiteContainerExecutionClosure(StrictModel):
 
 
 class RootlessImageExecutionClosure(StrictModel):
+    """The immutable image closes dependencies; an inventory is additional evidence."""
+
     kind: Literal[ExecutionClosureKind.ROOTLESS_IMAGE] = ExecutionClosureKind.ROOTLESS_IMAGE
     requirement_id: Identifier
     requirement_digest: Digest
@@ -124,7 +136,7 @@ class RootlessImageExecutionClosure(StrictModel):
     launcher_symlink_chain_digest: Digest
     image_digest: Digest
     entrypoint_digest: Digest
-    package_manifest_digest: Digest
+    package_manifest_digest: Digest | None = None
 
 
 ExecutionClosure = Annotated[
@@ -383,8 +395,7 @@ class SiteContainerRuntime:
                 f"{name}={value}\n" for name, value in sorted(environment.items())
             ).encode("utf-8")
         return "".join(
-            f"export {name}={shlex.quote(value)}\n"
-            for name, value in sorted(environment.items())
+            f"export {name}={shlex.quote(value)}\n" for name, value in sorted(environment.items())
         ).encode("utf-8")
 
     def invocation_arguments(
@@ -440,23 +451,34 @@ class RootlessImageRuntime:
     image_digest: str
     tool_entrypoint: str
     tool_entrypoint_digest: str
-    package_manifest: bytes
-    package_manifest_digest: str
+    package_manifest: bytes | None = None
+    package_manifest_digest: str | None = None
+    supervisor_entrypoint: str = _ROOTLESS_SUPERVISOR_ENTRYPOINT
 
     def __post_init__(self) -> None:
         entrypoint = PurePosixPath(self.tool_entrypoint)
+        supervisor = PurePosixPath(self.supervisor_entrypoint)
         if (
             not self.engine_path.is_absolute()
             or not self.image_reference.endswith(f"@{self.image_digest}")
             or re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None
             or re.fullmatch(r"sha256:[0-9a-f]{64}", self.tool_entrypoint_digest) is None
-            or not self.package_manifest
-            or len(self.package_manifest) > 1024 * 1024
-            or f"sha256:{hashlib.sha256(self.package_manifest).hexdigest()}"
-            != self.package_manifest_digest
+            or (self.package_manifest is None) != (self.package_manifest_digest is None)
+            or (
+                self.package_manifest is not None
+                and (
+                    not self.package_manifest
+                    or len(self.package_manifest) > 1024 * 1024
+                    or f"sha256:{hashlib.sha256(self.package_manifest).hexdigest()}"
+                    != self.package_manifest_digest
+                )
+            )
             or not entrypoint.is_absolute()
             or any(part in {"", ".", ".."} for part in entrypoint.parts[1:])
             or "\x00" in self.tool_entrypoint
+            or not supervisor.is_absolute()
+            or any(part in {"", ".", ".."} for part in supervisor.parts[1:])
+            or "\x00" in self.supervisor_entrypoint
             or any(
                 not name
                 or "\x00" in name
@@ -484,12 +506,15 @@ class RootlessImageRuntime:
         self,
         workspace: Path,
         tool_arguments: tuple[str, ...],
+        *,
+        resources: ResourceLimits = ROOTLESS_IMAGE_PROBE_LIMITS,
     ) -> tuple[str, ...]:
         return rootless_image_arguments(
             workspace,
             self.image_reference,
             self.tool_entrypoint,
             tool_arguments,
+            resources=resources,
         )
 
     def revalidate_image(self) -> bool:
@@ -523,6 +548,8 @@ def rootless_image_arguments(
     image_reference: str,
     entrypoint: str,
     arguments: tuple[str, ...],
+    *,
+    resources: ResourceLimits = ROOTLESS_IMAGE_PROBE_LIMITS,
 ) -> tuple[str, ...]:
     """Compile the sole bounded rootless-image invocation."""
 
@@ -536,36 +563,22 @@ def rootless_image_arguments(
         or any("\x00" in item for item in arguments)
     ):
         raise ValueError("rootless-image invocation inputs are not bounded")
-    return (
-        "run",
-        "--rm",
-        "--pull=never",
-        "--network=none",
-        "--http-proxy=false",
-        "--read-only",
-        "--cap-drop=ALL",
-        "--security-opt=no-new-privileges",
-        "--userns=keep-id",
-        "--pids-limit=512",
-        "--memory=8g",
-        "--cpus=4",
-        "--ulimit=core=0:0",
-        (
-            "--ulimit=fsize="
-            f"{ROOTLESS_IMAGE_FILE_SIZE_LIMIT_BYTES}:"
-            f"{ROOTLESS_IMAGE_FILE_SIZE_LIMIT_BYTES}"
-        ),
-        "--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m",
-        f"--volume={workspace}:/workspace:rw,Z",
-        "--workdir=/workspace",
-        "--unsetenv-all",
-        "--env=PATH=/usr/local/bin:/usr/bin:/bin",
-        "--env=LANG=C.UTF-8",
-        "--env=LC_ALL=C.UTF-8",
-        f"--entrypoint={entrypoint}",
-        image_reference,
-        *arguments,
-    )
+    return rootless_podman_command(
+        podman_path=Path("/usr/bin/podman"),
+        resources=resources,
+        filesystem=FilesystemPolicy(workspace_target="/workspace", artifact_target="/artifacts"),
+        workspace=workspace,
+        artifact_directory=None,
+        asset_paths={},
+        scope=FilesystemScope.TOOL,
+        image=image_reference,
+        environment_fd=None,
+        executable=entrypoint,
+        arguments=arguments,
+        exact_entrypoint=True,
+        hermetic_process_environment=True,
+        private_staging=True,
+    )[1:]
 
 
 def site_container_arguments(
@@ -602,14 +615,11 @@ def site_container_arguments(
         )
         return (
             "run",
-            "--rm",
             "--pull=never",
             "--userns=keep-id",
             "--systemd=false",
             "--cgroups=disabled",
             "--sdnotify=ignore",
-            "--security-opt",
-            "label=disable",
             "--network=host",
             "--env-file",
             os.fspath(environment_file),
@@ -624,24 +634,24 @@ def site_container_arguments(
     if launcher_kind is not SiteContainerLauncherKind.SITE_WRAPPER:
         raise ValueError("unsupported site-container launcher kind")
     return (
-            "run",
-            "--os",
-            operating_system.value,
-            "--env",
-            os.fspath(environment_file),
-            "--workdir",
-            os.fspath(workspace),
-            "--network",
-            "yes",
-            "--",
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            'cd "$HOME/work" && exec "$@"',
-            "edagym-tool",
-            *command,
-        )
+        "run",
+        "--os",
+        operating_system.value,
+        "--env",
+        os.fspath(environment_file),
+        "--workdir",
+        os.fspath(workspace),
+        "--network",
+        "yes",
+        "--",
+        "/bin/bash",
+        "--noprofile",
+        "--norc",
+        "-c",
+        'cd "$HOME/work" && exec "$@"',
+        "edagym-tool",
+        *command,
+    )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -701,8 +711,7 @@ class ResolvedExecutionClosure:
                 or rootless_runtime.engine_path != self.entrypoint_path
                 or rootless_runtime.image_digest != self.evidence.image_digest
                 or rootless_runtime.tool_entrypoint_digest != self.evidence.entrypoint_digest
-                or rootless_runtime.package_manifest_digest
-                != self.evidence.package_manifest_digest
+                or rootless_runtime.package_manifest_digest != self.evidence.package_manifest_digest
             ):
                 raise ValueError("rootless-image closure evidence does not match its runtime")
             return
@@ -716,8 +725,7 @@ class ResolvedExecutionClosure:
             if role not in {"entrypoint", "tool_entrypoint", "image_inspector"}
         }
         expected_components = {
-            item.role: (item.digest, item.symlink_chain_digest)
-            for item in self.evidence.components
+            item.role: (item.digest, item.symlink_chain_digest) for item in self.evidence.components
         }
         if (
             runtime is None
@@ -726,15 +734,13 @@ class ResolvedExecutionClosure:
             or image_inspector is None
             or len(resolved_by_role) != len(self.files)
             or entrypoints[0].digest != self.evidence.launcher_digest
-            or entrypoints[0].symlink_chain_digest
-            != self.evidence.launcher_symlink_chain_digest
+            or entrypoints[0].symlink_chain_digest != self.evidence.launcher_symlink_chain_digest
             or image_inspector.path != runtime.engine_path
             or image_inspector.digest != self.evidence.image_inspector_digest
             or image_inspector.symlink_chain_digest
             != self.evidence.image_inspector_symlink_chain_digest
             or tool_entrypoint.digest != self.evidence.entrypoint_digest
-            or tool_entrypoint.symlink_chain_digest
-            != self.evidence.entrypoint_symlink_chain_digest
+            or tool_entrypoint.symlink_chain_digest != self.evidence.entrypoint_symlink_chain_digest
             or components != expected_components
             or runtime.operating_system is not self.evidence.operating_system
             or runtime.launcher_kind is not self.evidence.launcher_kind
@@ -840,10 +846,15 @@ def rootless_image_execution_closure(
     image_digest: str,
     tool_entrypoint: str,
     tool_entrypoint_digest: str,
-    package_manifest: bytes,
-    package_manifest_digest: str,
+    package_manifest: bytes | None = None,
+    package_manifest_digest: str | None = None,
+    supervisor_entrypoint: str = _ROOTLESS_SUPERVISOR_ENTRYPOINT,
 ) -> ResolvedExecutionClosure | None:
-    """Bind one root-owned runtime and immutable image to a tool entrypoint."""
+    """Bind one root-owned runtime and immutable image to a tool entrypoint.
+
+    A deployment may additionally supply a verified package inventory. The image
+    digest closes the runtime dependencies whether or not that inventory exists.
+    """
 
     launcher_digest = _regular_file_digest(engine)
     if launcher_digest is None or not _trusted_immutable_path(engine, executable=True):
@@ -858,6 +869,7 @@ def rootless_image_execution_closure(
         tool_entrypoint_digest=tool_entrypoint_digest,
         package_manifest=package_manifest,
         package_manifest_digest=package_manifest_digest,
+        supervisor_entrypoint=supervisor_entrypoint,
     )
     if not runtime.revalidate_image():
         return None

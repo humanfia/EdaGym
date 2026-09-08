@@ -8,6 +8,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
+from edagym.evaluation.model import OutcomeKind
 from edagym.specs.common import (
     Digest,
     Identifier,
@@ -72,9 +73,101 @@ class TaskInstanceIdentity(StrictModel):
         return self
 
 
+class QualificationStatus(StrEnum):
+    PENDING = "pending"
+    QUALIFIED = "qualified"
+    UNAVAILABLE = "unavailable"
+    REJECTED = "rejected"
+
+
+class TaskCanaryObservation(StrictModel):
+    """A trusted verifier receipt for one declared qualification candidate.
+
+    Runnable distinguishes an executed semantic counterexample from compilation
+    failure. The receipt digest refers to private execution and artifact evidence.
+    """
+
+    candidate_resource_id: Identifier
+    candidate_content_digest: Digest
+    outcome: OutcomeKind
+    runnable: bool
+    evidence_digest: Digest
+
+
+class TaskQualificationEvidence(StrictModel):
+    """Immutable admission evidence attached to one generated task instance."""
+
+    status: QualificationStatus
+    task_spec_digest: Digest | None = None
+    observations: tuple[TaskCanaryObservation, ...] = ()
+    independent_evidence_digests: tuple[Digest, ...] = ()
+    tool_visibility_digest: Digest | None = None
+    reference_evidence_digest: Digest | None = None
+    verifier_evidence_digest: Digest | None = None
+    reason: str | None = None
+
+    @field_validator("independent_evidence_digests")
+    @classmethod
+    def normalize_evidence_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("qualification evidence identifiers must be unique")
+        return tuple(sorted(value))
+
+    @field_validator("observations")
+    @classmethod
+    def normalize_observations(
+        cls, value: tuple[TaskCanaryObservation, ...]
+    ) -> tuple[TaskCanaryObservation, ...]:
+        identifiers = [item.candidate_resource_id for item in value]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("qualification candidates must have unique receipts")
+        return tuple(sorted(value, key=lambda item: item.candidate_resource_id))
+
+    @model_validator(mode="after")
+    def validate_status(self) -> Self:
+        if self.status is QualificationStatus.QUALIFIED and (
+            self.task_spec_digest is None
+            or not self.observations
+            or not self.independent_evidence_digests
+            or self.tool_visibility_digest is None
+            or self.reference_evidence_digest is None
+            or self.verifier_evidence_digest is None
+        ):
+            raise ValueError("qualified instances require complete independent evidence")
+        if self.status is QualificationStatus.UNAVAILABLE and not self.reason:
+            raise ValueError("unavailable qualification requires a reason")
+        return self
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self, domain="task-qualification-evidence-v1")
+
+
+class TaskLineage(StrictModel):
+    """Stable generator and split identity used for deduplication and pairing."""
+
+    lineage_id: Identifier
+    base_design_id: Identifier
+    generator_revision: Annotated[int, Field(strict=True, ge=1)]
+    split: Literal["development", "calibration", "confirmatory_holdout"]
+    mechanism_ids: tuple[Identifier, ...]
+
+    @field_validator("mechanism_ids")
+    @classmethod
+    def normalize_mechanisms(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or len(value) != len(set(value)):
+            raise ValueError("task lineage requires unique mechanism identifiers")
+        return tuple(sorted(value))
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self, domain="task-lineage-v1")
+
+
 class GeneratedFile(StrictModel):
     path: str
     content_digest: Digest
+    size_bytes: Annotated[int, Field(strict=True, ge=0)] | None = None
     media_type: Annotated[str, Field(min_length=1, max_length=120)]
     source_resource_ids: tuple[Identifier, ...] = ()
     visibility: Visibility
@@ -109,6 +202,10 @@ class TaskInstance(StrictModel):
     schema_version: SchemaVersion = 1
     identity: TaskInstanceIdentity
     generated_files: tuple[GeneratedFile, ...]
+    lineage: TaskLineage | None = None
+    reference_bundle_digest: Digest | None = None
+    verifier_bundle_digest: Digest | None = None
+    qualification: TaskQualificationEvidence | None = None
 
     @field_validator("generated_files")
     @classmethod
@@ -124,7 +221,12 @@ class TaskInstance(StrictModel):
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self, domain="task-instance-v1")
+        # Omit optional migration fields when absent so legacy instances keep
+        # their identity; generated instances with lineage/qualification get
+        # a new, explicitly bound identity.
+        return canonical_digest(
+            self.model_dump(mode="json", exclude_none=True), domain="task-instance-v1"
+        )
 
 
 class MutantQualification(StrictModel):

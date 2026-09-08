@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 
-from edagym.specs.environment import EnvironmentSpec, FilesystemScope
+from edagym.specs.environment import FilesystemPolicy, FilesystemScope, ResourceLimits
 
 _ENTRYPOINT = re.compile(
     r"^(?:/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9][A-Za-z0-9._+-]*|"
@@ -23,6 +23,11 @@ class RootlessControlFile(StrEnum):
     COMPOSITE_SUPERVISOR = "composite_supervisor"
 
 
+class PodmanCommand(StrEnum):
+    RUN = "run"
+    CREATE = "create"
+
+
 ROOTLESS_CONTROL_TARGETS = MappingProxyType(
     {
         RootlessControlFile.COMPOSITE_RECIPE: "/run/edagym-control/recipe.json",
@@ -31,10 +36,20 @@ ROOTLESS_CONTROL_TARGETS = MappingProxyType(
 )
 
 
+def rootless_resources_supported(resources: ResourceLimits) -> bool:
+    """Resource admission and launch share the available enforcement mechanisms."""
+
+    return (
+        resources.io_read_bytes_per_second is None
+        and resources.io_write_bytes_per_second is None
+    )
+
+
 def rootless_podman_command(
     *,
     podman_path: Path,
-    environment: EnvironmentSpec,
+    resources: ResourceLimits,
+    filesystem: FilesystemPolicy,
     workspace: Path,
     artifact_directory: Path | None,
     temporary_directory: Path | None = None,
@@ -51,16 +66,18 @@ def rootless_podman_command(
     exact_entrypoint: bool = False,
     hermetic_process_environment: bool = False,
     control_files: Mapping[RootlessControlFile, Path] | None = None,
+    command_kind: PodmanCommand = PodmanCommand.RUN,
+    cidfile: Path | None = None,
+    private_staging: bool = False,
 ) -> tuple[str, ...]:
     """Derive the sole rootless container command from resolved policy."""
 
-    resources = environment.resources
-    filesystem = environment.filesystem
+    if not rootless_resources_supported(resources):
+        raise ValueError("rootless device IO limit enforcement is unavailable")
     cpu_limit = f"{resources.cpu_millicores // 1000}.{resources.cpu_millicores % 1000:03d}"
     command = [
         os.fspath(podman_path),
-        "run",
-        "--rm",
+        command_kind.value,
         "--pull=never",
         "--network=none",
         "--http-proxy=false",
@@ -72,14 +89,19 @@ def rootless_podman_command(
         "--image-volume=ignore",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
-        "--security-opt=label=disable",
         "--userns=keep-id:uid=0,gid=0",
         f"--pids-limit={resources.pids}",
         f"--memory={resources.memory_bytes}",
         f"--cpus={cpu_limit}",
+        f"--timeout={resources.wall_seconds}",
         "--ulimit=core=0:0",
         f"--ulimit=fsize={resources.disk_bytes}:{resources.disk_bytes}",
-        _volume_argument(workspace, filesystem.workspace_target, readonly=False),
+        _volume_argument(
+            workspace,
+            filesystem.workspace_target,
+            readonly=False,
+            extra_options=("Z",) if private_staging else (),
+        ),
     ]
     if temporary_directory is None:
         command.append("--tmpfs=/tmp:rw,noexec,nosuid,nodev,size=64m")
@@ -103,6 +125,12 @@ def rootless_podman_command(
         )
     if interactive:
         command.append("--interactive")
+    if cidfile is not None:
+        if not cidfile.is_absolute() or any(
+            character in os.fspath(cidfile) for character in "\x00\n\r"
+        ):
+            raise ValueError("container receipt requires an absolute safe path")
+        command.append(f"--cidfile={cidfile}")
     if container_name is not None:
         command.append(f"--name={container_name}")
     for name, value in sorted((container_labels or {}).items()):

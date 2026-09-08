@@ -120,8 +120,8 @@ BACKENDS: tuple[BackendDefinition, ...] = (
         "klayout",
         Vendor.OPEN_SOURCE,
         (Capability.PHYSICAL_VERIFICATION,),
-        ("edagym-klayout-db",),
-        ("--version",),
+        ("klayout",),
+        ("-v",),
         (Capability.PHYSICAL_VERIFICATION,),
     ),
     _definition(

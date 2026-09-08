@@ -28,9 +28,7 @@ _MAX_LOG_BYTES = 128 * 1024
 _MAX_REPORT_BYTES = 64 * 1024
 _MAX_ASC_BYTES = 1024 * 1024
 _NORMAL_COMPLETION = "Info: Program finished normally."
-_LC_UTILIZATION = re.compile(
-    r"(?m)^Info:\s+ICESTORM_LC:\s+([0-9]+)/\s*([0-9]+)\s+([0-9]+)%$"
-)
+_LC_UTILIZATION = re.compile(r"(?m)^Info:\s+ICESTORM_LC:\s+([0-9]+)/\s*([0-9]+)\s+([0-9]+)%$")
 _FMAX = re.compile(
     r"(?m)^Info: Max frequency for clock '[^'\r\n]+': "
     r"([0-9]+(?:\.[0-9]+)?) MHz \(PASS at 12\.00 MHz\)$"
@@ -210,8 +208,7 @@ class NextpnrIce40Parser:
         if (
             log is None
             or _NORMAL_COMPLETION in log
-            or self._utilization(log)
-            != (_REJECTION_LC_USAGE, _DEVICE_LC_CAPACITY, 100)
+            or self._utilization(log) != (_REJECTION_LC_USAGE, _DEVICE_LC_CAPACITY, 100)
             or len(_CAPACITY_FAILURE.findall(log)) != 1
             or _FMAX.search(log) is not None
         ):

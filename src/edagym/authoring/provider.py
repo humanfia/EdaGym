@@ -34,7 +34,6 @@ from edagym.policy.private_roots import (
 from edagym.specs.common import (
     Digest,
     Identifier,
-    JcsNonNegativeInt,
     JcsPositiveInt,
     SchemaVersion,
     StrictModel,
@@ -50,6 +49,7 @@ from edagym.specs.release import (
 from edagym.specs.task import TaskSpec
 from edagym.task_families.catalog import (
     PUBLIC_TASK_CATALOG_DIGEST,
+    DifficultyValue,
     TaskFamilyDefinition,
     TaskRoot,
     families_for_root,
@@ -273,7 +273,7 @@ class OpaqueCatalogReference(StrictModel):
 
 class DifficultyBinding(StrictModel):
     parameter_id: Identifier
-    value: JcsNonNegativeInt
+    value: DifficultyValue
 
 
 def _difficulty_for_instance(
@@ -285,7 +285,7 @@ def _difficulty_for_instance(
     return tuple(
         DifficultyBinding(
             parameter_id=axis.axis_id,
-            value=axis.base_value if instance_name == "base" else axis.advanced_value,
+            value=axis.value_for(instance_name),
         )
         for axis in metadata.difficulty_axes
     )

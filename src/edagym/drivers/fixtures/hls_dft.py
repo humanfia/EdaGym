@@ -189,9 +189,7 @@ class VitisHlsParser:
         )
         if len(rows) != 1 or rows[0][0] != "Pass":
             return None
-        cosimulation_latency = tuple(
-            _unsigned(value, maximum=1_000_000) for value in rows[0][1:4]
-        )
+        cosimulation_latency = tuple(_unsigned(value, maximum=1_000_000) for value in rows[0][1:4])
         total_cycles = _unsigned(rows[0][-1], maximum=1_000_000)
         if (
             any(value is None for value in cosimulation_latency)
@@ -209,8 +207,7 @@ class VitisHlsParser:
     def accepts(self, observation: FixtureObservation) -> bool:
         metrics = self._metrics(observation)
         return metrics is not None and (
-            metrics[0] <= self.maximum_latency_cycles
-            and metrics[1] >= self.acceptance_minimum_dsps
+            metrics[0] <= self.maximum_latency_cycles and metrics[1] >= self.acceptance_minimum_dsps
         )
 
     def rejection(
@@ -219,8 +216,7 @@ class VitisHlsParser:
     ) -> SemanticRejectionReason | None:
         metrics = self._metrics(observation)
         if metrics is not None and (
-            metrics[0] > self.maximum_latency_cycles
-            and metrics[1] <= self.rejection_maximum_dsps
+            metrics[0] > self.maximum_latency_cycles and metrics[1] <= self.rejection_maximum_dsps
         ):
             return SemanticRejectionReason.IMPLEMENTATION_CONSTRAINT_VIOLATION
         return None
@@ -245,9 +241,7 @@ class VitisHlsParser:
             ),
             "resource_metrics": ("BRAM_18K", "DSP", "FF", "LUT", "URAM"),
             "equivalence_result": "native_c_rtl_cosimulation_pass",
-            "rejection_reason": (
-                SemanticRejectionReason.IMPLEMENTATION_CONSTRAINT_VIOLATION
-            ),
+            "rejection_reason": (SemanticRejectionReason.IMPLEMENTATION_CONSTRAINT_VIOLATION),
         }
 
 
@@ -364,4 +358,3 @@ VITIS_HLS_SYNTHESIS = QualificationFixture(
     ),
     log_projection=MarkerLogProjection((_VITIS_COMPLETION_MARKER,)),
 )
-

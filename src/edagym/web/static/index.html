@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>EdaGym workspace</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">E</span><div><h1>EdaGym</h1><p>Controlled EDA practice workspace</p></div></div>
+    <div class="session-chip"><label for="token-input">Session token</label><input id="token-input" type="password" autocomplete="off" placeholder="Paste token"><button id="connect" class="button secondary" type="button">Connect</button><span class="dot" aria-hidden="true"></span><span id="principal">Disconnected</span></div>
+  </header>
+  <main>
+    <nav class="tabs" aria-label="Workspace views">
+      <button class="tab active" data-view="tasks" type="button">Task catalog</button>
+      <button class="tab" data-view="runs" type="button">Run workspace</button>
+      <button class="tab" data-view="evidence" type="button">Evidence &amp; reports</button>
+    </nav>
+    <section id="tasks" class="view" data-panel>
+      <div class="view-heading"><div><p class="eyebrow">Authoring</p><h2>Task catalog</h2><p class="muted">Browse qualified task families and start a controlled run.</p></div><label class="search"><span class="sr-only">Filter tasks</span><input id="task-filter" type="search" placeholder="Filter by family or capability"></label></div>
+      <div id="task-list" class="task-grid" aria-live="polite"><div class="loading">Loading task catalog</div></div>
+    </section>
+    <section id="runs" class="view" data-panel hidden>
+      <div class="view-heading"><div><p class="eyebrow">Control plane</p><h2>Run workspace</h2><p class="muted">Every action is recorded in the run journal.</p></div><button class="button secondary" id="refresh-runs" type="button">Refresh runs</button></div>
+      <div id="run-list" class="run-layout" aria-live="polite"><div class="empty">No runs yet. Start one from the task catalog.</div></div>
+    </section>
+    <section id="evidence" class="view" data-panel hidden>
+      <div class="view-heading"><div><p class="eyebrow">Read-only projection</p><h2>Evidence &amp; reports</h2><p class="muted">Only artifacts permitted by the current participant view are shown.</p></div></div>
+      <div id="evidence-view" class="evidence-layout"><div class="empty">Select a run to inspect its event evidence.</div></div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

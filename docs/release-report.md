@@ -189,3 +189,10 @@ and stdout, stderr, and manifest blobs in the exact CAS; status is derived from
 those facts and the CAS closure is rechecked during report projection. Output
 bytes, commercial diagnostics, credentials, and private paths do not enter the
 report.
+
+Public export is an allowlisted projection of qualified benchmark evidence. It
+may include opaque task IDs, aggregate rates, intervals, sample counts, and
+failure classes, while private paths, tool and library inventories, image and
+configuration digests, credentials, raw transcripts, and holdout verifier
+materials remain outside the release. A report with unavailable station or
+insufficient statistical information is explicitly marked incomplete.

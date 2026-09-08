@@ -502,8 +502,8 @@ class ReleaseReport(StrictModel):
         expected_coverage = _backend_coverage(self.backends)
         if self.backend_coverage != expected_coverage:
             raise ValueError("backend release coverage must be derived from qualifications")
-        if len(self.flows) != 12:
-            raise ValueError("release report requires exactly twelve flow families")
+        if not self.flows:
+            raise ValueError("release report requires at least one qualified flow family")
         if any(
             item.catalog_attestation_digest != self.flow_catalog_attestation_digest
             for item in self.flows
@@ -785,7 +785,7 @@ def _flow_evidence(
         if item.root is TaskRoot.EDA_FLOW
     }
     if (
-        len(flow_families) != 12
+        not flow_families
         or catalog.public_catalog_digest != public_catalog.digest
         or catalog.attestation != catalog_attestation
         or set(catalog.families) != set(flow_families)
@@ -805,12 +805,14 @@ def _flow_evidence(
     documents: dict[str, DerivedTaskDocument] = {}
     for document in task_documents:
         reference = document.instance_reference
+        family_definition = flow_families.get(reference.family)
         if (
             reference.capability is not PrivateAuthoringCapability.EDA_FLOW_CATALOG
-            or reference.instance_name != "base"
+            or family_definition is None
+            or reference.instance_name not in family_definition.instance_names
             or reference.family in documents
         ):
-            raise ValueError("flow release sources require one base document per family")
+            raise ValueError("flow release sources require one declared instance per family")
         documents[reference.family] = document
     if set(documents) != set(flow_families):
         raise ValueError("flow task documents must exactly cover public flow metadata")
@@ -895,7 +897,7 @@ def _flow_evidence(
             or release.participant_bundle_digest != reference.participant_bundle_digest
             or release.verifier_bundle_digest != reference.verifier_bundle_digest
             or instance_evidence.family != family
-            or instance_evidence.instance_name != "base"
+            or instance_evidence.instance_name not in metadata.instance_names
             or instance_evidence.task_spec_digest != task.digest
             or instance_evidence.task_instance_digest != instance.digest
             or instance_evidence.release_digest != release.digest

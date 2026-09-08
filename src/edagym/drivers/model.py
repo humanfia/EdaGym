@@ -118,10 +118,7 @@ class BackendDefinition(StrictModel):
             or len(value) != len(set(value))
             or tuple(sorted(value)) != value
             or any(
-                isinstance(code, bool)
-                or not isinstance(code, int)
-                or code < 0
-                or code > 255
+                isinstance(code, bool) or not isinstance(code, int) or code < 0 or code > 255
                 for code in value
             )
         ):

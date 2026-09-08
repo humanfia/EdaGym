@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import stat
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from contextlib import suppress
 from enum import StrEnum
 from pathlib import Path
@@ -74,8 +75,10 @@ from edagym.executors.model import (
 )
 from edagym.executors.podman import (
     ROOTLESS_CONTROL_TARGETS,
+    PodmanCommand,
     RootlessControlFile,
     rootless_podman_command,
+    rootless_resources_supported,
 )
 from edagym.executors.rootless_storage import (
     RootlessStorageLease,
@@ -166,7 +169,7 @@ class RootlessContainerExecutor:
         for tool_id, installation in self._installations.items():
             runtime = installation.execution_closure.rootless_image_runtime
             if (
-                tool_id != installation.definition.tool_id
+                tool_id != installation.tool_id
                 or installation.executable_invocation_mode
                 is not ExecutableInvocationMode.ROOTLESS_IMAGE
                 or runtime is None
@@ -335,9 +338,12 @@ class RootlessContainerExecutor:
             {asset_id: snapshot.path for asset_id, snapshot in asset_snapshots.items()}
         )
         selected = self._installations_for_environment(environment)
+        image_runtime = next(iter(selected.values())).execution_closure.rootless_image_runtime
+        assert image_runtime is not None
         transients: tuple[_PrivateTransientFile, ...] = ()
         environment_fd: int | None = None
         runtime_descriptor: int | None = None
+        container_created = False
         try:
             control_files: Mapping[RootlessControlFile, Path] | None = None
             arguments: tuple[str, ...]
@@ -362,7 +368,7 @@ class RootlessContainerExecutor:
                         RootlessControlFile.COMPOSITE_RECIPE: recipe_file.path,
                     }
                 )
-                executable = "/usr/bin/python3"
+                executable = image_runtime.supervisor_entrypoint
                 arguments = (
                     ROOTLESS_CONTROL_TARGETS[RootlessControlFile.COMPOSITE_SUPERVISOR],
                     ROOTLESS_CONTROL_TARGETS[RootlessControlFile.COMPOSITE_RECIPE],
@@ -385,13 +391,11 @@ class RootlessContainerExecutor:
                 self._runtime.engine_path,
                 runtime_evidence.executable_digest,
             )
-            image_runtime = next(iter(selected.values())).execution_closure.rootless_image_runtime
-            if image_runtime is None:
-                raise ExecutorUnavailable("rootless image runtime disappeared")
             runtime_path = Path(f"/proc/self/fd/{runtime_descriptor}")
             podman_command = rootless_podman_command(
                 podman_path=runtime_path,
-                environment=environment,
+                resources=environment.resources,
+                filesystem=environment.filesystem,
                 workspace=workspace,
                 artifact_directory=artifact_directory,
                 temporary_directory=(
@@ -414,8 +418,10 @@ class RootlessContainerExecutor:
                     )
                 },
                 control_files=control_files,
+                command_kind=PodmanCommand.CREATE,
+                cidfile=self._container_receipt_path(plan.invocation_id),
             )
-            command = (
+            create_command = (
                 os.fspath(LOCAL_ENV_PATH),
                 "--argv0=/usr/bin/podman",
                 *podman_command,
@@ -434,33 +440,23 @@ class RootlessContainerExecutor:
                 pass_fds += (environment_fd,)
             process_environment = self._runtime.host_environment
             parent_launch_digest: Digest | None = None
-            pre_spawn_validator: Callable[
-                [tuple[str, ...], Mapping[str, str], tuple[int, ...]],
-                None,
-            ] | None = None
-            if synthetic_claim is not None:
-                process_environment = synthetic_claim._parent_environment(
-                    process_environment
-                )
-
-                def validate_parent_launch(
-                    parent_argv: tuple[str, ...],
-                    launched_environment: Mapping[str, str],
-                    inherited_descriptors: tuple[int, ...],
-                ) -> None:
-                    nonlocal parent_launch_digest
-                    if parent_launch_digest is not None:
-                        raise ExecutorUnavailable(
-                            "synthetic parent launch was validated more than once"
-                        )
-                    parent_launch_digest = synthetic_claim._validate_parent_launch(
-                        process_environment=launched_environment,
-                        parent_argv=parent_argv,
-                        container_argv=command,
-                        pass_fds=inherited_descriptors,
-                    )
-
-                pre_spawn_validator = validate_parent_launch
+            parent_launch_digest = self._create_container(
+                command=create_command,
+                process_environment=process_environment,
+                workspace=workspace,
+                pass_fds=pass_fds,
+                invocation_id=plan.invocation_id,
+                synthetic_claim=synthetic_claim,
+            )
+            container_created = True
+            command = (
+                os.fspath(LOCAL_ENV_PATH),
+                "--argv0=/usr/bin/podman",
+                os.fspath(runtime_path),
+                "start",
+                "--attach",
+                _container_name(self.executor_id, plan.invocation_id),
+            )
             handle = self._manager.launch_command(
                 plan=plan,
                 environment=environment,
@@ -474,12 +470,14 @@ class RootlessContainerExecutor:
                 post_execution_validators=tuple(
                     installation.execution_closure.revalidate for installation in selected.values()
                 ),
-                pre_spawn_validator=pre_spawn_validator,
             )
             if synthetic_claim is not None and parent_launch_digest is None:
                 raise ExecutorUnavailable("synthetic parent launch was not observed")
             return handle, parent_launch_digest
         except BaseException:
+            if container_created:
+                with suppress(Exception):
+                    self._remove_container(plan.invocation_id)
             _remove_private_transient_files(
                 transients,
                 self._manager.job_state_root,
@@ -498,6 +496,7 @@ class RootlessContainerExecutor:
         return self._manager.cancel(handle)
 
     def collect(self, handle: JobHandle) -> ExecutionResult:
+        # The caller commits the result before abandon releases the container.
         return self._manager.collect(handle)
 
     def abandon(self, invocation_id: str) -> None:
@@ -692,8 +691,7 @@ class RootlessContainerExecutor:
             or executor.runtime_probe_digest != runtime.version_output_digest
             or executor.image_digest not in self._capability.image_digests
             or not isinstance(environment.network, NoNetwork)
-            or environment.resources.io_read_bytes_per_second is not None
-            or environment.resources.io_write_bytes_per_second is not None
+            or not rootless_resources_supported(environment.resources)
         ):
             raise ExecutorUnavailable("environment does not bind this rootless executor")
         return executor
@@ -745,12 +743,17 @@ class RootlessContainerExecutor:
         if not selected:
             raise ExecutorUnavailable("rootless environment has no resolved tools")
         references = {
-            installation.execution_closure.rootless_image_runtime.image_reference
+            (
+                installation.execution_closure.rootless_image_runtime.image_reference,
+                installation.execution_closure.rootless_image_runtime.supervisor_entrypoint,
+            )
             for installation in selected.values()
             if installation.execution_closure.rootless_image_runtime is not None
         }
         if len(references) != 1:
-            raise ExecutorUnavailable("rootless environment has multiple image owners")
+            raise ExecutorUnavailable(
+                "rootless environment has inconsistent image or supervisor bindings"
+            )
         return MappingProxyType(selected)
 
     def _require_plan_installation(
@@ -799,7 +802,10 @@ class RootlessContainerExecutor:
                     raise ExecutorUnavailable(
                         "rootless composite command has a stale tool attestation"
                     )
-                executable = command.executable
+                assert installation is not None
+                runtime = installation.execution_closure.rootless_image_runtime
+                assert runtime is not None
+                executable = runtime.tool_entrypoint
             elif isinstance(command, WorkspaceRecipeCommand):
                 executable = command.executable
             else:
@@ -818,7 +824,6 @@ class RootlessContainerExecutor:
             )
         return {
             "schema_version": 1,
-            "tool_resolution": "fixed_image_path",
             "commands": commands,
         }
 
@@ -827,6 +832,7 @@ class RootlessContainerExecutor:
         expected_owner = _container_owner(self.executor_id, invocation_id)
         exists = self._run_podman("container", "exists", name)
         if exists.returncode == 1:
+            self._remove_container_receipt(invocation_id)
             return
         if exists.returncode != 0:
             raise ExecutorUnavailable("container recovery state is unavailable")
@@ -846,11 +852,124 @@ class RootlessContainerExecutor:
         while time.monotonic() < deadline:
             exists = self._run_podman("container", "exists", name)
             if exists.returncode == 1:
+                self._remove_container_receipt(invocation_id)
                 return
             if exists.returncode != 0:
                 raise ExecutorUnavailable("container recovery state is unavailable")
             time.sleep(_QUIESCENCE_POLL_SECONDS)
         raise ExecutorUnavailable("container recovery did not become quiescent")
+
+    def _container_receipt_path(self, invocation_id: str) -> Path:
+        normalized = _IDENTIFIER_ADAPTER.validate_python(invocation_id)
+        return self._manager.job_state_root / f"{normalized}.cid"
+
+    def _create_container(
+        self,
+        *,
+        command: tuple[str, ...],
+        process_environment: Mapping[str, str],
+        workspace: Path,
+        pass_fds: tuple[int, ...],
+        invocation_id: str,
+        synthetic_claim: _SyntheticPreflightLaunchClaim | None,
+    ) -> Digest | None:
+        receipt = self._container_receipt_path(invocation_id)
+        if receipt.exists() or receipt.is_symlink():
+            raise ExecutorUnavailable("container receipt already exists and requires recovery")
+        parent_launch_digest = None
+        if synthetic_claim is not None:
+            process_environment = synthetic_claim._parent_environment(process_environment)
+            parent_launch_digest = synthetic_claim._validate_parent_launch(
+                process_environment=process_environment,
+                parent_argv=command,
+                container_argv=command,
+                pass_fds=pass_fds,
+            )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=workspace,
+                env=process_environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                pass_fds=pass_fds,
+                timeout=_CONTROL_PLANE_TIMEOUT_SECONDS,
+                check=False,
+                umask=0o077,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise ExecutorUnavailable("container creation control is unavailable") from None
+        if completed.returncode != 0:
+            raise ExecutorUnavailable("container creation was rejected")
+        self._verify_container_receipt(invocation_id)
+        return parent_launch_digest
+
+    def _verify_container_receipt(self, invocation_id: str) -> None:
+        receipt = self._container_receipt_path(invocation_id)
+        _require_private_directory(receipt.parent)
+        try:
+            descriptor = os.open(
+                receipt, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+            )
+        except OSError:
+            raise ExecutorUnavailable("container creation produced no receipt") from None
+        try:
+            metadata = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.getuid()
+                or stat.S_IMODE(metadata.st_mode) & 0o022
+                or metadata.st_nlink != 1
+                or metadata.st_size != 64
+            ):
+                raise ExecutorUnavailable("container receipt is unsafe or malformed")
+            content = os.read(descriptor, 65)
+            if re.fullmatch(rb"[0-9a-f]{64}", content) is None:
+                raise ExecutorUnavailable("container receipt has no complete container ID")
+            container_id = content.decode("ascii")
+            # Podman chooses its own receipt mode. The enclosing controller
+            # directory is already private; seal the verified file before use.
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        parent = os.open(receipt.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        expected_owner = _container_owner(self.executor_id, invocation_id)
+        inspected = self._run_podman(
+            "container",
+            "inspect",
+            "--format",
+            f'{{{{.Id}}}} {{{{ index .Config.Labels "{_CONTAINER_OWNER_LABEL}" }}}}',
+            _container_name(self.executor_id, invocation_id),
+        )
+        if (
+            inspected.returncode != 0
+            or inspected.stdout.strip() != f"{container_id} {expected_owner}"
+        ):
+            raise ExecutorUnavailable("container receipt does not prove invocation ownership")
+
+    def _remove_container_receipt(self, invocation_id: str) -> None:
+        receipt = self._container_receipt_path(invocation_id)
+        try:
+            metadata = receipt.lstat()
+        except FileNotFoundError:
+            return
+        except OSError:
+            raise ExecutorUnavailable("container receipt cannot be inspected") from None
+        if (
+            receipt.is_symlink()
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
+            raise ExecutorUnavailable("container receipt cannot be removed safely")
+        receipt.unlink()
 
     def _run_podman(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         descriptor: int | None = None
@@ -900,7 +1019,7 @@ def _installation_matches(
     runtime = installation.execution_closure.rootless_image_runtime
     return (
         runtime is not None
-        and installation.definition.tool_id == binding.tool_id
+        and installation.tool_id == binding.tool_id
         and binding.capability in installation.definition.capabilities
         and installation.definition.driver_digest == binding.driver_digest
         and installation.version_label == binding.tool_version

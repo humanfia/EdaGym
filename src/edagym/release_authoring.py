@@ -63,19 +63,21 @@ class AuthoringCatalogEvidence(StrictModel):
 
     @model_validator(mode="after")
     def validate_complete_catalog(self) -> Self:
-        if (
-            len(self.families) != 20
-            or len(self.clean_room_family_projection_digests) != 20
-            or len(self.task_spec_digests) != 20
-            or len(self.instance_digests) != 40
-            or len(self.release_digests) != 40
-            or len(self.qualification_digests) != 40
-            or len(self.qualification_request_digests) != 40
-        ):
-            raise ValueError("authoring evidence requires every Sail base and advanced release")
-        expected_counts = EvidenceCounts(passed=40, failed=0, unavailable=0, total=40)
+        if len(self.families) != len(self.clean_room_family_projection_digests):
+            raise ValueError("authoring evidence must cover every registered family")
+        release_counts = (
+            len(self.instance_digests),
+            len(self.release_digests),
+            len(self.qualification_digests),
+            len(self.qualification_request_digests),
+        )
+        if len(set(release_counts)) != 1:
+            raise ValueError("authoring evidence references must cover the same instances")
+        expected_counts = EvidenceCounts(
+            passed=release_counts[0], failed=0, unavailable=0, total=release_counts[0]
+        )
         if self.counts != expected_counts or self.status is not ReleaseEvidenceStatus.PASSED:
-            raise ValueError("complete sealed Sail evidence must derive a passing status")
+            raise ValueError("complete sealed authoring evidence must derive a passing status")
         return self
 
 
@@ -93,7 +95,7 @@ def project_authoring_catalog(
         if item.root is TaskRoot.SAIL_RTL
     }
     if (
-        len(sail_families) != 20
+        not sail_families
         or attestation.capability is not PrivateAuthoringCapability.SAIL_RTL_CATALOG
         or attestation.public_catalog_digest != public_catalog.digest
     ):
@@ -118,7 +120,7 @@ def project_authoring_catalog(
         for instance_name in family.instance_names
     }
     if len(documents) != len(task_documents) or set(documents) != expected_instances:
-        raise ValueError("Sail documents must contain exact base and advanced instances")
+        raise ValueError("Sail documents must contain the declared instances")
     responses = {
         item.instance_reference_digest: item for item in qualification_responses
     }
@@ -169,7 +171,7 @@ def project_authoring_catalog(
 
     task_digests = {item.task.digest for item in task_documents}
     if len(task_digests) != len(sail_families):
-        raise ValueError("Sail base and advanced instances must share one TaskSpec per family")
+        raise ValueError("Sail instances must share one TaskSpec per generated family")
     clean_room = attestation.clean_room_attestation
     if clean_room is None or not clean_room.passed:
         raise ValueError("Sail catalog lacks its complete clean-room attestation")
@@ -199,6 +201,8 @@ def project_authoring_catalog(
         ),
         qualification_digests=tuple(qualifications),
         qualification_request_digests=tuple(request_digests),
-        counts=EvidenceCounts(passed=40, failed=0, unavailable=0, total=40),
+        counts=EvidenceCounts(
+            passed=len(task_documents), failed=0, unavailable=0, total=len(task_documents)
+        ),
         status=ReleaseEvidenceStatus.PASSED,
     )

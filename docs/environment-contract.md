@@ -132,3 +132,38 @@ classes. Its measurement rule may independently permit participant or public
 disclosure. Credential patterns are rejected for every class. Host paths,
 network endpoints, and license routes are rejected before any non-author
 artifact is committed.
+
+EDA software, technology libraries, device models, and images are external
+inputs. EdaGym records logical asset IDs and digests, but does not package or
+install those assets. `user_image` is a digest-pinned image the user already
+owns; `installed_tree` is a later site-owned closure contract. Missing assets
+produce an explicit unavailable result. Participant and evaluator views are
+separate and are derived from the selected private profile.
+
+`config.execution.project_environment` derives grants, read-only library mounts,
+resource limits, and artifact policy from the frozen profile. It checks the
+snapshot, view, installation, and runtime identities against the tool probe
+receipts. This projection is input to execution qualification; it does not itself
+establish tool visibility or qualify a task. Library source paths and the storage
+root stay in the private resolved profile.
+
+Runnable profiles explicitly set positive `cpu_millicores`, `memory_bytes`,
+`process_count`, `wall_seconds`, `storage.max_bytes`, and
+`storage.output_max_bytes`. CPU millicores limit the CPU rate. The distinct
+`cpu_seconds` cumulative budget and `storage.max_inodes` are currently unsupported
+by this projection and cause typed admission failures when nonzero. Zero resource
+values mean unconfigured, never unlimited. Artifact retention comes from
+`storage.retention_seconds` (30 days by default); evaluator artifacts retain
+verifier visibility. Unsupported networking, verifier trust, and tool environment
+references likewise fail explicitly. Relative paths are resolved in the snapshot
+before deriving either view.
+
+Configured image probes resolve the selected executable inside the pinned image,
+check its bytes and version, and return that same installation to the rootless
+executor. The observed launcher entrypoint also selects the interpreter used by
+composite execution; tools in one view must agree on that image and interpreter.
+The configured tool ID and the adapter ID are distinct: a logical
+`synthesis` binding can use the `yosys` adapter without changing adapter identity.
+Image package inventories remain optional additional evidence; when a deployment
+declares one, its content and checksum are still verified. A successful version
+and launcher probe remains `probe_only` until the view and workload canaries pass.

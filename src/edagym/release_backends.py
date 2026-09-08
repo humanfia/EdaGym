@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from itertools import combinations
 from typing import Annotated, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.drivers.fixtures.model import FixtureRole
@@ -23,12 +22,31 @@ from edagym.drivers.qualification_verification import (
 )
 from edagym.drivers.semantic_claims import (
     SemanticJoint,
-    is_comprehensive_claim,
+    joint_capability,
     semantic_contract,
 )
 from edagym.release_commands import ReleaseEvidenceStatus
 from edagym.release_evidence import EvidenceCounts, evidence_counts, evidence_status
 from edagym.specs.common import Capability, Digest, Identifier, StrictModel
+
+_DISPOSITION_STATUS = {
+    QualificationDisposition.CONFORMANT: ReleaseEvidenceStatus.PASSED,
+    QualificationDisposition.NONCONFORMANT: ReleaseEvidenceStatus.FAILED,
+    QualificationDisposition.UNAVAILABLE: ReleaseEvidenceStatus.UNAVAILABLE,
+    QualificationDisposition.PROBE_ONLY: ReleaseEvidenceStatus.UNAVAILABLE,
+    QualificationDisposition.INCOMPLETE: ReleaseEvidenceStatus.UNAVAILABLE,
+}
+
+
+def _normalize_joints(
+    capability: Capability,
+    value: tuple[SemanticJoint, ...],
+) -> tuple[SemanticJoint, ...]:
+    if len(value) != len(set(value)) or any(
+        joint_capability(item) is not capability for item in value
+    ):
+        raise ValueError("backend semantic joints must be unique and owned by the capability")
+    return tuple(sorted(value, key=lambda item: item.value))
 
 
 class BackendRoleFailure(StrictModel):
@@ -37,6 +55,8 @@ class BackendRoleFailure(StrictModel):
 
 
 class BackendCapabilityEvidence(StrictModel):
+    """One tool-capability pair: its verified source, exact claim scope, and status."""
+
     capability: Capability
     status: ReleaseEvidenceStatus
     source_kind: QualificationSourceKind
@@ -54,10 +74,9 @@ class BackendCapabilityEvidence(StrictModel):
     def normalize_semantic_joints(
         cls,
         value: tuple[SemanticJoint, ...],
+        info: ValidationInfo,
     ) -> tuple[SemanticJoint, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("backend semantic joints must be unique")
-        return tuple(sorted(value, key=lambda item: item.value))
+        return _normalize_joints(info.data["capability"], value)
 
     @field_validator("failures")
     @classmethod
@@ -75,36 +94,22 @@ class BackendCapabilityEvidence(StrictModel):
         if has_semantic_evidence != (
             self.semantic_claim_id is not None
             and self.implementation_family is not None
+            and bool(self.semantic_joints)
         ):
             raise ValueError("backend semantic evidence requires one exact implementation claim")
-        comprehensive = (
-            has_semantic_evidence
-            and self.semantic_claim_id is not None
-            and is_comprehensive_claim(
-                self.capability,
-                self.semantic_claim_id,
-                self.semantic_joints,
-            )
-        )
         if self.source_kind is QualificationSourceKind.EVIDENCE_PAIR:
             if not has_semantic_evidence or self.artifact_closure_digest is None:
                 raise ValueError("evidence-pair sources require a live artifact closure")
         elif has_semantic_evidence or self.artifact_closure_digest is not None:
             raise ValueError("live-probe gap sources cannot claim retained evidence")
         if self.status is ReleaseEvidenceStatus.PASSED:
-            if not comprehensive or self.failures or self.unavailable is not None:
-                raise ValueError("passing backend capabilities require comprehensive evidence")
+            if not has_semantic_evidence or self.failures or self.unavailable is not None:
+                raise ValueError("passing backend capabilities require both passing roles")
         elif self.status is ReleaseEvidenceStatus.FAILED:
             if not has_semantic_evidence or not self.failures or self.unavailable is not None:
                 raise ValueError("failed backend capabilities require typed evidence")
-        elif self.failures or self.unavailable is None:
+        elif has_semantic_evidence or self.failures or self.unavailable is None:
             raise ValueError("unavailable backend capabilities require a typed reason")
-        elif has_semantic_evidence != (
-            self.unavailable is QualificationGapReason.SEMANTIC_COVERAGE_INCOMPLETE
-        ):
-            raise ValueError(
-                "only incomplete semantic evidence may accompany an unavailable capability"
-            )
         return self
 
 
@@ -136,14 +141,7 @@ class BackendQualificationEvidence(StrictModel):
             raise ValueError("backend evidence must cover at least one capability")
         if self.counts != evidence_counts(item.status for item in self.capabilities):
             raise ValueError("backend counts must be derived from capability results")
-        expected_status = {
-            QualificationDisposition.CONFORMANT: ReleaseEvidenceStatus.PASSED,
-            QualificationDisposition.NONCONFORMANT: ReleaseEvidenceStatus.FAILED,
-            QualificationDisposition.UNAVAILABLE: ReleaseEvidenceStatus.UNAVAILABLE,
-            QualificationDisposition.PROBE_ONLY: ReleaseEvidenceStatus.UNAVAILABLE,
-            QualificationDisposition.INCOMPLETE: ReleaseEvidenceStatus.UNAVAILABLE,
-        }[self.disposition]
-        if self.status is not expected_status:
+        if self.status is not _DISPOSITION_STATUS[self.disposition]:
             raise ValueError("backend status must be derived from its disposition")
         if self.status is not evidence_status(self.counts):
             raise ValueError("backend status must agree with its capability counts")
@@ -158,93 +156,109 @@ class BackendQualificationEvidence(StrictModel):
         return self
 
 
-class IndependentBackendImplementation(StrictModel):
+class BackendCapabilityClaim(StrictModel):
+    """The exact semantic scope one conformant tool has proven for a capability."""
+
     tool_id: Identifier
     vendor: Vendor
     implementation_family: Identifier
-    deployment_attestation_digest: Digest
+    semantic_joints: Annotated[tuple[SemanticJoint, ...], Field(min_length=1)]
 
 
 class BackendCapabilityCoverage(StrictModel):
-    """Derived release coverage for one logical evaluator capability."""
+    """Derived release coverage for one logical evaluator capability.
+
+    The contract in ``semantic_claims`` is the only owner of the required joints and
+    independence rule; every field here is derived from it and from the conformant claims.
+    """
 
     capability: Capability
-    required_tool_count: Annotated[int, Field(strict=True, ge=1, le=3)]
-    conformant_tool_ids: tuple[Identifier, ...]
-    independent_implementations: tuple[IndependentBackendImplementation, ...]
+    required_joints: tuple[SemanticJoint, ...]
+    required_implementations: Annotated[int, Field(strict=True, ge=1, le=3)]
+    claims: tuple[BackendCapabilityClaim, ...]
+    independent_implementations: tuple[BackendCapabilityClaim, ...] = ()
+    uncovered_joints: tuple[SemanticJoint, ...]
     failed_tool_ids: tuple[Identifier, ...]
     unavailable_tool_ids: tuple[Identifier, ...]
     status: ReleaseEvidenceStatus
 
-    @field_validator(
-        "conformant_tool_ids",
-        "failed_tool_ids",
-        "unavailable_tool_ids",
-    )
+    @field_validator("required_joints", "uncovered_joints")
+    @classmethod
+    def normalize_joint_sets(
+        cls,
+        value: tuple[SemanticJoint, ...],
+        info: ValidationInfo,
+    ) -> tuple[SemanticJoint, ...]:
+        return _normalize_joints(info.data["capability"], value)
+
+    @field_validator("failed_tool_ids", "unavailable_tool_ids")
     @classmethod
     def normalize_tools(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("backend coverage tool identities must be unique")
         return tuple(sorted(value))
 
-    @field_validator("independent_implementations")
+    @field_validator("claims")
     @classmethod
-    def normalize_implementations(
+    def normalize_claims(
         cls,
-        value: tuple[IndependentBackendImplementation, ...],
-    ) -> tuple[IndependentBackendImplementation, ...]:
+        value: tuple[BackendCapabilityClaim, ...],
+    ) -> tuple[BackendCapabilityClaim, ...]:
         tool_ids = [item.tool_id for item in value]
-        families = [item.implementation_family for item in value]
-        deployments = [item.deployment_attestation_digest for item in value]
-        if (
-            len(tool_ids) != len(set(tool_ids))
-            or len(families) != len(set(families))
-            or len(deployments) != len(set(deployments))
-        ):
-            raise ValueError(
-                "independent backend implementations require unique tools, families, "
-                "and deployments"
-            )
+        if len(tool_ids) != len(set(tool_ids)):
+            raise ValueError("backend coverage claims require unique tools")
         return tuple(sorted(value, key=lambda item: item.tool_id))
 
     @model_validator(mode="after")
     def validate_coverage(self) -> Self:
-        groups = (
-            set(self.conformant_tool_ids),
-            set(self.failed_tool_ids),
-            set(self.unavailable_tool_ids),
-        )
-        if groups[0] & groups[1] or groups[0] & groups[2] or groups[1] & groups[2]:
-            raise ValueError("backend coverage tool partitions must be disjoint")
-        independent_tool_ids = {
-            item.tool_id for item in self.independent_implementations
-        }
-        if not independent_tool_ids.issubset(groups[0]):
-            raise ValueError("independent backend tools must be conformant")
         contract = semantic_contract(self.capability)
-        if self.required_tool_count != contract.effective_required_implementations:
+        if any(
+            _normalize_joints(self.capability, claim.semantic_joints) != claim.semantic_joints
+            for claim in self.claims
+        ):
+            raise ValueError("backend coverage claims must carry canonical capability joints")
+        if (
+            self.required_joints != contract.required_joints
+            or self.required_implementations != contract.effective_required_implementations
+        ):
             raise ValueError("backend coverage requirement must be policy-derived")
-        covered = (
-            len(self.independent_implementations)
-            >= contract.effective_required_implementations
-            and set(contract.required_tool_ids).issubset(independent_tool_ids)
-            and set(contract.required_vendors).issubset(
-                {item.vendor for item in self.independent_implementations}
-            )
+        conformant = {item.tool_id for item in self.claims}
+        if self.independent_implementations != self.claims:
+            raise ValueError("independent implementations must be derived from qualifications")
+        if (
+            conformant & set(self.failed_tool_ids)
+            or conformant & set(self.unavailable_tool_ids)
+            or set(self.failed_tool_ids) & set(self.unavailable_tool_ids)
+        ):
+            raise ValueError("backend coverage tool partitions must be disjoint")
+        claimed = {joint for item in self.claims for joint in item.semantic_joints}
+        if set(self.uncovered_joints) != set(self.required_joints) - claimed:
+            raise ValueError("uncovered joints must be derived from the conformant claims")
+        expected_status = (
+            ReleaseEvidenceStatus.PASSED
+            if self.covered
+            else ReleaseEvidenceStatus.FAILED
+            if self.failed_tool_ids
+            else ReleaseEvidenceStatus.UNAVAILABLE
         )
-        if covered:
-            expected_status = ReleaseEvidenceStatus.PASSED
-        elif self.failed_tool_ids:
-            expected_status = ReleaseEvidenceStatus.FAILED
-        else:
-            expected_status = ReleaseEvidenceStatus.UNAVAILABLE
         if self.status is not expected_status:
             raise ValueError("backend coverage status must be derived from qualification pairs")
         return self
 
     @property
-    def independent_tool_ids(self) -> tuple[Identifier, ...]:
-        return tuple(item.tool_id for item in self.independent_implementations)
+    def conformant_tool_ids(self) -> tuple[Identifier, ...]:
+        return tuple(item.tool_id for item in self.claims)
+
+    @property
+    def covered(self) -> bool:
+        contract = semantic_contract(self.capability)
+        return (
+            not self.uncovered_joints
+            and len({item.implementation_family for item in self.independent_implementations})
+            >= self.required_implementations
+            and set(contract.required_tool_ids).issubset(self.conformant_tool_ids)
+            and set(contract.required_vendors).issubset(item.vendor for item in self.claims)
+        )
 
 
 def project_backend_qualification(
@@ -266,8 +280,7 @@ def project_backend_qualification(
     qualifications = tuple(source.qualification for source in ordered_sources)
     qualification = aggregate_backend_qualifications(definition, qualifications)
     source_by_capability = {
-        source.qualification.requested_capabilities[0]: source
-        for source in ordered_sources
+        source.qualification.requested_capabilities[0]: source for source in ordered_sources
     }
     if len(source_by_capability) != len(ordered_sources) or (
         qualification.probe.tool_id != definition.tool_id
@@ -327,22 +340,11 @@ def project_backend_qualification(
         if len(claim_identities) != 1 or capability not in implementation_families:
             raise ValueError("backend evidence lacks one catalog-bound semantic implementation")
         semantic_claim_id, semantic_joints = next(iter(claim_identities))
-        comprehensive = is_comprehensive_claim(
-            capability,
-            semantic_claim_id,
-            semantic_joints,
-        )
         passed = all(item.outcome is QualificationOutcome.PASSED for item in paired)
         capability_summaries.append(
             BackendCapabilityEvidence(
                 capability=capability,
-                status=(
-                    ReleaseEvidenceStatus.PASSED
-                    if passed and comprehensive
-                    else ReleaseEvidenceStatus.UNAVAILABLE
-                    if passed
-                    else ReleaseEvidenceStatus.FAILED
-                ),
+                status=ReleaseEvidenceStatus.PASSED if passed else ReleaseEvidenceStatus.FAILED,
                 source_kind=source.source_kind,
                 verified_source_digest=source.source_digest,
                 artifact_closure_digest=source.artifact_closure_digest,
@@ -351,11 +353,6 @@ def project_backend_qualification(
                 semantic_joints=semantic_joints,
                 implementation_family=implementation_families[capability],
                 failures=failures,
-                unavailable=(
-                    QualificationGapReason.SEMANTIC_COVERAGE_INCOMPLETE
-                    if passed and not comprehensive
-                    else None
-                ),
             )
         )
     capabilities = tuple(capability_summaries)
@@ -370,18 +367,8 @@ def project_backend_qualification(
         disposition=qualification.disposition,
         capabilities=capabilities,
         counts=counts,
-        status={
-            QualificationDisposition.CONFORMANT: ReleaseEvidenceStatus.PASSED,
-            QualificationDisposition.NONCONFORMANT: ReleaseEvidenceStatus.FAILED,
-            QualificationDisposition.UNAVAILABLE: ReleaseEvidenceStatus.UNAVAILABLE,
-            QualificationDisposition.PROBE_ONLY: ReleaseEvidenceStatus.UNAVAILABLE,
-            QualificationDisposition.INCOMPLETE: ReleaseEvidenceStatus.UNAVAILABLE,
-        }[qualification.disposition],
+        status=_DISPOSITION_STATUS[qualification.disposition],
     )
-
-
-def required_backend_count(capability: Capability) -> int:
-    return semantic_contract(capability).effective_required_implementations
 
 
 def project_backend_coverage(
@@ -391,17 +378,26 @@ def project_backend_coverage(
 
     summaries: list[BackendCapabilityCoverage] = []
     for capability in Capability:
+        contract = semantic_contract(capability)
         matching = tuple(
             (backend, result)
             for backend in backends
             for result in backend.capabilities
             if result.capability is capability
         )
-        conformant = tuple(
-            (backend, result)
+        claims = tuple(
+            BackendCapabilityClaim(
+                tool_id=backend.tool_id,
+                vendor=backend.vendor,
+                implementation_family=result.implementation_family,
+                semantic_joints=result.semantic_joints,
+            )
             for backend, result in matching
             if result.status is ReleaseEvidenceStatus.PASSED
+            and result.implementation_family is not None
         )
+        claimed = {joint for item in claims for joint in item.semantic_joints}
+        uncovered = tuple(joint for joint in contract.required_joints if joint not in claimed)
         failed = tuple(
             backend.tool_id
             for backend, result in matching
@@ -412,87 +408,30 @@ def project_backend_coverage(
             for backend, result in matching
             if result.status is ReleaseEvidenceStatus.UNAVAILABLE
         )
-        candidates = tuple(
-            IndependentBackendImplementation(
-                tool_id=backend.tool_id,
-                vendor=backend.vendor,
-                implementation_family=result.implementation_family,
-                deployment_attestation_digest=backend.deployment_attestation_digest,
-            )
-            for backend, result in conformant
-            if result.implementation_family is not None
-            and backend.deployment_attestation_digest is not None
-        )
-        contract = semantic_contract(capability)
-        independent = _select_independent_implementations(candidates, capability)
-        required = required_backend_count(capability)
-        independent_tool_ids = {item.tool_id for item in independent}
+        families = {item.implementation_family for item in claims}
         covered = (
-            len(independent) >= required
-            and set(contract.required_tool_ids).issubset(independent_tool_ids)
-            and set(contract.required_vendors).issubset(
-                {item.vendor for item in independent}
-            )
-        )
-        status = (
-            ReleaseEvidenceStatus.PASSED
-            if covered
-            else ReleaseEvidenceStatus.FAILED
-            if failed
-            else ReleaseEvidenceStatus.UNAVAILABLE
+            not uncovered
+            and len(families) >= contract.effective_required_implementations
+            and set(contract.required_tool_ids).issubset(item.tool_id for item in claims)
+            and set(contract.required_vendors).issubset(item.vendor for item in claims)
         )
         summaries.append(
             BackendCapabilityCoverage(
                 capability=capability,
-                required_tool_count=required,
-                conformant_tool_ids=tuple(item.tool_id for item, _ in conformant),
-                independent_implementations=independent,
+                required_joints=contract.required_joints,
+                required_implementations=contract.effective_required_implementations,
+                claims=claims,
+                independent_implementations=claims,
+                uncovered_joints=uncovered,
                 failed_tool_ids=failed,
                 unavailable_tool_ids=unavailable,
-                status=status,
+                status=(
+                    ReleaseEvidenceStatus.PASSED
+                    if covered
+                    else ReleaseEvidenceStatus.FAILED
+                    if failed
+                    else ReleaseEvidenceStatus.UNAVAILABLE
+                ),
             )
         )
     return tuple(sorted(summaries, key=lambda item: item.capability.value))
-
-
-def _select_independent_implementations(
-    candidates: tuple[IndependentBackendImplementation, ...],
-    capability: Capability,
-) -> tuple[IndependentBackendImplementation, ...]:
-    """Choose the strongest deterministic set with independent lineage and deployment."""
-
-    contract = semantic_contract(capability)
-    valid: list[tuple[IndependentBackendImplementation, ...]] = []
-    ordered = tuple(sorted(candidates, key=lambda item: item.tool_id))
-    for size in range(1, len(ordered) + 1):
-        for selection in combinations(ordered, size):
-            if len({item.implementation_family for item in selection}) != size or len(
-                {item.deployment_attestation_digest for item in selection}
-            ) != size:
-                continue
-            valid.append(selection)
-    if not valid:
-        return ()
-
-    required_tools = set(contract.required_tool_ids)
-    required_vendors = set(contract.required_vendors)
-
-    def score(
-        selection: tuple[IndependentBackendImplementation, ...],
-    ) -> tuple[int, int, int, int, tuple[str, ...]]:
-        tools = {item.tool_id for item in selection}
-        vendors = {item.vendor for item in selection}
-        covered = (
-            len(selection) >= contract.effective_required_implementations
-            and required_tools.issubset(tools)
-            and required_vendors.issubset(vendors)
-        )
-        return (
-            int(covered),
-            len(required_tools & tools),
-            len(required_vendors & vendors),
-            len(selection),
-            tuple(item.tool_id for item in selection),
-        )
-
-    return max(valid, key=score)

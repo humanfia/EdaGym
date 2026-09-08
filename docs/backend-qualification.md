@@ -156,3 +156,9 @@ machine-readable parsing, artifact contract, cancellation and timeout behavior,
 and secret-safe qualification. The negative input must be valid for the tool and
 must reach the same semantic joint as the accepted input. Do not add a
 vendor-specific task schema or a second process runner.
+
+Qualification consumes external asset bindings from the selected profile and
+does not infer support from a version string or a host executable alone. A
+missing Liberty, LEF, device model, license, or rootless runtime is a typed
+qualification gap. The public wheel retains only adapters, schemas, and
+synthetic protocol fixtures.

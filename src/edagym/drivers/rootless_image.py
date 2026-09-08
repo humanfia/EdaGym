@@ -18,6 +18,7 @@ from typing import Any, SupportsIndex
 from edagym.canonical import canonical_digest
 from edagym.drivers.closure import (
     ROOTLESS_IMAGE_FILE_SIZE_LIMIT_BYTES,
+    ROOTLESS_IMAGE_PROBE_LIMITS,
     ExecutionClosureKind,
     ExecutionClosureRequirementRef,
     ResolvedExecutionClosure,
@@ -29,9 +30,10 @@ from edagym.drivers.deployment import private_container_host_environment
 from edagym.specs.common import Digest
 
 _MAX_PROBE_OUTPUT_BYTES = 1024 * 1024
-_PROBE_TIMEOUT_SECONDS = 30
+_PROBE_TIMEOUT_SECONDS = ROOTLESS_IMAGE_PROBE_LIMITS.wall_seconds
 _SHA256SUM_ENTRYPOINT = "/usr/bin/sha256sum"
 _CAT_ENTRYPOINT = "/usr/bin/cat"
+_PROBE_OWNER_LABEL = "io.edagym.image-probe"
 _SHA256SUM_LINE = re.compile(rb"^([0-9a-f]{64})  (/[^\r\n]+)$")
 
 
@@ -59,11 +61,7 @@ class RootlessImageExecutionRecipe:
             or re.fullmatch(r"sha256:[0-9a-f]{64}", self.package_manifest_digest) is None
             or len(paths) != len(set(paths))
             or any(not path.is_absolute() for path in paths)
-            or any(
-                part in {"", ".", ".."}
-                for path in paths
-                for part in path.parts[1:]
-            )
+            or any(part in {"", ".", ".."} for path in paths for part in path.parts[1:])
             or any(
                 "\x00" in value
                 for value in (
@@ -123,27 +121,15 @@ class RootlessImageConfiguration:
         return self._host_environment
 
     def revalidate(self) -> bool:
-        return (
-            trusted_immutable_executable(self.engine_path) == self.engine_path
-            and _image_identity_matches(self)
-        )
+        return trusted_immutable_executable(
+            self.engine_path
+        ) == self.engine_path and _image_identity_matches(self)
 
     def __repr__(self) -> str:
         return "RootlessImageConfiguration(paths=<restricted>, image=<restricted>)"
 
     def __reduce_ex__(self, _protocol: SupportsIndex) -> Any:
         raise TypeError("rootless-image configurations cannot be serialized")
-
-
-NEXTPNR_ICE40_IMAGE_RECIPE = RootlessImageExecutionRecipe(
-    image_digest="sha256:f16c3b60966fdec335d07a870a9ace43823e4c93f74f92baae8ec0fa1c0b47e8",
-    tool_entrypoint="/usr/bin/nextpnr-ice40",
-    package_manifest_path="/usr/share/edagym/dpkg-manifest.tsv",
-    package_manifest_digest=(
-        "sha256:a32d161bb902faaddc34a585dee8cecba4d4d15f0029d3948dd5219bf6af5ec9"
-    ),
-    package_manifest_checksum_path="/usr/share/edagym/dpkg-manifest.sha256",
-)
 
 
 def resolve_rootless_image_execution_closure(
@@ -179,10 +165,14 @@ def resolve_rootless_image_execution_closure(
                 workspace,
             )
             identities = _sha256sum_identities(output)
-            if set(identities) != {
-                recipe.tool_entrypoint,
-                recipe.package_manifest_path,
-            } or identities[recipe.package_manifest_path] != recipe.package_manifest_digest:
+            if (
+                set(identities)
+                != {
+                    recipe.tool_entrypoint,
+                    recipe.package_manifest_path,
+                }
+                or identities[recipe.package_manifest_path] != recipe.package_manifest_digest
+            ):
                 return None
             tool_digest = identities[recipe.tool_entrypoint]
             package_manifest = _run_bounded(
@@ -207,9 +197,9 @@ def resolve_rootless_image_execution_closure(
                 configuration.host_environment,
                 workspace,
             )
-            expected_checksum = recipe.package_manifest_digest.removeprefix("sha256:").encode(
-                "ascii"
-            ) + b"\n"
+            expected_checksum = (
+                recipe.package_manifest_digest.removeprefix("sha256:").encode("ascii") + b"\n"
+            )
             if (
                 package_manifest is None
                 or checksum != expected_checksum
@@ -228,11 +218,7 @@ def resolve_rootless_image_execution_closure(
                 package_manifest=package_manifest,
                 package_manifest_digest=recipe.package_manifest_digest,
             )
-            if (
-                closure is None
-                or not configuration.revalidate()
-                or not closure.revalidate()
-            ):
+            if closure is None or not configuration.revalidate() or not closure.revalidate():
                 return None
             return closure
     except (OSError, subprocess.SubprocessError, UnicodeDecodeError, ValueError):
@@ -281,11 +267,7 @@ def inspect_rootless_image_tool(
                 workspace,
                 accepted_exit_codes=accepted_exit_codes,
             )
-            if (
-                output is None
-                or not configuration.revalidate()
-                or not closure.revalidate()
-            ):
+            if output is None or not configuration.revalidate() or not closure.revalidate():
                 return None
             return output if output.strip() else None
     except (OSError, subprocess.SubprocessError, ValueError):
@@ -315,8 +297,7 @@ def _image_identity_matches(configuration: RootlessImageConfiguration) -> bool:
         return False
     return (
         completed.returncode == 0
-        and completed.stdout.strip()
-        == configuration.recipe.image_digest.encode("ascii")
+        and completed.stdout.strip() == configuration.recipe.image_digest.encode("ascii")
     )
 
 
@@ -328,27 +309,94 @@ def _run_bounded(
     *,
     accepted_exit_codes: tuple[int, ...] = (0,),
 ) -> bytes | None:
+    if not arguments or arguments[0] != "run":
+        raise ValueError("image probes require a container invocation")
+    identity = canonical_digest(
+        {"workspace": os.fspath(workspace), "arguments": arguments},
+        domain="rootless-image-probe-v1",
+    ).removeprefix("sha256:")
+    name = f"edagym-probe-{identity}"
+    receipt = workspace / f"{name}.cid"
+    output: bytes | None = None
     try:
-        completed = subprocess.run(
-            (os.fspath(executable), *arguments),
-            executable=os.fspath(executable),
+        created = subprocess.run(
+            (
+                os.fspath(executable),
+                "create",
+                f"--name={name}",
+                f"--label={_PROBE_OWNER_LABEL}={identity}",
+                f"--cidfile={receipt}",
+                *arguments[1:],
+            ),
             cwd=workspace,
             env=environment,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            capture_output=True,
             timeout=_PROBE_TIMEOUT_SECONDS,
             check=False,
             preexec_fn=_apply_limits,
         )
+        if created.returncode == 0:
+            completed = subprocess.run(
+                (os.fspath(executable), "start", "--attach", name),
+                cwd=workspace,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=_PROBE_TIMEOUT_SECONDS,
+                check=False,
+                preexec_fn=_apply_limits,
+            )
+            if (
+                completed.returncode in accepted_exit_codes
+                and len(completed.stdout) <= _MAX_PROBE_OUTPUT_BYTES
+            ):
+                output = completed.stdout
     except (OSError, subprocess.SubprocessError):
-        return None
-    if (
-        completed.returncode not in accepted_exit_codes
-        or len(completed.stdout) > _MAX_PROBE_OUTPUT_BYTES
-    ):
-        return None
-    return completed.stdout
+        output = None
+    finally:
+        # A timeout may occur after creation. Query the prepared identity even
+        # when create did not return a handle; never remove an unowned resource.
+        try:
+            inspected = subprocess.run(
+                (
+                    os.fspath(executable),
+                    "inspect",
+                    "--format",
+                    f'{{{{.Id}}}} {{{{ index .Config.Labels "{_PROBE_OWNER_LABEL}" }}}}',
+                    name,
+                ),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=_PROBE_TIMEOUT_SECONDS,
+                check=False,
+            )
+            fields = inspected.stdout.decode("ascii").strip().split()
+            if (
+                inspected.returncode == 0
+                and len(fields) == 2
+                and re.fullmatch(r"[0-9a-f]{64}", fields[0])
+                and fields[1] == identity
+            ):
+                removed = subprocess.run(
+                    (os.fspath(executable), "rm", "--force", "--time=0", fields[0]),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=_PROBE_TIMEOUT_SECONDS,
+                    check=False,
+                )
+                if removed.returncode != 0:
+                    output = None
+            else:
+                output = None
+        except (OSError, subprocess.SubprocessError, UnicodeError):
+            output = None
+    return output
 
 
 def _validated_scratch_root(root: Path) -> Path:
