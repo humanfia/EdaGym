@@ -122,6 +122,17 @@ can be declared available for scored campaigns.
 
 ## Native transcript observations
 
+`NativeLoopbackBridge` is the standard-library-only module mounted inside the
+task sandbox to expose a loopback HTTP endpoint for the native CLI. It forwards
+only POST requests to the fixed controller Unix socket, with authorization and
+the declared protocol headers. The controller relay remains the sole route and
+budget authority. The bridge refuses proxy targets, CONNECT, ambiguous framing,
+duplicate protocol headers, and oversized bodies. A response lost or refused by
+the bridge does not refund a reservation already settled by the controller.
+The enclosing executor owns the hard deadline; bridge socket timeouts bound idle
+I/O. Integrating this transport with native operation launch and run journals
+remains unfinished.
+
 `participants.native.adapt_native_transcript` translates Codex exec JSONL and
 Claude Code stream-json output into the typed events in `participants.harness`.
 It retains the complete private stdout bytes, including unknown events, and
