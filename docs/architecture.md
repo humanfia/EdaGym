@@ -219,8 +219,10 @@ The executor publishes a canonical terminal observation and then a complete
 CAS result receipt. Collection can be retried across controller loss. The
 caller must commit that result to its journal before releasing the container
 and storage. Cleanup retains result and identity receipts, allowing later
-reads to verify the same CAS closure. This executor protocol is available;
-integration with the configuration-driven RunEngine remains in progress.
+reads to verify the same CAS closure. Resource ownership checks are independent
+of containment-health checks: a matching container ID and frozen labels permit
+targeted cleanup even when execution isolation can no longer be established.
+Unknown outcomes require fencing before the terminal failure is journaled.
 
 ## Paid campaign accounting
 
@@ -288,7 +290,7 @@ The current control-plane boundary is `RunEngine`: browser, CLI, and agent
 adapters submit the same typed intents and read cursor-based projections. A
 private TOML configuration resolves user-owned tools and libraries into one
 immutable snapshot referenced by each `RunManifest`; execution views are
-derived from that snapshot. A version-3 manifest freezes both observed
+derived from that snapshot. A version-4 manifest freezes both observed
 `EnvironmentSpec` projections, including tool deployment attestations, runtime,
 resources, library content identities, and artifact policy. The original
 configuration digest remains unchanged when the selected snapshot is resolved
@@ -310,6 +312,14 @@ executor handle; its terminal fact binds collected results and any resulting
 participant workspace. Cancellation is a journaled command that the active
 controller observes without surrendering its controller lock.
 
+Recovery never relaunches an operation whose launch evidence has disappeared.
+It derives the container identity from the prepared operation, fences its
+resources, and atomically records an unknown operation result with a failed run.
+Reliable retained results remain distinguishable from unknown outcomes, including
+their observed exit codes. Losing a participant workspace terminates the run even
+when its tool result survived. Once committed, the journal and CAS own that
+result; cleanup does not require the executor's secondary result receipt.
+
 `journal_storage` owns atomic metadata publication, canonical grouped commits,
 hash chains, file locks, and recovery of a torn final record. The release-based
 campaign workflow currently retains its own replay semantics in `trial_model`
@@ -323,6 +333,11 @@ monitor operation. An indexed FIFO checker independently validates the
 generator's deque-derived expectations. Admission reopens the qualification
 run, both view receipts, and their CAS evidence. Editing, submission, and
 browser control transfer consume these same run contracts.
+Qualification manifests bind their view and independent-oracle evidence before
+canary execution. A terminal publication binds the completed canary journal
+prefix after derived evidence and instance files are durable. Resume reuses
+completed operations, schedules missing canaries, and can rebuild those derived
+files from the published journal.
 
 These bindings do not confer tool-visibility or task qualification. Framework
 readiness, station campaign completion, and benchmark quality remain

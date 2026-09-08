@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -175,6 +176,7 @@ from edagym.specs.release import ReleaseManifest, TaskInstance
 from edagym.specs.session import FeedbackPolicy, RecoveryPolicy, SessionSpec, TrainingMode
 from edagym.specs.task import StageSpec, TaskSpec, WorkspaceInterface
 
+_LOGGER = logging.getLogger(__name__)
 _RUN_TERMINAL_STATES = frozenset(
     {JobStateKind.COMPLETED, JobStateKind.FAILED, JobStateKind.CANCELLED}
 )
@@ -1065,6 +1067,12 @@ class RunOrchestrator:
         except Exception:
             if evaluation_committed:
                 raise
+            _LOGGER.debug(
+                "Evaluation execution failed for run %s, operation %s",
+                context.run_id,
+                context.job_id,
+                exc_info=True,
+            )
             if lease is not None:
                 self._release_license(context.job_id, lease)
                 lease = None

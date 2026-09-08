@@ -56,6 +56,7 @@ from edagym.executors.local import (
     UnknownJob,
     _bind_asset_closure,
     _collect_execution_result,
+    _disclosure_for,
     _forget_isolation,
     _open_owned_directory,
     _remove_invocation_transient_files,
@@ -99,7 +100,13 @@ from edagym.executors.rootless_storage import (
 from edagym.policy.runtime_storage import private_directory, read_private, write_private
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.runtime_surface_protocol import IsolationSurface
-from edagym.specs.common import Digest, Identifier, SchemaVersion, StrictModel
+from edagym.specs.common import (
+    ArtifactClass,
+    Digest,
+    Identifier,
+    SchemaVersion,
+    StrictModel,
+)
 from edagym.specs.environment import (
     ContainerRuntime,
     EnvironmentSpec,
@@ -161,15 +168,11 @@ class _ContainerObservation(StrictModel):
         }
 
 
-class _InvocationReceipt(StrictModel):
-    """Private launch inputs persisted before creating an owned container."""
+class _InvocationBinding(StrictModel):
+    """Execution identity derivable from the durable prepared operation."""
 
-    schema_version: Literal[1] = 1
     plan: InvocationPlan
     environment: EnvironmentSpec
-    workspace: Path
-    artifact_directory: Path
-    storage: InvocationStorageReceipt | None
 
     @property
     def handle(self) -> JobHandle:
@@ -202,6 +205,15 @@ class _InvocationReceipt(StrictModel):
             _CONTAINER_OPERATION_LABEL: self.plan.invocation_id,
             _CONTAINER_ENVIRONMENT_LABEL: self.environment.digest,
         }
+
+
+class _InvocationReceipt(_InvocationBinding):
+    """Private launch inputs persisted before creating an owned container."""
+
+    schema_version: Literal[1] = 1
+    workspace: Path
+    artifact_directory: Path
+    storage: InvocationStorageReceipt | None
 
 
 class _ScopeAttachment(StrictModel):
@@ -671,32 +683,159 @@ class RootlessContainerExecutor:
             return result
 
     def abandon(self, invocation_id: str) -> None:
-        cleanup = self.cleanup(invocation_id)
-        if cleanup.remaining_resources:
-            raise ExecutorUnavailable("rootless cleanup did not prove resource absence")
+        self.cleanup(invocation_id)
+
+    def recover_result(
+        self,
+        plan: InvocationPlan,
+        *,
+        environment: EnvironmentSpec,
+        storage_available: bool,
+        required: bool = True,
+    ) -> ExecutionResult | None:
+        """Recover retained results or fence an operation whose outcome is unknown.
+
+        Only a newly prepared operation may omit its invocation namespace. A
+        replayed preparation with lost launch evidence cannot authorize launch.
+        LOST diagnostics contain only bytes retained or recovered during fencing;
+        an empty stream means no bytes were retained, not that execution was quiet.
+        """
+        with self._guard():
+            directory = self._job_directory(plan.invocation_id)
+            if not directory.exists() and not required:
+                return None
+            binding = self._recovery_binding(plan, environment)
+            result_path = directory / "result.json"
+            if result_path.exists():
+                content = read_private(result_path)
+                result = ExecutionResult.model_validate_json(content)
+                if (
+                    canonical_bytes(result) != content or result.state.handle != binding.handle
+                    or result.state.state in {JobStateKind.QUEUED, JobStateKind.RUNNING}
+                ):
+                    raise CollectionError("retained result differs from its prepared operation")
+                for blob in (result.stdout, result.stderr, *(item.blob for item in result.outputs)):
+                    self._artifact_store.verify(blob)
+                if result.state.state is not JobStateKind.LOST:
+                    observation = self._observe(binding)
+                    if not _systemd_unit_is_quiescent(binding.scope_unit) or (
+                        observation is not None and observation.active
+                        and not self._scope_terminated(binding, observation)
+                    ):
+                        raise CollectionError("retained result has active runtime resources")
+                    if (
+                        isinstance(binding, _InvocationReceipt)
+                        and self._state(binding) != result.state
+                    ):
+                        raise CollectionError(
+                            "retained result differs from its runtime observation"
+                        )
+                if result.state.state is JobStateKind.LOST:
+                    self._fence(binding)
+                return result
+            state = None
+            terminal_path = directory / "terminal.json"
+            if terminal_path.exists():
+                content = read_private(terminal_path)
+                state = JobState.model_validate_json(content)
+                if canonical_bytes(state) != content or state.handle != binding.handle:
+                    raise ExecutorUnavailable("terminal observation differs from its operation")
+            if isinstance(binding, _InvocationReceipt) and (
+                state is None or state.state is not JobStateKind.LOST
+            ):
+                state = self._state(binding)
+            if (
+                storage_available and state is not None and state.state is not JobStateKind.LOST
+                and isinstance(binding, _InvocationReceipt)
+            ):
+                return None
+            # Verify the container identity before touching its delegated scope.
+            observation = self._observe(binding)
+            self._stop_container(binding)
+            if observation is not None:
+                self._capture_logs(binding)
+            diagnostics = []
+            disclosure = _disclosure_for(environment, ArtifactClass.DIAGNOSTIC)
+            for name in ("stdout.bin", "stderr.bin"):
+                path = directory / name
+                content = (
+                    read_private(path, max_bytes=environment.artifact_policy.quota_bytes)
+                    if path.exists() else b""
+                )
+                diagnostics.append(self._artifact_store.put_bytes(
+                    content,
+                    artifact_class=ArtifactClass.DIAGNOSTIC,
+                    sensitivity=disclosure.sensitivity,
+                    visibility=disclosure.visibility,
+                    redistribution=disclosure.redistribution,
+                ))
+            self._fence(binding)
+            result = ExecutionResult(
+                state=JobState(
+                    handle=binding.handle,
+                    state=JobStateKind.LOST,
+                    exit_code=None if state is None else state.exit_code,
+                    failure=ExecutionFailureKind.INFRASTRUCTURE,
+                ),
+                stdout=diagnostics[0], stderr=diagnostics[1],
+            )
+            write_private(result_path, canonical_bytes(result))
+            return result
+
+    def fence(
+        self, plan: InvocationPlan, *, environment: EnvironmentSpec
+    ) -> RootlessIsolationCleanup:
+        """Release only resources owned by this frozen operation, without relaunch."""
+        with self._guard():
+            binding = self._recovery_binding(plan, environment)
+            cleanup = self._fence(binding)
+            _remove_invocation_transient_files(self._job_state_root, plan.invocation_id)
+            self._remove_raw_logs(plan.invocation_id)
+            return cleanup
+
+    def _recovery_binding(
+        self, plan: InvocationPlan, environment: EnvironmentSpec
+    ) -> _InvocationBinding:
+        self._validate_environment(environment)
+        _validate_plan_binding(plan, environment)
+        directory = private_directory(self._job_directory(plan.invocation_id), create=True)
+        if (directory / "invocation.json").exists():
+            receipt = self._load_invocation(plan.invocation_id)
+            if receipt.plan != plan or receipt.environment != environment:
+                raise ExecutorUnavailable("recovery differs from the frozen invocation")
+            return receipt
+        return _InvocationBinding(plan=plan, environment=environment)
 
     def cleanup(self, invocation_id: str) -> RootlessIsolationCleanup:
         with self._guard():
             receipt = self._load_invocation(invocation_id)
-            _terminate_isolation(receipt.scope_unit)
-            self._remove_container(receipt)
-            _forget_isolation(receipt.scope_unit)
+            cleanup = self._fence(receipt)
             _remove_invocation_transient_files(self._job_state_root, invocation_id)
             self._remove_raw_logs(invocation_id)
-            observation = self._observe(receipt)
-            remaining = []
-            if observation is not None:
-                remaining.append(RootlessResourceKind.CONTAINER)
-            if not _systemd_unit_is_quiescent(receipt.scope_unit):
-                remaining.append(RootlessResourceKind.CONTAINMENT_SCOPE)
-            return RootlessIsolationCleanup(
-                invocation_id=invocation_id,
-                observation_digest=canonical_digest(
-                    {"owner": receipt.owner, "remaining": remaining},
-                    domain="rootless-cleanup-observation-v2",
-                ),
-                remaining_resources=tuple(remaining),
-            )
+            return cleanup
+
+    def _fence(self, binding: _InvocationBinding) -> RootlessIsolationCleanup:
+        self._owned_container(binding)
+        _terminate_isolation(binding.scope_unit)
+        self._remove_container(binding)
+        _forget_isolation(binding.scope_unit)
+        observation = self._owned_container(binding)
+        remaining = []
+        if observation is not None:
+            remaining.append(RootlessResourceKind.CONTAINER)
+        if not _systemd_unit_is_quiescent(binding.scope_unit):
+            remaining.append(RootlessResourceKind.CONTAINMENT_SCOPE)
+        cleanup = RootlessIsolationCleanup(
+            invocation_id=binding.plan.invocation_id,
+            observation_digest=canonical_digest(
+                {"owner": binding.owner, "remaining": remaining},
+                domain="rootless-cleanup-observation-v2",
+            ),
+            remaining_resources=tuple(remaining),
+        )
+        if remaining:
+            raise ExecutorUnavailable("operation fencing did not prove resource absence")
+        return cleanup
 
     def execute_isolation_preflight(
         self,
@@ -906,7 +1045,22 @@ class RootlessContainerExecutor:
         if count >= environment.resources.max_concurrency:
             raise ExecutorUnavailable("executor environment concurrency limit is exhausted")
 
-    def _observe(self, receipt: _InvocationReceipt) -> _ContainerObservation | None:
+    def _observe(self, receipt: _InvocationBinding) -> _ContainerObservation | None:
+        observation = self._owned_container(receipt)
+        if observation is not None and observation.process_cgroup is not None:
+            if receipt.scope_unit not in PurePosixPath(observation.process_cgroup).parts:
+                raise ExecutorUnavailable("container process is outside its invocation scope")
+            write_private(
+                self._job_directory(receipt.plan.invocation_id) / "scope.json",
+                canonical_bytes(_ScopeAttachment(
+                    container_id=observation.container_id,
+                    cgroup_path=observation.process_cgroup,
+                )),
+            )
+        return observation
+
+    def _owned_container(self, receipt: _InvocationBinding) -> _ContainerObservation | None:
+        """Verify resource ownership independently of its current containment health."""
         existing = self._run_podman("container", "exists", receipt.container_name)
         if existing.returncode == 1:
             return None
@@ -936,7 +1090,7 @@ class RootlessContainerExecutor:
             else:
                 write_private(identity_path, container_id.encode("ascii"))
             state = value["State"]
-            observation = _ContainerObservation(
+            return _ContainerObservation(
                 container_id=container_id,
                 status=_ContainerStatus(state["Status"]),
                 running=state["Running"],
@@ -947,20 +1101,10 @@ class RootlessContainerExecutor:
                 finished_at=datetime.fromisoformat(state["FinishedAt"]),
                 process_cgroup=_process_cgroup(state["Pid"]),
             )
-            if observation.process_cgroup is not None:
-                if receipt.scope_unit not in PurePosixPath(observation.process_cgroup).parts:
-                    raise ValueError("container process is outside its invocation scope")
-                write_private(
-                    self._job_directory(receipt.plan.invocation_id) / "scope.json",
-                    canonical_bytes(_ScopeAttachment(
-                        container_id=container_id, cgroup_path=observation.process_cgroup,
-                    )),
-                )
-            return observation
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as error:
             raise ExecutorUnavailable(
                 "container observation does not prove invocation ownership"
-            ) from None
+            ) from error
 
     def _state(self, receipt: _InvocationReceipt) -> JobState:
         directory = self._job_directory(receipt.plan.invocation_id)
@@ -1106,9 +1250,10 @@ class RootlessContainerExecutor:
             time.sleep(_QUIESCENCE_POLL_SECONDS)
         raise ExecutorUnavailable("container start acknowledgement is unavailable")
 
-    def _stop_container(self, receipt: _InvocationReceipt) -> None:
+    def _stop_container(self, receipt: _InvocationBinding) -> None:
+        self._owned_container(receipt)
         _terminate_isolation(receipt.scope_unit)
-        observation = self._observe(receipt)
+        observation = self._owned_container(receipt)
         if (
             observation is None or not observation.active
             or self._scope_terminated(receipt, observation)
@@ -1117,12 +1262,12 @@ class RootlessContainerExecutor:
         if observation.status in {_ContainerStatus.RUNNING, _ContainerStatus.PAUSED}:
             stopped = self._run_podman("kill", "--signal=KILL", observation.container_id)
             if stopped.returncode != 0:
-                current = self._observe(receipt)
+                current = self._owned_container(receipt)
                 if current is not None and current.active:
                     raise ExecutorUnavailable("container cancellation requires recovery")
         deadline = time.monotonic() + _QUIESCENCE_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            observation = self._observe(receipt)
+            observation = self._owned_container(receipt)
             if (
                 observation is None or not observation.active
                 or self._scope_terminated(receipt, observation)
@@ -1146,7 +1291,7 @@ class RootlessContainerExecutor:
         ):
             raise CollectionError("recovered workspace differs from its original storage")
 
-    def _capture_logs(self, receipt: _InvocationReceipt) -> tuple[Path, Path]:
+    def _capture_logs(self, receipt: _InvocationBinding) -> tuple[Path, Path]:
         directory = self._job_directory(receipt.plan.invocation_id)
         paths = (directory / "stdout.bin", directory / "stderr.bin")
         streams: list[IO[bytes]] = []
@@ -1183,8 +1328,12 @@ class RootlessContainerExecutor:
         return paths
 
     def _scope_terminated(
-        self, receipt: _InvocationReceipt, observation: _ContainerObservation,
+        self, receipt: _InvocationBinding, observation: _ContainerObservation,
     ) -> bool:
+        if observation.process_cgroup is not None and (
+            receipt.scope_unit not in PurePosixPath(observation.process_cgroup).parts
+        ):
+            return False
         path = self._job_directory(receipt.plan.invocation_id) / "scope.json"
         if not path.exists() or not _systemd_unit_is_quiescent(receipt.scope_unit):
             return False
@@ -1383,8 +1532,8 @@ class RootlessContainerExecutor:
             "commands": commands,
         }
 
-    def _remove_container(self, receipt: _InvocationReceipt) -> None:
-        observation = self._observe(receipt)
+    def _remove_container(self, receipt: _InvocationBinding) -> None:
+        observation = self._owned_container(receipt)
         if observation is None:
             return
         removed = self._run_podman("rm", "--force", "--time=0", observation.container_id)

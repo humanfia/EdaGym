@@ -28,6 +28,12 @@ This branch is an implementation checkpoint, not a completed release.
 - Run-bound rootless execution with durable launch, container identity, terminal,
   and CAS result receipts. A delegated user scope owns each operation's deadline;
   collection and scoped cleanup survive controller loss.
+- Recovery derives resource identity from the prepared operation when launch
+  evidence is missing. It fences only that operation's container and scope before
+  recording an unknown outcome and terminal infrastructure failure together.
+  Retained results preserve reliable execution evidence; a participant operation
+  with a lost workspace still terminates the run. Cleanup validates committed
+  journal results and CAS directly, without requiring a second result receipt.
 - Configuration v2 owns tool visibility per filesystem view. The explicit v1
   importer converts agreeing tool declarations and refuses conflicting modes.
 - Complete-image bundle qualification through the configured rootless executor,
@@ -54,15 +60,11 @@ This branch is an implementation checkpoint, not a completed release.
 
 ## Validation
 
-The full suite reports **324 passed** in 639.08 seconds (exit 0). Retained CLI
+The full suite reports **325 passed** in 681.10 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
 release evidence must cover the corresponding frozen trial and task bindings.
-After moving publication-group validation to the atomic commit owner, the final
-configured-run, CLI, and schema checks report **7 passed** in 258.26 seconds
-(exit 0). A direct check confirms that mixed publication groups are rejected
-before writing and valid existing publication groups retain their identity.
 
 Ruff, strict mypy (213 source files), generated schema consistency, and
 `git diff --check` pass. Actual rootless synthesis uses configured tool identity
@@ -133,13 +135,32 @@ instance document added no journal facts. A retained real-tool check rejects
 ordinary task resume when its qualification receipt is missing, then verifies
 that the source qualification run reconstructs it without new execution.
 
+Four additional SIGKILL audits remove the launch namespace, the owned container,
+the writable storage, or the launch receipt after result collection. The first
+three recover the same operation as an unknown outcome and a failed run. The
+storage-loss case retains its observed zero exit code without treating it as a
+successful run. The collected-result case preserves its completed result.
+Repeated resume adds no facts, and scoped cleanup proves container absence.
+The retained launch-receipt-loss test also verifies terminal infrastructure
+failure without reexecution. An initial full-suite checkpoint failure exposed
+the need to separate resource ownership checks from containment-health checks
+during cleanup; both checkpoint modes pass in the full regression above.
+A separate collected-result audit asserts that its terminal journal fact exists
+before the first cleanup call, preserving result publication before resource
+release. One later application-checkpoint continuation failed during executor
+startup in the release-trial controller. Three further rounds of both checkpoint
+modes and 120 concurrent starts, including composite tool/workspace commands,
+did not reproduce it. The controller now retains the underlying exception at
+debug logging level; that intermittent startup failure remains unresolved.
+
 ## Remaining integration
 
 - Complete exact-toolset filesystem exclusion qualification.
 - Integrate interruptions during view qualification before a task run manifest
-  exists. Exercise the broader concurrent-run and corruption matrix, and finish
-  typed termination/fencing when operation receipts or writable storage are
-  missing.
+  exists. Exercise the broader concurrent-run and corruption matrix, including
+  damaged storage records or backing files whose safe reconciliation has not
+  been established.
+- Investigate the intermittent release-trial checkpoint startup failure.
 - Complete participant feedback and artifact presentation beyond the current
   outcome/event view, and broaden the rendered browser interaction checks.
 - Migrate the remaining release-trial controllers and projections to RunEngine.

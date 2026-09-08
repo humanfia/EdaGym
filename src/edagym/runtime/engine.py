@@ -28,6 +28,7 @@ from edagym.evaluation import rtl_queue
 from edagym.evaluation.model import OutcomeKind
 from edagym.executors.asset_policy import load_system_asset_source_policy
 from edagym.executors.model import (
+    ExecutionFailureKind,
     ExecutionResult,
     InvocationPlan,
     InvocationView,
@@ -464,7 +465,7 @@ class RunEngine:
                     input_manifest_digest=state.workspace.semantic_digest,
                 )
                 event = self._prepare_operation(journal, plan, state.workspace, intent=intent)
-                self._execute_operation(journal, journal.state().operations[-1])
+                self._execute_operation(journal, journal.state().operations[-1], recovery=False)
                 if (
                     journal.state().projection.cancel_requested
                     and journal.state().projection.phase is EnginePhase.RUNNING
@@ -629,7 +630,9 @@ class RunEngine:
             dict(selected.library_paths),
         )
 
-    def _execute_operation(self, journal: RunJournal, operation: OperationState) -> ExecutionResult:
+    def _execute_operation(
+        self, journal: RunJournal, operation: OperationState, *, recovery: bool = True
+    ) -> ExecutionResult:
         plan = operation.prepared.payload.plan
         executor, environment, runtime_root, assets = self._executor(journal, plan.view)
         store = self._store(journal, plan.view)
@@ -640,50 +643,59 @@ class RunEngine:
             run_id=plan.run_id,
             invocation_id=plan.invocation_id,
         )
-        if not job_directory.exists():
-            if operation.running is not None:
-                raise EngineError("running operation lost its receipt; outcome is unknown")
-            if lease is not None:
-                # No invocation namespace means launch has not published its
-                # receipt or called Podman. Discard a partially restored input.
-                lease.close()
-                lease = None
-        if lease is None:
-            if job_directory.exists():
-                raise EngineError("operation storage is missing; reconciliation is required")
+        result = executor.recover_result(
+            plan, environment=environment, storage_available=lease is not None, required=recovery
+        )
+        if result is None and not job_directory.exists() and lease is not None:
+            lease.close()
+            lease = None
+        if result is None and lease is None:
             lease = executor.create_storage(
                 environment=environment,
                 runtime_root=runtime_root,
                 run_id=plan.run_id,
                 invocation_id=plan.invocation_id,
             )
-        if not job_directory.exists():
+        if result is None and not job_directory.exists():
+            assert lease is not None
             manifest = self._read_manifest(store, operation.prepared.payload.input_manifest)
             populate_disposable_empty_directory(store, manifest, lease.workspace)
-        handle = executor.launch(
-            plan,
-            environment=environment,
-            workspace=lease.workspace,
-            artifact_directory=lease.artifact_directory,
-            asset_paths=assets,
-            scope=FilesystemScope.PARTICIPANT
-            if plan.view is InvocationView.PARTICIPANT
-            else FilesystemScope.EVALUATOR,
-        )
-        if operation.running is None:
-            self._commit_event(
-                journal,
-                EventKind.OPERATION_RUNNING,
-                {"operation_id": plan.invocation_id, "handle": handle},
-                visibility=operation.prepared.visibility,
+        if result is None:
+            assert lease is not None
+            handle = executor.launch(
+                plan,
+                environment=environment,
+                workspace=lease.workspace,
+                artifact_directory=lease.artifact_directory,
+                asset_paths=assets,
+                scope=FilesystemScope.PARTICIPANT
+                if plan.view is InvocationView.PARTICIPANT
+                else FilesystemScope.EVALUATOR,
             )
-        while executor.inspect(handle).state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
-            if journal.state().projection.cancel_requested:
-                executor.cancel(handle)
-            time.sleep(_POLL_SECONDS)
-        result = executor.collect(handle)
+            if operation.running is None:
+                self._commit_event(
+                    journal,
+                    EventKind.OPERATION_RUNNING,
+                    {"operation_id": plan.invocation_id, "handle": handle},
+                    visibility=operation.prepared.visibility,
+                )
+            while executor.inspect(handle).state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
+                if journal.state().projection.cancel_requested:
+                    executor.cancel(handle)
+                time.sleep(_POLL_SECONDS)
+            if executor.inspect(handle).state is JobStateKind.LOST:
+                result = executor.recover_result(
+                    plan, environment=environment, storage_available=True
+                )
+                assert result is not None
+            else:
+                result = executor.collect(handle)
         workspace = None
-        if plan.view is InvocationView.PARTICIPANT:
+        failed = result.state.state is JobStateKind.LOST or (
+            plan.view is InvocationView.PARTICIPANT and lease is None
+        )
+        if plan.view is InvocationView.PARTICIPANT and not failed:
+            assert lease is not None
             workspace = store.put_manifest(
                 manifest_tree(
                     store,
@@ -694,14 +706,31 @@ class RunEngine:
                     redistribution=Redistribution.FORBIDDEN,
                 )
             )
-        self._commit_event(
-            journal,
-            EventKind.OPERATION_TERMINAL,
-            {"operation_id": plan.invocation_id, "result": result, "workspace": workspace},
-            visibility=operation.prepared.visibility,
-        )
-        executor.abandon(plan.invocation_id)
-        lease.close()
+
+        def finish(state: RunState) -> tuple[RunEvent, ...]:
+            terminal = self._event(
+                journal,
+                EventKind.OPERATION_TERMINAL,
+                {"operation_id": plan.invocation_id, "result": result, "workspace": workspace},
+                sequence=state.projection.next_sequence,
+                visibility=operation.prepared.visibility,
+            )
+            if not failed:
+                return (terminal,)
+            return (
+                terminal,
+                self._event(
+                    journal,
+                    EventKind.RUN_FAILED,
+                    {"failure": ExecutionFailureKind.INFRASTRUCTURE},
+                    sequence=terminal.sequence + 1,
+                ),
+            )
+
+        journal.transact(finish)
+        executor.fence(plan, environment=environment)
+        if lease is not None:
+            lease.close()
         return result
 
     def _cleanup_operation(self, journal: RunJournal, operation: OperationState) -> None:
@@ -712,13 +741,11 @@ class RunEngine:
         store = self._store(journal, plan.view)
         for blob in (result.stdout, result.stderr, *(item.blob for item in result.outputs)):
             store.read_bytes(blob, maximum_bytes=environment.artifact_policy.quota_bytes)
-        if executor.collect(result.state.handle) != result:
-            raise EngineError("operation journal differs from its collected result")
         if operation.terminal.payload.workspace is not None:
             manifest = self._read_manifest(store, operation.terminal.payload.workspace)
             for entry in manifest.entries:
                 store.read_bytes(entry.blob, maximum_bytes=environment.artifact_policy.quota_bytes)
-        executor.abandon(plan.invocation_id)
+        executor.fence(plan, environment=environment)
         lease = executor.recover_storage(
             environment=environment,
             runtime_root=runtime_root,
@@ -965,7 +992,10 @@ class RunEngine:
             candidate.submission.semantic_digest,
         )
         result = self._ensure_operation(journal, synthesis, candidate.submission)
-        if journal.state().projection.cancel_requested:
+        if (
+            journal.state().projection.cancel_requested
+            or journal.state().projection.phase is EnginePhase.TERMINAL
+        ):
             return None
         outcome, runnable = rtl_queue.outcome(synthesis, result, store, simulation=False)
         operation_ids = [synthesis.invocation_id]
@@ -990,7 +1020,10 @@ class RunEngine:
                 environment, journal.manifest.digest, prefix + "_simulation", inputs.semantic_digest
             )
             result = self._ensure_operation(journal, simulation, inputs)
-            if journal.state().projection.cancel_requested:
+            if (
+                journal.state().projection.cancel_requested
+                or journal.state().projection.phase is EnginePhase.TERMINAL
+            ):
                 return None
             operation_ids.append(simulation.invocation_id)
             outcome, runnable = rtl_queue.outcome(simulation, result, store, simulation=True)
@@ -1014,6 +1047,7 @@ class RunEngine:
             ),
             None,
         )
+        recovery = operation is not None
         if operation is None:
             self._prepare_operation(journal, plan, inputs)
             operation = journal.state().operations[-1]
@@ -1024,7 +1058,7 @@ class RunEngine:
             raise EngineError("resumed evaluation differs from its prepared operation")
         if operation.terminal is not None:
             return operation.terminal.payload.result
-        return self._execute_operation(journal, operation)
+        return self._execute_operation(journal, operation, recovery=recovery)
 
     def qualify_task(
         self,
@@ -1197,7 +1231,7 @@ class RunEngine:
                         self._commit_event(
                             journal, EventKind.RUN_CANCELLED, {"reason": "explicit_cancel"}
                         )
-                    raise EngineError("qualification run was cancelled")
+                    raise EngineError("qualification run terminated before completing its canaries")
             record = journal.record()
         else:
             complete = journal.record()

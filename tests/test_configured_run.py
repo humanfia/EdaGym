@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing
+import signal
+import subprocess
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -15,7 +19,8 @@ from edagym.canonical import canonical_digest
 from edagym.config import initialize_config, resolve_profile
 from edagym.config.model import EdaGymConfig, PrivateConfigSnapshot
 from edagym.evaluation.model import OutcomeKind
-from edagym.executors.model import ExecutionFailureKind
+from edagym.executors.model import ExecutionFailureKind, JobStateKind
+from edagym.executors.rootless import _InvocationReceipt
 from edagym.policy.runtime_storage import PrivateStorageError
 from edagym.run.journal import RunJournal
 from edagym.run.model import (
@@ -24,6 +29,7 @@ from edagym.run.model import (
     IntentKind,
     InteractionIntent,
     Principal,
+    ToolPayload,
     TransferPayload,
 )
 from edagym.runtime.engine import RunEngine
@@ -297,3 +303,70 @@ def test_resume_requires_published_qualification_and_recovers_derived_evidence(
             engine.resume(evidence.run_id, principal)
         engine.cancel(run.run_id, principal)
         engine.gc(run.run_id, principal)
+
+
+def _tool_controller(state_root: Path, run_id: str, principal_id: str) -> None:
+    RunEngine(state_root).submit_intent(
+        run_id,
+        InteractionIntent(
+            intent_id="lost_tool",
+            idempotency_key="lost_tool",
+            actor_id=principal_id,
+            kind=IntentKind.TOOL,
+            payload=ToolPayload(tool_id="yosys", arguments=("-p", "exec -- sleep 120")),
+        ),
+        Principal(principal_id=principal_id),
+    )
+
+
+def test_lost_launch_receipt_fences_the_operation_without_reexecution(
+    configured_task: tuple[EdaGymConfig, PrivateConfigSnapshot, GeneratedTask],
+) -> None:
+    config, snapshot, qualified = configured_task
+    state_root = snapshot.configuration.sites[0].state_root
+    engine = RunEngine(state_root)
+    principal = Principal(principal_id=config.web.principal_id)
+    run = engine.prepare_task(qualified, snapshot, config.sessions[0].session_id, principal)
+    journal = RunJournal.open(state_root / "runs" / run.run_id)
+    controller = multiprocessing.get_context("spawn").Process(
+        target=_tool_controller, args=(state_root, run.run_id, principal.principal_id)
+    )
+    controller.start()
+    try:
+        deadline = time.monotonic() + 120
+        while not any(operation.running is not None for operation in journal.state().operations):
+            assert controller.is_alive(), "controller exited before launch"
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        controller.kill()
+        controller.join(10)
+        assert controller.exitcode == -signal.SIGKILL
+    finally:
+        if controller.is_alive():
+            controller.kill()
+            controller.join(10)
+        controller.close()
+    (operation,) = journal.state().operations
+    plan = operation.prepared.payload.plan
+    receipt_path = (
+        journal.directory / plan.view.value / "jobs" / plan.invocation_id / "invocation.json"
+    )
+    receipt = _InvocationReceipt.model_validate_json(receipt_path.read_bytes())
+    receipt_path.unlink()
+    recovered = engine.resume(run.run_id, principal)
+    assert recovered.phase is EnginePhase.TERMINAL
+    assert recovered.terminal_reason == "infrastructure_failure"
+    (finished,) = journal.state().operations
+    assert finished.prepared == operation.prepared
+    assert finished.terminal is not None
+    assert finished.terminal.payload.result.state.state is JobStateKind.LOST
+    assert finished.terminal.payload.result.state.failure is ExecutionFailureKind.INFRASTRUCTURE
+    assert finished.terminal.payload.result.state.exit_code is None
+    record = journal.record()
+    assert engine.resume(run.run_id, principal) == recovered
+    assert journal.record() == record
+    assert engine.gc(run.run_id, principal)
+    observed = subprocess.run(
+        ["/usr/bin/podman", "container", "exists", receipt.container_name], check=False
+    )
+    assert observed.returncode == 1

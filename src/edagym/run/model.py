@@ -10,7 +10,7 @@ from pydantic import Field, TypeAdapter, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.evaluation.model import OutcomeKind
-from edagym.executors.model import ExecutionResult, InvocationPlan, JobHandle
+from edagym.executors.model import ExecutionFailureKind, ExecutionResult, InvocationPlan, JobHandle
 from edagym.run.artifact_model import CommittedManifest
 from edagym.run.journal_storage import JournalCommit
 from edagym.run.manifest import RunManifest
@@ -55,6 +55,7 @@ class EventKind(StrEnum):
     RUN_CANCELLED = "run_cancelled"
     CANCEL_REQUESTED = "cancel_requested"
     RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
 
 
 class Principal(StrictModel):
@@ -234,6 +235,10 @@ class QualificationCompletedPayload(StrictModel):
     evidence_digest: Digest
 
 
+class RunFailurePayload(StrictModel):
+    failure: ExecutionFailureKind
+
+
 class RunPreparedEvent(EventBase):
     kind: Literal[EventKind.RUN_PREPARED] = EventKind.RUN_PREPARED
     payload: PreparedPayload
@@ -309,6 +314,11 @@ class RunCompletedEvent(EventBase):
     payload: ReasonPayload
 
 
+class RunFailedEvent(EventBase):
+    kind: Literal[EventKind.RUN_FAILED] = EventKind.RUN_FAILED
+    payload: RunFailurePayload
+
+
 RunEvent = Annotated[
     RunPreparedEvent
     | RunStartedEvent
@@ -324,7 +334,8 @@ RunEvent = Annotated[
     | QualificationCompletedEvent
     | CancelRequestedEvent
     | RunCancelledEvent
-    | RunCompletedEvent,
+    | RunCompletedEvent
+    | RunFailedEvent,
     Field(discriminator="kind"),
 ]
 RUN_EVENT: TypeAdapter[RunEvent] = TypeAdapter(RunEvent)

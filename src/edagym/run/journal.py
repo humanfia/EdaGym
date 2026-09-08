@@ -39,6 +39,7 @@ from edagym.run.model import (
     RunCommit,
     RunCompletedEvent,
     RunEvent,
+    RunFailedEvent,
     RunPreparedEvent,
     RunProjection,
     RunRecord,
@@ -217,6 +218,8 @@ def replay(manifest: RunManifest, events: Sequence[RunEvent]) -> RunState:
                     )
                 phase, terminal = EnginePhase.TERMINAL, "qualification_finished"
                 qualification_instance_id = event.payload.instance_id
+            elif isinstance(event, RunFailedEvent):
+                phase, terminal = EnginePhase.TERMINAL, f"{event.payload.failure.value}_failure"
             elif isinstance(event, RunCancelledEvent | RunCompletedEvent):
                 if (
                     isinstance(event, RunCompletedEvent)
