@@ -8,10 +8,10 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
+from edagym.specs.budget import ModelBudget, ResourceBudget
 from edagym.specs.common import Digest, Identifier, StrictModel
 
 PositiveInt = Annotated[int, Field(strict=True, ge=1)]
-NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 ModelRoute = Annotated[
     str,
     Field(
@@ -134,43 +134,8 @@ WriterControl = Annotated[
 ]
 
 
-class ResourceBudget(StrictModel):
-    max_turns: PositiveInt
-    max_tool_calls: PositiveInt
-    max_experiments: PositiveInt
-    max_wall_seconds: PositiveInt
-    max_eda_compute_seconds: PositiveInt
-    max_license_seconds: NonNegativeInt
-    max_artifact_bytes: PositiveInt
-
-
-class ModelBudget(StrictModel):
-    max_requests: PositiveInt
-    max_input_tokens_per_request: PositiveInt
-    max_output_tokens_per_request: PositiveInt
-    max_total_input_tokens: PositiveInt
-    max_total_output_tokens: PositiveInt
-    max_total_tokens: PositiveInt
-
-    @model_validator(mode="after")
-    def validate_token_limits(self) -> Self:
-        if self.max_total_input_tokens < self.max_input_tokens_per_request:
-            raise ValueError("total input tokens must admit one maximum-size request")
-        if self.max_total_output_tokens < self.max_output_tokens_per_request:
-            raise ValueError("total output tokens must admit one maximum-size response")
-        if self.max_total_tokens < (
-            self.max_input_tokens_per_request + self.max_output_tokens_per_request
-        ):
-            raise ValueError("total tokens must admit one maximum-size exchange")
-        if self.max_total_tokens > (
-            self.max_total_input_tokens + self.max_total_output_tokens
-        ):
-            raise ValueError("total tokens cannot exceed the directional token limits")
-        return self
-
-
 class SessionSpec(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     session_id: Identifier
     mode: SessionMode
     actors: Annotated[tuple[ActorSpec, ...], Field(min_length=1)]
@@ -247,4 +212,4 @@ class SessionSpec(StrictModel):
 
     @property
     def digest(self) -> str:
-        return canonical_digest(self, domain="session-spec-v1")
+        return canonical_digest(self, domain="session-spec-v2")

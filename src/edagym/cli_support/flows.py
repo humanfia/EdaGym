@@ -34,6 +34,7 @@ from edagym.run.artifacts import (
 from edagym.run.trial_model import RunState, StopReason
 from edagym.runtime.errors import OrchestrationError
 from edagym.runtime.orchestrator import RunOrchestrator
+from edagym.specs.budget import ResourceBudget
 from edagym.specs.common import ArtifactClass
 from edagym.specs.environment import BrokeredHostToolExecutor, EnvironmentSpec
 from edagym.specs.release import FlowReleaseQualification, ReleaseManifest
@@ -45,7 +46,6 @@ from edagym.specs.session import (
     FixedWriter,
     HumanActor,
     RecoveryPolicy,
-    ResourceBudget,
     SessionSpec,
 )
 from edagym.specs.task import WorkspaceInterface

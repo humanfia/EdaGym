@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from edagym.benchmark.model import EpisodeBudget
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.evaluation.model import PassedOutcome, StageResult
 from edagym.executors.asset_policy import load_system_asset_source_policy
@@ -139,6 +138,7 @@ from edagym.run.trial_model import (
 from edagym.runtime.model import EvaluationArtifacts, EvaluationContext
 from edagym.runtime.orchestrator import RunOrchestrator
 from edagym.security.canary_artifact import ProviderCanaryEvidence
+from edagym.specs.budget import EpisodeBudget, ModelBudget, ResourceBudget
 from edagym.specs.common import (
     ArtifactClass,
     Capability,
@@ -167,8 +167,6 @@ from edagym.specs.session import (
     HandoffWriter,
     HarnessActor,
     HumanActor,
-    ModelBudget,
-    ResourceBudget,
     SessionSpec,
 )
 from edagym.specs.task import TaskSpec
@@ -764,8 +762,8 @@ def _campaign_inputs(
                 max_requests=8,
                 max_input_tokens_per_request=128,
                 max_output_tokens_per_request=64,
-                max_total_input_tokens=1024,
-                max_total_output_tokens=512,
+                max_input_tokens=1024,
+                max_output_tokens=512,
                 max_total_tokens=1536,
             ),
         }

@@ -9,12 +9,11 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
+from edagym.specs.budget import EpisodeBudget
 from edagym.specs.common import (
     CanonicalDecimal,
     Digest,
     Identifier,
-    JcsNonNegativeInt,
-    JcsPositiveInt,
     SchemaVersion,
     Seed128Hex,
     StrictModel,
@@ -94,39 +93,6 @@ class BenchmarkStratum(StrictModel):
     @property
     def task_instance_digests(self) -> tuple[str, ...]:
         return tuple(case.task_instance_digest for case in self.cases)
-
-
-class EpisodeBudget(StrictModel):
-    """The benchmark owns every solving limit for one scored episode."""
-
-    max_requests: JcsPositiveInt
-    max_input_tokens_per_request: JcsPositiveInt
-    max_output_tokens_per_request: JcsPositiveInt
-    max_input_tokens: JcsPositiveInt
-    max_output_tokens: JcsPositiveInt
-    max_total_tokens: JcsPositiveInt
-    max_turns: JcsPositiveInt
-    max_tool_calls: JcsPositiveInt
-    max_experiments: JcsPositiveInt
-    max_wall_seconds: JcsPositiveInt
-    max_eda_compute_seconds: JcsPositiveInt
-    max_license_seconds: JcsNonNegativeInt
-    max_artifact_bytes: JcsPositiveInt
-
-    @model_validator(mode="after")
-    def validate_request_capacity(self) -> Self:
-        if self.max_input_tokens_per_request > self.max_input_tokens:
-            raise ValueError("episode input limit does not admit one maximum request")
-        if self.max_output_tokens_per_request > self.max_output_tokens:
-            raise ValueError("episode output limit does not admit one maximum request")
-        if (
-            self.max_input_tokens_per_request + self.max_output_tokens_per_request
-            > self.max_total_tokens
-        ):
-            raise ValueError("episode token limit does not admit one maximum request")
-        if self.max_total_tokens > self.max_input_tokens + self.max_output_tokens:
-            raise ValueError("episode token total cannot exceed its directional limits")
-        return self
 
 
 class BenchmarkSpec(StrictModel):

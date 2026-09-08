@@ -94,6 +94,7 @@ from edagym.runtime import (
     OrchestrationError,
     RunOrchestrator,
 )
+from edagym.specs.budget import ModelBudget
 from edagym.specs.common import (
     ArtifactClass,
     Capability,
@@ -114,7 +115,6 @@ from edagym.specs.session import (
     ActorKind,
     BenchmarkMode,
     FeedbackPolicy,
-    ModelBudget,
     RecoveryPolicy,
     SessionSpec,
 )
@@ -1211,8 +1211,8 @@ def test_runtime_accounts_completed_provider_usage_instead_of_reservation(
                 max_requests=2,
                 max_input_tokens_per_request=5,
                 max_output_tokens_per_request=5,
-                max_total_input_tokens=5,
-                max_total_output_tokens=5,
+                max_input_tokens=5,
+                max_output_tokens=5,
                 max_total_tokens=10,
             ),
         }

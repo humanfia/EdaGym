@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from edagym.benchmark.model import EpisodeBudget
 from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.cli_support.campaigns import (
     CampaignCliCommand,
@@ -74,13 +73,12 @@ from edagym.run.artifacts import ContentAddressedStore
 from edagym.run.trial_model import StopReason
 from edagym.security.canary import CanaryPolicy
 from edagym.security.synthetic_preflight import SyntheticPreflightError
+from edagym.specs.budget import EpisodeBudget, ModelBudget, ResourceBudget
 from edagym.specs.common import Capability
 from edagym.specs.session import (
     BenchmarkMode,
     HarnessActor,
-    ModelBudget,
     RecoveryPolicy,
-    ResourceBudget,
     SessionSpec,
 )
 from tests.campaign_fixtures import campaign_cells, campaign_header
@@ -259,8 +257,8 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
                 max_requests=8,
                 max_input_tokens_per_request=128,
                 max_output_tokens_per_request=64,
-                max_total_input_tokens=1024,
-                max_total_output_tokens=512,
+                max_input_tokens=1024,
+                max_output_tokens=512,
                 max_total_tokens=1536,
             ),
         }

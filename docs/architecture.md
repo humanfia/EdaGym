@@ -14,7 +14,8 @@ Four records own runtime truth:
   and filesystem policy, resources, license channels, artifact policy, and
   checkpoint capability.
 - `SessionSpec` owns the participant mode, actors, single-writer control,
-  feedback policy, recovery policy, and budgets.
+  feedback policy, recovery policy, and unscored trial budgets. A scored trial
+  derives its budgets from `BenchmarkSpec.episode_budget`.
 - `RunRecord` owns the immutable run binding and its append-only event history.
 
 Task instances and release manifests are deterministic derivatives of a
@@ -22,6 +23,16 @@ Task instances and release manifests are deterministic derivatives of a
 environment, session, evaluators, and trial identity. Reports and ecosystem
 formats are projections from the journal; none is allowed to become a second
 runtime ledger.
+
+`specs.budget` defines model and execution limits once. `EpisodeBudget`
+composes `ModelBudget` and `ResourceBudget`; campaign admission compares the
+session limits with those projections of the frozen benchmark budget.
+`SessionSpec` schema version 2 uses `max_input_tokens` and
+`max_output_tokens` for episode totals, matching the benchmark fields.
+Version 1 documents must be regenerated; the loader does not reinterpret
+their token fields. The benchmark budget's serialized fields are unchanged.
+The configured `RunEngine` still uses the session configuration's request and
+wall limits; binding scored campaigns to that engine remains incomplete.
 
 Release readiness is also a projection. `ReleaseReport` references immutable
 authoring, backend, flow-run, campaign, repository-audit, and command evidence

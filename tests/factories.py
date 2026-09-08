@@ -47,6 +47,7 @@ from edagym.security.runtime_surface import (
     RuntimeSurfaceIdentity,
     RuntimeSurfaceManifest,
 )
+from edagym.specs.budget import ModelBudget, ResourceBudget
 from edagym.specs.common import (
     ArtifactClass,
     Capability,
@@ -84,9 +85,7 @@ from edagym.specs.session import (
     FeedbackPolicy,
     FixedWriter,
     HarnessActor,
-    ModelBudget,
     RecoveryPolicy,
-    ResourceBudget,
     SessionSpec,
     TrainingMode,
 )
@@ -730,8 +729,8 @@ def session_spec() -> SessionSpec:
             max_requests=16,
             max_input_tokens_per_request=4096,
             max_output_tokens_per_request=2048,
-            max_total_input_tokens=65_536,
-            max_total_output_tokens=32_768,
+            max_input_tokens=65_536,
+            max_output_tokens=32_768,
             max_total_tokens=98_304,
         ),
     )

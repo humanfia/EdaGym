@@ -26,6 +26,7 @@ from edagym.participants.model import ParticipantView, SubmitCandidateIntent
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.run.trial_model import RunRecord
 from edagym.runtime.orchestrator import RunOrchestrator
+from edagym.specs.budget import ResourceBudget
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import ReleaseManifest
 from edagym.specs.session import (
@@ -36,7 +37,6 @@ from edagym.specs.session import (
     FixedWriter,
     HumanActor,
     RecoveryPolicy,
-    ResourceBudget,
     SessionSpec,
 )
 

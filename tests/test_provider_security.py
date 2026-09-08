@@ -23,7 +23,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 import edagym.security.collector as collector_module
-from edagym.benchmark.model import EpisodeBudget
 from edagym.executors.isolation_launch import (
     SyntheticPreflightExecutorReceipt,
     SyntheticPreflightParentReceipt,
@@ -159,6 +158,7 @@ from edagym.security.runtime_surface import (
     RuntimeSurfaceBinding,
     runtime_surface_export_policy_digest,
 )
+from edagym.specs.budget import EpisodeBudget
 from edagym.specs.common import (
     ArtifactClass,
     Capability,

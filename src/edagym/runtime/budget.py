@@ -97,8 +97,8 @@ def budget_stop(
         model_budget = session.model_budget
         if model_budget is not None and (
             usage.provider_requests >= model_budget.max_requests
-            or usage.provider_input_tokens >= model_budget.max_total_input_tokens
-            or usage.provider_output_tokens >= model_budget.max_total_output_tokens
+            or usage.provider_input_tokens >= model_budget.max_input_tokens
+            or usage.provider_output_tokens >= model_budget.max_output_tokens
             or usage.provider_input_tokens + usage.provider_output_tokens
             >= model_budget.max_total_tokens
         ):

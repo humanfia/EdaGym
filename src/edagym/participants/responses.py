@@ -603,8 +603,8 @@ class ResponsesParticipantAdapter:
         )
         if (
             len(requests) + 1 > budget.max_requests
-            or input_tokens + self._token_claim.input_tokens > budget.max_total_input_tokens
-            or output_tokens + self._token_claim.output_tokens > budget.max_total_output_tokens
+            or input_tokens + self._token_claim.input_tokens > budget.max_input_tokens
+            or output_tokens + self._token_claim.output_tokens > budget.max_output_tokens
             or input_tokens + output_tokens + self._token_claim.total_tokens
             > budget.max_total_tokens
         ):

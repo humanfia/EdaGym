@@ -1449,21 +1449,7 @@ def _validate_trial_inputs(
     if model is None:
         raise ValueError("campaign session requires a provider model budget")
     budget = runner.header.benchmark.episode_budget
-    if (
-        model.max_input_tokens_per_request != budget.max_input_tokens_per_request
-        or model.max_output_tokens_per_request != budget.max_output_tokens_per_request
-        or model.max_requests != budget.max_requests
-        or model.max_total_input_tokens != budget.max_input_tokens
-        or model.max_total_output_tokens != budget.max_output_tokens
-        or model.max_total_tokens != budget.max_total_tokens
-        or session.resources.max_turns != budget.max_turns
-        or session.resources.max_tool_calls != budget.max_tool_calls
-        or session.resources.max_experiments != budget.max_experiments
-        or session.resources.max_wall_seconds != budget.max_wall_seconds
-        or session.resources.max_eda_compute_seconds != budget.max_eda_compute_seconds
-        or session.resources.max_license_seconds != budget.max_license_seconds
-        or session.resources.max_artifact_bytes != budget.max_artifact_bytes
-    ):
+    if model != budget.model_budget or session.resources != budget.resources:
         raise ValueError("session budgets differ from the frozen benchmark episode budget")
     harness = binding.harness
     if not isinstance(harness, MeteredProviderHarnessBinding):

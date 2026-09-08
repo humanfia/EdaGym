@@ -7,7 +7,6 @@ from edagym.benchmark.model import (
     BenchmarkPhase,
     BenchmarkSpec,
     BenchmarkStratum,
-    EpisodeBudget,
     EvaluationCell,
 )
 from edagym.providers.campaign import (
@@ -28,6 +27,7 @@ from edagym.providers.campaign_schedule import (
     build_campaign_schedule,
 )
 from edagym.providers.model import ResolvedProviderConfig
+from edagym.specs.budget import EpisodeBudget
 
 
 def campaign_cells(

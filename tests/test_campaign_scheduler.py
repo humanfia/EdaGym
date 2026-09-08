@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from edagym.benchmark.model import EpisodeBudget
 from edagym.benchmark.schedule import build_benchmark_schedule
 from edagym.evaluation.model import CandidateFailureOutcome, PassedOutcome, StageResult
 from edagym.providers.campaign import (
@@ -73,6 +72,7 @@ from edagym.run.trial_model import (
     StopReason,
     TaskRunBinding,
 )
+from edagym.specs.budget import EpisodeBudget
 from edagym.specs.common import Capability, ProviderResponseStatus, Redistribution
 from edagym.specs.task import PublicCalibrationTaskOrigin
 from tests.campaign_fixtures import campaign_cells, campaign_header
