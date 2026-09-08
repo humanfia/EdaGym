@@ -22,6 +22,7 @@ from edagym.authoring.provider import (
 from edagym.canonical import canonical_digest
 from edagym.executors.asset_policy import load_system_asset_source_policy
 from edagym.executors.local import BrokeredHostExecutor
+from edagym.executors.report import CompositeCommandReport
 from edagym.flow_tasks.canonical import (
     CanonicalFlowTask,
     derive_flow_release,
@@ -48,7 +49,6 @@ from edagym.flow_tasks.model import (
     WorkspaceCommand,
 )
 from edagym.flow_tasks.qualification import qualify_flow_release
-from edagym.flow_tasks.runtime import CompositeCommandReport
 from edagym.run.artifact_model import (
     ArtifactManifest,
 )
@@ -56,8 +56,8 @@ from edagym.run.artifacts import (
     ArtifactStoreError,
     ContentAddressedStore,
 )
-from edagym.run.journal import replay
-from edagym.run.model import (
+from edagym.run.trial_journal import replay
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     EvaluationCompletedEvent,
     RunRecord,

@@ -19,7 +19,13 @@
       <button class="tab" data-view="evidence" type="button">Evidence &amp; reports</button>
     </nav>
     <section id="tasks" class="view" data-panel>
-      <div class="view-heading"><div><p class="eyebrow">Authoring</p><h2>Task catalog</h2><p class="muted">Browse qualified task families and start a controlled run.</p></div><label class="search"><span class="sr-only">Filter tasks</span><input id="task-filter" type="search" placeholder="Filter by family or capability"></label></div>
+      <div class="view-heading"><div><p class="eyebrow">Authoring</p><h2>Task catalog</h2><p class="muted">Browse task families or open a qualified instance.</p></div><label class="search"><span class="sr-only">Filter tasks</span><input id="task-filter" type="search" placeholder="Filter by family or capability"></label></div>
+      <form id="open-instance" class="workspace-form">
+        <label>Qualified instance ID<input id="instance-id" required placeholder="task_..."></label>
+        <label>Execution profile<select id="profile-id" required></select></label>
+        <label>Session<select id="session-id" required></select></label>
+        <button class="button" type="submit">Open instance</button>
+      </form>
       <div id="task-list" class="task-grid" aria-live="polite"><div class="loading">Loading task catalog</div></div>
     </section>
     <section id="runs" class="view" data-panel hidden>

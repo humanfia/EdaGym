@@ -29,8 +29,8 @@ from edagym.participants.model import (
     SubmitCandidateIntent,
 )
 from edagym.resolution import resolve_run
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     CampaignTrialRunBinding,
     InteractionDirection,
     ParticipantIncarnationBinding,
@@ -200,7 +200,7 @@ def _campaign_journal(
     root: Path,
     *,
     initial_writer: str,
-) -> tuple[RunJournal, SessionSpec]:
+) -> tuple[TrialJournal, SessionSpec]:
     task = task_spec()
     environment = environment_spec()
     instance = task_instance(task)
@@ -256,7 +256,7 @@ def _campaign_journal(
         campaign=campaign,
         purpose=RunPurpose.CAMPAIGN_TRIAL,
     )
-    journal = RunJournal.create(root, RunHeader.from_binding(plan.binding), task)
+    journal = TrialJournal.create(root, RunHeader.from_binding(plan.binding), task)
     journal.append_events(
         (
             RunStartedEvent(
@@ -294,7 +294,7 @@ def _campaign_journal(
 
 
 def _admission(
-    journal: RunJournal,
+    journal: TrialJournal,
     session: SessionSpec,
     actor_id: str,
 ) -> CampaignParticipantAdmission:

@@ -24,8 +24,8 @@ from edagym.participants.adapters import (
 )
 from edagym.participants.admission import CampaignParticipantAdmission
 from edagym.participants.model import ParticipantIntent, ParticipantView
-from edagym.run.journal import RunJournal
-from edagym.run.model import HarnessRunActor
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import HarnessRunActor
 from edagym.specs.common import Digest, Identifier, StrictModel
 from edagym.specs.environment import EnvironmentSpec, GuestTarget
 from edagym.specs.session import (
@@ -146,7 +146,7 @@ class HumanizeParticipantAdapter:
         self,
         *,
         actor_id: str,
-        journal: RunJournal,
+        journal: TrialJournal,
         environment: EnvironmentSpec,
         session: SessionSpec,
         harness: HumanizeHarnessSpec,
@@ -432,7 +432,7 @@ class CodexExecParticipantAdapter:
         self,
         *,
         actor_id: str,
-        journal: RunJournal,
+        journal: TrialJournal,
         environment: EnvironmentSpec,
         session: SessionSpec,
         harness: CodexExecHarnessSpec,
@@ -628,7 +628,7 @@ class ClaudeCodeParticipantAdapter:
         self,
         *,
         actor_id: str,
-        journal: RunJournal,
+        journal: TrialJournal,
         environment: EnvironmentSpec,
         session: SessionSpec,
         harness: ClaudeCodeHarnessSpec,
@@ -768,7 +768,7 @@ def _response_bound(value: int) -> int:
 
 
 def _validate_run_bindings(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
 ) -> None:
@@ -779,7 +779,7 @@ def _validate_run_bindings(
 
 
 def _bound_harness(
-    journal: RunJournal,
+    journal: TrialJournal,
     session: SessionSpec,
     actor_id: str,
 ) -> HarnessRunActor:

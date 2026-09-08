@@ -57,7 +57,7 @@ from edagym.providers.model import (
     ResolvedProviderConfig,
 )
 from edagym.providers.provider_budget import CampaignProviderBudget
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CampaignTrialRunBinding,
     CandidateStageResult,
     EnvironmentRunBinding,

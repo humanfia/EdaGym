@@ -17,7 +17,7 @@ from edagym.run.artifact_model import (
     ArtifactRecord,
     BlobRef,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     HarnessRunActor,

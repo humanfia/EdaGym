@@ -15,7 +15,7 @@ from edagym.cli_support.backends import FlowHostBindings, resolve_flow_host_bind
 from edagym.cli_support.errors import CliFailure
 from edagym.executors.asset_policy import load_system_asset_source_policy
 from edagym.executors.assets import asset_content_digest
-from edagym.run.model import RunRecord
+from edagym.run.trial_model import RunRecord
 from edagym.specs.environment import (
     AssetBinding,
     EnvironmentSpec,

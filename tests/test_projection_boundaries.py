@@ -32,8 +32,8 @@ from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ContentAddressedStore,
 )
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CandidateSubmittedEvent,
@@ -112,7 +112,7 @@ def test_ecosystem_projections_allowlist_public_references_from_journal(
         trial_key="projection-0001",
     )
     header = RunHeader.from_binding(plan.binding)
-    journal = RunJournal.create(tmp_path / "journal", header, task)
+    journal = TrialJournal.create(tmp_path / "journal", header, task)
     store = ContentAddressedStore(
         tmp_path / "store",
         policy=environment.artifact_policy,
@@ -382,7 +382,7 @@ def test_course_report_excludes_author_only_activity_and_artifacts(
         trial_key="course-projection-0001",
     )
     header = RunHeader.from_binding(plan.binding)
-    journal = RunJournal.create(tmp_path / "course-journal", header, task)
+    journal = TrialJournal.create(tmp_path / "course-journal", header, task)
     events = (
         RunStartedEvent(
             run_id=header.run_id,
@@ -515,7 +515,7 @@ def test_leaderboard_partition_preserves_harness_route_association(
     def project(
         routes: tuple[str, str],
         label: str,
-    ) -> tuple[str, RunJournal, SessionSpec]:
+    ) -> tuple[str, TrialJournal, SessionSpec]:
         session = SessionSpec(
             session_id=f"association_{label}",
             mode=BenchmarkMode(trial_count=2),
@@ -550,7 +550,7 @@ def test_leaderboard_partition_preserves_harness_route_association(
             trial_key=f"association-{label}",
         )
         header = RunHeader.from_binding(plan.binding)
-        journal = RunJournal.create(tmp_path / label, header, task)
+        journal = TrialJournal.create(tmp_path / label, header, task)
         journal.append(
             RunStartedEvent(
                 run_id=header.run_id,

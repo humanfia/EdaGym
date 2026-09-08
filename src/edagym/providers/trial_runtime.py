@@ -115,11 +115,11 @@ from edagym.run.artifact_model import (
     BlobRef,
 )
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.journal import (
-    RunJournal,
+from edagym.run.trial_journal import (
+    TrialJournal,
     participant_tool_usage,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     InteractionDirection,
@@ -197,7 +197,7 @@ class ExecutorParticipantToolDispatcher:
     def __init__(
         self,
         *,
-        journal: RunJournal,
+        journal: TrialJournal,
         environment: EnvironmentSpec,
         session: SessionSpec,
         artifact_store: ContentAddressedStore,
@@ -1111,7 +1111,7 @@ class CampaignTrialDispatcher:
             campaign=campaign_binding,
         )
         run_header = RunHeader.from_binding(plan.binding)
-        journal = RunJournal.create(run_state_root, run_header, task)
+        journal = TrialJournal.create(run_state_root, run_header, task)
         if continuation is None:
             if len(session.actors) != 1:
                 raise ValueError(
@@ -1358,7 +1358,7 @@ class CampaignTrialDispatcher:
 def _validate_campaign_continuation(
     continuation: CampaignTrialContinuation,
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     plan_binding: RunBinding,
     runner: CampaignRunner,
     trial: ScheduledTrial,
@@ -1482,7 +1482,7 @@ def _run_work_claim(session: SessionSpec) -> CampaignResources:
     )
 
 
-def _pending_tool_request(journal: RunJournal, actor_id: str) -> str:
+def _pending_tool_request(journal: TrialJournal, actor_id: str) -> str:
     events = journal.read_events()
     if not events:
         raise ValueError("participant tool invocation requires a started run")

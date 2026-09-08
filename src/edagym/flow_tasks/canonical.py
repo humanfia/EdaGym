@@ -34,8 +34,8 @@ from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ContentAddressedStore,
 )
-from edagym.run.journal import replay
-from edagym.run.model import (
+from edagym.run.trial_journal import replay
+from edagym.run.trial_model import (
     RunRecord,
     StopReason,
 )

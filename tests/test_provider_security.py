@@ -115,7 +115,7 @@ from edagym.run.artifact_model import (
     BlobRef,
 )
 from edagym.run.artifacts import ContentAddressedStore, EncryptionKey
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CampaignTrialRunBinding,
     ParticipantIncarnationBinding,
     ParticipantIncarnationStartedEvent,

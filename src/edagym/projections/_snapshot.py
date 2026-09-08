@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from edagym.run.journal import RunJournal, replay
-from edagym.run.model import RunEvent, RunHeader, RunRecord, RunState
+from edagym.run.trial_journal import TrialJournal, replay
+from edagym.run.trial_model import RunEvent, RunHeader, RunRecord, RunState
 from edagym.specs.task import TaskSpec
 
 
@@ -17,7 +17,7 @@ class ProjectionSnapshot:
     state: RunState
 
     @classmethod
-    def from_journal(cls, journal: RunJournal) -> ProjectionSnapshot:
+    def from_journal(cls, journal: TrialJournal) -> ProjectionSnapshot:
         events = journal.read_events()
         return cls(
             header=journal.header,

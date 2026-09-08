@@ -21,8 +21,9 @@ from edagym.run.artifacts import (
     ContentAddressedStore,
     candidate_snapshot_artifact_id,
 )
-from edagym.run.journal import JournalError, replay
-from edagym.run.model import (
+from edagym.run.journal_storage import JournalError
+from edagym.run.trial_journal import replay
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     CandidateSubmittedEvent,
     CheckpointCommittedEvent,

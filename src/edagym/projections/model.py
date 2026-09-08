@@ -10,7 +10,7 @@ from pydantic import Field, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.evaluation.model import CandidateScore, OutcomeKind, ScorerEligibilityKind
-from edagym.run.model import (
+from edagym.run.trial_model import (
     EventKind,
     InteractionDirection,
     RunLineage,

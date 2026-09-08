@@ -17,15 +17,14 @@ import edagym.participant_tool_protocol as tool_protocol
 from edagym.canonical import canonical_digest
 from edagym.executors.isolation_launch import SyntheticPreflightExecutorReceipt
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.journal import (
-    EventConflict,
-    InvalidTransition,
-    RunJournal,
+from edagym.run.journal_storage import EventConflict, InvalidTransition
+from edagym.run.trial_journal import (
+    TrialJournal,
     active_license_leases,
     participant_tool_dispatches,
     unresolved_tool_requests,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     InteractionDirection,
     InteractionRecordedEvent,
     InteractionRecordedPayload,
@@ -389,7 +388,7 @@ def participant_tool_interaction_id(
 
 def recover_interrupted_executor_tools(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     fence: Callable[[str], object],
     timestamp: datetime,
     event_id_factory: Callable[[], UUID],
@@ -434,7 +433,7 @@ def recover_interrupted_executor_tools(
 
 def close_interrupted_controller_tools(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     timestamp: datetime,
     event_id_factory: Callable[[], UUID],
 ) -> RunState:
@@ -462,7 +461,7 @@ def close_interrupted_controller_tools(
 
 def _close_interrupted_request(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     request: InteractionRecordedEvent,
     tool_name: Identifier,
     close_active_dispatch: bool,

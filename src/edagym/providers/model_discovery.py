@@ -43,7 +43,7 @@ from edagym.providers.responses import (
     ProviderProtocolError,
     RawHttpResponse,
 )
-from edagym.run.model import ProviderSecurityBinding
+from edagym.run.trial_model import ProviderSecurityBinding
 from edagym.security.canary import CanaryAttestation, CanaryPolicy
 from edagym.security.canary_artifact import ProviderCanaryEvidence
 from edagym.security.credentials import (

@@ -12,7 +12,7 @@ from edagym.canonical import canonical_digest
 from edagym.providers.campaign import CampaignSpec
 from edagym.providers.campaign_schedule import CampaignSchedule
 from edagym.providers.numeric import JcsNonNegativeInt, JcsPositiveInt
-from edagym.run.model import StopReason
+from edagym.run.trial_model import StopReason
 from edagym.specs.common import Digest, StrictModel
 
 

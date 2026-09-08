@@ -40,13 +40,13 @@ from edagym.providers.trial_evidence import CampaignTrialResult
 from edagym.release_commands import ReleaseEvidenceStatus
 from edagym.resolution import ResolutionError, resolve_run
 from edagym.run.artifacts import ContentAddressedStore, artifact_policy_digest
-from edagym.run.journal import (
-    JournalError,
+from edagym.run.journal_storage import JournalError
+from edagym.run.trial_journal import (
     participant_incarnation_lifecycle,
     participant_tool_dispatches,
     replay,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CandidateSubmittedEvent,
     CheckpointCommittedEvent,
     EvaluationCompletedEvent,

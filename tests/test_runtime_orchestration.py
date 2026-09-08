@@ -64,8 +64,9 @@ from edagym.run.artifacts import (
     SanitizedMeasurements,
 )
 from edagym.run.checkpoints import restore_application_checkpoint
-from edagym.run.journal import InvalidTransition, replay
-from edagym.run.model import (
+from edagym.run.journal_storage import InvalidTransition
+from edagym.run.trial_journal import replay
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     CandidateSubmittedEvent,
     EvaluationCompletedEvent,

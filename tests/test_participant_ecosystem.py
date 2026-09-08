@@ -35,8 +35,8 @@ from edagym.participants import (
     participant_asset_digest,
 )
 from edagym.resolution import resolve_run
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     ProducerKind,
     RunHeader,
     RunStartedEvent,
@@ -141,7 +141,7 @@ def _journal(
     harness: CalibrationHarnessSpec,
     *,
     environment: EnvironmentSpec | None = None,
-) -> tuple[RunJournal, EnvironmentSpec, SessionSpec]:
+) -> tuple[TrialJournal, EnvironmentSpec, SessionSpec]:
     task = task_spec()
     bound_environment = _environment(harness) if environment is None else environment
     instance = task_instance(task)
@@ -173,7 +173,7 @@ def _journal(
         session=session,
         trial_key="container-cli-0001",
     )
-    journal = RunJournal.create(tmp_path / "journal", RunHeader.from_binding(plan.binding), task)
+    journal = TrialJournal.create(tmp_path / "journal", RunHeader.from_binding(plan.binding), task)
     journal.append(
         RunStartedEvent(
             run_id=journal.header.run_id,
@@ -201,7 +201,7 @@ def _channel(
     scaffold: Path,
     *,
     clock: Callable[[], datetime] | None = None,
-) -> tuple[CalibrationCommandChannel, RunJournal, EnvironmentSpec, SessionSpec]:
+) -> tuple[CalibrationCommandChannel, TrialJournal, EnvironmentSpec, SessionSpec]:
     journal, environment, session = _journal(tmp_path, harness)
     workspace = tmp_path / "workspace"
     workspace.mkdir(mode=0o700)
@@ -224,7 +224,7 @@ def _channel(
     return channel, journal, environment, session
 
 
-def _view(journal: RunJournal) -> ParticipantView:
+def _view(journal: TrialJournal) -> ParticipantView:
     return ParticipantView(
         run_id=journal.header.run_id,
         task_family="stream_guard",

@@ -13,8 +13,8 @@ from edagym.participants.adapters import (
 from edagym.participants.admission import CampaignParticipantAdmission
 from edagym.participants.execution import participant_dispatch_lock
 from edagym.participants.model import ParticipantIntent, ParticipantView
-from edagym.run.journal import RunJournal, replay
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal, replay
+from edagym.run.trial_model import (
     ControlTransferredEvent,
     HarnessRunActor,
     HumanRunActor,
@@ -29,7 +29,7 @@ class AdmittedCampaignContinuationAdapter:
 
     def __init__(
         self,
-        journal: RunJournal,
+        journal: TrialJournal,
         session: SessionSpec,
         harness_adapter: ParticipantAdapter,
     ) -> None:

@@ -59,7 +59,7 @@ from edagym.providers.model import (
     ResolvedProviderConfig,
 )
 from edagym.providers.numeric import JcsNonNegativeInt, JcsPositiveInt
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CandidateStageResult,
     ProviderRequestState,
     ProviderSecurityBinding,

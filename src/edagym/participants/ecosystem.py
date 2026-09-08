@@ -37,8 +37,8 @@ from edagym.participants.adapters import (
 )
 from edagym.participants.controller import ParticipantController
 from edagym.participants.model import ParticipantView
-from edagym.run.journal import RunJournal
-from edagym.run.model import HarnessRunActor, RunStartedEvent, RunState, StopReason
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import HarnessRunActor, RunStartedEvent, RunState, StopReason
 from edagym.specs.common import (
     Digest,
     Identifier,
@@ -170,7 +170,7 @@ class CalibrationCommandChannel:
         self,
         *,
         actor_id: str,
-        journal: RunJournal,
+        journal: TrialJournal,
         environment: EnvironmentSpec,
         session: SessionSpec,
         harness: CalibrationHarnessSpec,
@@ -636,7 +636,7 @@ class ParticipantProjectionRegistry:
             return session
 
 
-def _bound_harness(journal: RunJournal, actor_id: str) -> HarnessRunActor:
+def _bound_harness(journal: TrialJournal, actor_id: str) -> HarnessRunActor:
     matches = [
         actor
         for actor in journal.header.binding.session.actors
@@ -694,7 +694,7 @@ def _digest_regular_file(path: Path) -> Digest:
 
 def _protected_runtime_roots(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     artifact_store_root: Path,
 ) -> tuple[Path, ...]:
     roots = [
@@ -734,7 +734,7 @@ def _private_control_directory(path: Path) -> Path:
 def _bind_workspace_manifest(
     *,
     control_root: Path,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
     harness: CalibrationHarnessSpec,
@@ -929,7 +929,7 @@ def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
 
 
 def _remaining_run_wall_seconds(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
     now: datetime,

@@ -8,12 +8,12 @@ from edagym.projections.model import (
     NemoInputMessage,
     NemoResponsesCreateParams,
 )
-from edagym.run.journal import RunJournal
-from edagym.run.model import RunRecord
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import RunRecord
 from edagym.specs.task import TaskSpec, WorkspaceInterface
 
 
-def project_nemo(journal: RunJournal) -> NemoDatasetProjection:
+def project_nemo(journal: TrialJournal) -> NemoDatasetProjection:
     """Derive an input row whose agent_ref will be added by NeMo dataset collation."""
 
     return _project_nemo_snapshot(ProjectionSnapshot.from_journal(journal))

@@ -14,7 +14,7 @@ from typing import IO, TYPE_CHECKING, Any, Protocol, SupportsIndex
 from pydantic import TypeAdapter
 
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import (
+from edagym.run.trial_model import (
     HarnessRunActor,
     ProviderRequestStartedEvent,
     ProviderResponseRecordedEvent,

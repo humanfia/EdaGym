@@ -118,7 +118,7 @@ from edagym.release_sessions import (
 )
 from edagym.resolution import resolve_run
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CandidateSubmittedEvent,
     CandidateSubmittedPayload,
     EvaluationCompletedEvent,

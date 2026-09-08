@@ -172,8 +172,10 @@ observations remain available after cleanup.
 `exact_toolset` still requires separate filesystem evidence excluding
 unauthorized tool entrypoints, package files, and dedicated libraries. The
 current complete-image inventory cannot supply that evidence, so exact views
-remain unavailable. View conformance does not establish task reference/mutant
-qualification or complete RunEngine admission.
+remain unavailable. View conformance alone does not establish task
+reference/mutant qualification. Configured task admission also verifies its
+qualification run, independent oracle evidence, candidate inputs, and collected
+artifacts under the same frozen participant/evaluator environments.
 
 `config import` converts v1 per-tool visibility into one view policy only when
 the selected tools agree. Conflicting modes require an explicit configuration

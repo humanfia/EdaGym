@@ -59,15 +59,15 @@ from edagym.run.artifact_model import (
 from edagym.run.artifacts import (
     ContentAddressedStore,
 )
-from edagym.run.journal import (
-    InvalidTransition,
-    RunJournal,
+from edagym.run.journal_storage import InvalidTransition
+from edagym.run.trial_journal import (
+    TrialJournal,
     participant_incarnation_lifecycle,
     participant_tool_dispatches,
     participant_tool_usage,
     unresolved_tool_requests,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     EvaluationCompletedEvent,
     EvaluationStartedEvent,
     EvaluationStartedPayload,
@@ -661,7 +661,7 @@ def _participant_controller_contender(
     interaction_id: str,
     block: bool,
 ) -> None:
-    journal = RunJournal.open(Path(run_directory_text), task_spec())
+    journal = TrialJournal.open(Path(run_directory_text), task_spec())
     controller = ParticipantController(
         journal,
         CommandAgentAdapter(

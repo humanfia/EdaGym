@@ -24,7 +24,7 @@ from edagym.flow_tasks.runtime import flow_evaluator_runtimes
 from edagym.participants.adapters import ParticipantAdapterError, ParticipantFailureKind
 from edagym.participants.model import ParticipantView, SubmitCandidateIntent
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import RunRecord
+from edagym.run.trial_model import RunRecord
 from edagym.runtime.orchestrator import RunOrchestrator
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import ReleaseManifest

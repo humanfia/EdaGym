@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from edagym.canonical import canonical_digest
+from edagym.config.view_qualification import ViewQualificationReceipt
 from edagym.evaluation.model import OutcomeKind
-from edagym.specs.common import Digest
+from edagym.evaluation.rtl_queue import QueueOracleEvidence
+from edagym.run.journal import replay
+from edagym.run.model import (
+    OperationPreparedEvent,
+    OperationRunningEvent,
+    OperationTerminalEvent,
+    RunRecord,
+)
+from edagym.specs.common import Digest, Identifier, StrictModel
 from edagym.specs.release import (
     QualificationStatus,
     TaskCanaryObservation,
@@ -59,10 +69,13 @@ def qualify_from_canaries(
         if set(candidates) != required:
             reason = "qualification_receipts_incomplete"
         elif any(
-            item.outcome in {
+            item.outcome
+            in {
                 OutcomeKind.INFRASTRUCTURE_FAILURE,
                 OutcomeKind.LICENSE_UNAVAILABLE,
                 OutcomeKind.UNKNOWN,
+                OutcomeKind.TIMEOUT,
+                OutcomeKind.SECURITY_VIOLATION,
             }
             for item in observations
         ):
@@ -71,7 +84,8 @@ def qualify_from_canaries(
             reference = candidates[contract.feasibility_witness_resource]
             negatives = [candidates[item] for item in contract.negative_candidate_resources]
             if not reference.runnable or reference.outcome not in {
-                OutcomeKind.PASSED, OutcomeKind.PROVED
+                OutcomeKind.PASSED,
+                OutcomeKind.PROVED,
             }:
                 status, reason = QualificationStatus.REJECTED, "reference_canary_failed"
             elif any(
@@ -125,3 +139,87 @@ def validate_qualification(instance: TaskInstance, task: TaskSpec) -> None:
     )
     if evidence != expected:
         raise ValueError("qualification evidence does not satisfy the task contract")
+
+
+class QualificationRunEvidence(StrictModel):
+    """Task admission binds its actual run, views, and independent oracle check."""
+
+    run_id: Identifier
+    run_record_digest: Digest
+    snapshot_digest: Digest
+    views: tuple[ViewQualificationReceipt, ...]
+    oracle: QueueOracleEvidence
+    qualification: TaskQualificationEvidence
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self, domain="task-qualification-run-evidence-v1")
+
+
+def qualification_from_run(
+    instance: TaskInstance,
+    task: TaskSpec,
+    record: RunRecord,
+    views: tuple[ViewQualificationReceipt, ...],
+    oracle: QueueOracleEvidence,
+) -> QualificationRunEvidence:
+    if record.manifest.task_instance_digest != instance.digest:
+        raise ValueError("qualification run binds another task instance")
+    projection = replay(record.manifest, record.events).projection
+    resources = {item.resource_id: item for item in task.resources}
+    observations = tuple(
+        TaskCanaryObservation(
+            candidate_resource_id=item.candidate_id,
+            candidate_content_digest=resources[item.candidate_id].content_digest,
+            outcome=item.outcome,
+            runnable=item.runnable,
+            evidence_digest=canonical_digest(
+                {
+                    "run_manifest": record.manifest.digest,
+                    "evaluation": item,
+                    "operations": tuple(
+                        event
+                        for event in record.events
+                        if (
+                            isinstance(event, OperationPreparedEvent)
+                            and event.payload.plan.invocation_id in item.operation_ids
+                        )
+                        or (
+                            isinstance(event, OperationRunningEvent | OperationTerminalEvent)
+                            and event.payload.operation_id in item.operation_ids
+                        )
+                    ),
+                },
+                domain="task-canary-run-evidence-v1",
+            ),
+        )
+        for item in projection.evaluations
+    )
+    if not isinstance(task.qualification, FlowQualificationSpec):
+        raise ValueError("runtime qualification requires the flow task contract")
+    reference = next(
+        item
+        for item in observations
+        if item.candidate_resource_id == task.qualification.feasibility_witness_resource
+    )
+    record_digest = canonical_digest(record, domain="run-record-v2")
+    qualification = qualify_from_canaries(
+        instance,
+        task,
+        observations,
+        tool_visibility_digest=canonical_digest(views, domain="task-view-evidence-v1"),
+        independent_evidence_digests=(oracle.digest,),
+        reference_evidence_digest=reference.evidence_digest,
+        verifier_evidence_digest=canonical_digest(
+            {"verifier": instance.verifier_bundle_digest, "run_record": record_digest},
+            domain="task-verifier-run-evidence-v1",
+        ),
+    )
+    return QualificationRunEvidence(
+        run_id=record.manifest.run_id,
+        run_record_digest=record_digest,
+        snapshot_digest=record.manifest.private_config_snapshot_digest,
+        views=views,
+        oracle=oracle,
+        qualification=qualification,
+    )

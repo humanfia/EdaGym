@@ -36,8 +36,8 @@ from edagym.providers.trial_security import (
 from edagym.providers.trial_workspace import prepare_trial_workspace
 from edagym.resolution import resolve_run
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.journal import RunJournal
-from edagym.run.model import RunHeader, RunPurpose, RunRecord
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import RunHeader, RunPurpose, RunRecord
 from edagym.runtime.model import EvaluatorRuntime
 from edagym.runtime.orchestrator import RunOrchestrator
 from edagym.runtime_surface_protocol import (
@@ -250,7 +250,7 @@ class SyntheticPreflightLauncher:
             _write_private_file(
                 export_root,
                 _EXPORT_FILE_NAME,
-                canonical_bytes(project_atif(RunJournal.open(journal_directory, self._task))),
+                canonical_bytes(project_atif(TrialJournal.open(journal_directory, self._task))),
             )
             execution_grant = _assemble_execution_grant(
                 execution=isolation_execution,
@@ -295,7 +295,7 @@ class SyntheticPreflightLauncher:
             campaign=campaign,
             purpose=RunPurpose.SYNTHETIC_PREFLIGHT,
         )
-        journal = RunJournal.create(
+        journal = TrialJournal.create(
             self._state_root,
             RunHeader.from_binding(plan.binding),
             self._task,

@@ -37,7 +37,7 @@ from edagym.flow_tasks.model import (
     ToolCommand,
 )
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import RunRecord
+from edagym.run.trial_model import RunRecord
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import ReleaseManifest
 from edagym.task_families.catalog import PublicTaskCatalog, TaskFamilyDefinition, TaskRoot

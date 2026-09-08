@@ -52,8 +52,9 @@ from edagym.run.artifact_model import (
     ArtifactRecord,
 )
 from edagym.run.artifacts import ContentAddressedStore, EncryptionKey
-from edagym.run.journal import InvalidTransition, RunJournal
-from edagym.run.model import (
+from edagym.run.journal_storage import InvalidTransition
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CampaignTrialRunBinding,
@@ -248,7 +249,7 @@ class _TwoRequestSender:
 
 
 def _canary_evidence(
-    journal: RunJournal,
+    journal: TrialJournal,
     *,
     provider_profile_digest: str = digest("provider-profile"),
     provider_config_digest: str = digest("provider-config"),
@@ -800,7 +801,7 @@ def _journal_and_store(
     session: SessionSpec | None = None,
     campaign: CampaignTrialRunBinding | None = None,
     trial_key: str = "responses-participant",
-) -> tuple[RunJournal, ContentAddressedStore]:
+) -> tuple[TrialJournal, ContentAddressedStore]:
     task = task_spec()
     instance = task_instance(task)
     release = release_manifest(task, instance, environment)
@@ -815,7 +816,7 @@ def _journal_and_store(
         campaign=campaign,
     )
     header = RunHeader.from_binding(plan.binding)
-    journal = RunJournal.create(root / "journal", header, task)
+    journal = TrialJournal.create(root / "journal", header, task)
     started = RunStartedEvent(
         run_id=header.run_id,
         sequence=0,
@@ -865,7 +866,7 @@ def _journal_and_store(
     return journal, store
 
 
-def _view(journal: RunJournal) -> ParticipantView:
+def _view(journal: TrialJournal) -> ParticipantView:
     return ParticipantView(
         run_id=journal.header.run_id,
         task_family=journal.header.binding.task.family,

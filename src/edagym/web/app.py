@@ -27,14 +27,9 @@ from edagym.config.model import (
 )
 from edagym.config.resolve import resolve_profile, resolve_site
 from edagym.policy.runtime_storage import write_private
-from edagym.runtime.engine import (
-    EngineError,
-    EventCursor,
-    IntentKind,
-    InteractionIntent,
-    Principal,
-    RunEngine,
-)
+from edagym.run.journal_storage import JournalError
+from edagym.run.model import EventCursor, IntentKind, InteractionIntent, Principal
+from edagym.runtime.engine import RunEngine
 
 
 class WebApplication:
@@ -63,6 +58,7 @@ class WebApplication:
                 Route("/api/runs/{run_id}/events", self._events, methods=["GET"]),
                 Route("/api/runs/{run_id}/intents", self._intent, methods=["POST"]),
                 Route("/api/runs/{run_id}/files", self._files, methods=["GET"]),
+                Route("/api/runs/{run_id}/interface", self._interface, methods=["GET"]),
                 Route("/api/runs/{run_id}/file", self._file, methods=["GET"]),
                 Route("/api/runs/{run_id}/resume", self._resume, methods=["POST"]),
                 Mount(
@@ -122,7 +118,7 @@ class WebApplication:
                 },
                 headers={"Cache-Control": "no-store"},
             )
-        except EngineError:
+        except (JournalError, OSError):
             return JSONResponse({"error": "run_journal_unavailable"}, status_code=409)
 
     async def _tasks(self, request: Request) -> Response:
@@ -206,7 +202,7 @@ class WebApplication:
                 creation_intent_digest=creation_digest,
             )
             return JSONResponse(projection.model_dump(mode="json"), status_code=201)
-        except (EngineError, ValueError, KeyError, IndexError):
+        except (JournalError, OSError, ValueError, KeyError, IndexError):
             return JSONResponse({"error": "invalid_run_request"}, status_code=400)
 
     async def _run(self, request: Request) -> Response:
@@ -216,7 +212,7 @@ class WebApplication:
             projection = self.engine.project(
                 request.path_params["run_id"], principal=self.principal
             )
-        except EngineError:
+        except (JournalError, OSError):
             return JSONResponse({"error": "run_not_found"}, status_code=404)
         return JSONResponse(projection.model_dump(mode="json"))
 
@@ -230,7 +226,7 @@ class WebApplication:
                 EventCursor(sequence=cursor),
                 principal=self.principal,
             )
-        except (EngineError, ValueError):
+        except (JournalError, OSError, ValueError):
             return JSONResponse({"error": "invalid_event_cursor"}, status_code=400)
 
         async def body() -> Any:
@@ -247,8 +243,21 @@ class WebApplication:
             return JSONResponse(
                 {"files": self.engine.files(request.path_params["run_id"], self.principal)}
             )
-        except (EngineError, ValueError):
+        except (JournalError, OSError, ValueError):
             return JSONResponse({"error": "run_files_unavailable"}, status_code=404)
+
+    async def _interface(self, request: Request) -> Response:
+        if not self._authorized(request):
+            return _unauthorized()
+        try:
+            return JSONResponse(
+                self.engine.interface(
+                    request.path_params["run_id"],
+                    self.principal,
+                ).model_dump(mode="json")
+            )
+        except (JournalError, ValueError):
+            return JSONResponse({"error": "run_interface_unavailable"}, status_code=404)
 
     async def _file(self, request: Request) -> Response:
         if not self._authorized(request):
@@ -268,7 +277,7 @@ class WebApplication:
                     "Content-Security-Policy": "sandbox; default-src 'none'",
                 },
             )
-        except (EngineError, ValueError):
+        except (JournalError, OSError, ValueError):
             return JSONResponse({"error": "file_unavailable"}, status_code=404)
 
     async def _resume(self, request: Request) -> Response:
@@ -283,7 +292,7 @@ class WebApplication:
                 self.engine.resume, request.path_params["run_id"], self.principal
             )
             return JSONResponse(result.model_dump(mode="json"))
-        except (EngineError, ValueError):
+        except (JournalError, OSError, ValueError):
             return JSONResponse({"error": "frozen_run_unavailable"}, status_code=409)
 
     async def _intent(self, request: Request) -> Response:
@@ -306,10 +315,12 @@ class WebApplication:
             )
             accepted = await run_in_threadpool(
                 self.engine.submit_intent,
-                request.path_params["run_id"], intent, principal=self.principal
+                request.path_params["run_id"],
+                intent,
+                principal=self.principal,
             )
             return JSONResponse(accepted.model_dump(mode="json"), status_code=202)
-        except (EngineError, ValueError, json.JSONDecodeError):
+        except (JournalError, OSError, ValueError, json.JSONDecodeError):
             return JSONResponse({"error": "intent_rejected"}, status_code=409)
 
     def _authorized(self, request: Request) -> bool:
@@ -386,8 +397,7 @@ def _unauthorized() -> JSONResponse:
 def _token_path(config: EdaGymConfig, root: Path) -> Path:
     configured = config.web.token_file
     path = (
-        configured if configured is not None
-        else root / "web" / f"session-{secrets.token_hex(16)}"
+        configured if configured is not None else root / "web" / f"session-{secrets.token_hex(16)}"
     )
     if not path.is_absolute():
         source = config.source_path

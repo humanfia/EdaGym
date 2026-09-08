@@ -21,6 +21,7 @@ from edagym.release_commands import ReleaseCommandReceipt
 from edagym.release_reporting import ReleaseReport
 from edagym.run.manifest import RunManifest
 from edagym.run.model import RunRecord
+from edagym.run.trial_model import RunRecord as TrialRecord
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import ReleaseManifest, TaskInstance
 from edagym.specs.session import SessionSpec
@@ -44,6 +45,7 @@ SchemaName = Literal[
     "task_instance",
     "release_manifest",
     "run_record",
+    "trial_record",
     "run_manifest",
 ]
 
@@ -65,6 +67,7 @@ SCHEMA_MODELS: Mapping[SchemaName, type[BaseModel]] = MappingProxyType(
         "task_instance": TaskInstance,
         "release_manifest": ReleaseManifest,
         "run_record": RunRecord,
+        "trial_record": TrialRecord,
         "run_manifest": RunManifest,
         "trial_observation": TrialObservation,
     }

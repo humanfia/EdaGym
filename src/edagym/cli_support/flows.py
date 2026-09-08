@@ -31,7 +31,7 @@ from edagym.run.artifacts import (
     ContentAddressedStore,
     manifest_paths,
 )
-from edagym.run.model import RunState, StopReason
+from edagym.run.trial_model import RunState, StopReason
 from edagym.runtime.errors import OrchestrationError
 from edagym.runtime.orchestrator import RunOrchestrator
 from edagym.specs.common import ArtifactClass

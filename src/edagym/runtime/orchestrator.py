@@ -93,13 +93,10 @@ from edagym.run.checkpoints import (
     commit_application_checkpoint,
     commit_workspace_checkpoint,
 )
-from edagym.run.journal import (
-    EventConflict,
-    RunJournal,
-    unresolved_tool_requests,
-)
+from edagym.run.journal_storage import EventConflict
 from edagym.run.materialization import populate_disposable_empty_directory
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal, unresolved_tool_requests
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CampaignTrialRunBinding,
@@ -220,7 +217,7 @@ class RunOrchestrator:
         release: ReleaseManifest,
         environment: EnvironmentSpec,
         session: SessionSpec,
-        journal: RunJournal,
+        journal: TrialJournal,
         artifact_store: ContentAddressedStore,
         executor: Executor,
         evaluators: Sequence[EvaluatorRuntime],
@@ -352,7 +349,7 @@ class RunOrchestrator:
             lineage=lineage,
         )
         header = RunHeader.from_binding(plan.binding)
-        journal = RunJournal.create(state_root, header, task)
+        journal = TrialJournal.create(state_root, header, task)
         runtime_clock = clock if clock is not None else lambda: datetime.now(UTC)
         runtime = cls(
             plan=plan,

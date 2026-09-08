@@ -25,8 +25,8 @@ from edagym.participants import (
     participant_instruction_digest,
 )
 from edagym.resolution import resolve_run
-from edagym.run.journal import RunJournal
-from edagym.run.model import ProducerKind, RunHeader, RunStartedEvent, RunStartedPayload
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import ProducerKind, RunHeader, RunStartedEvent, RunStartedPayload
 from edagym.specs.common import Visibility
 from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.session import (
@@ -335,7 +335,7 @@ def _journal(
     root: Path,
     environment: EnvironmentSpec,
     session: SessionSpec,
-) -> RunJournal:
+) -> TrialJournal:
     task = task_spec()
     instance = task_instance(task)
     release = release_manifest(task, instance, environment)
@@ -347,7 +347,7 @@ def _journal(
         session=session,
         trial_key="external_participant",
     )
-    journal = RunJournal.create(root / "journal", RunHeader.from_binding(plan.binding), task)
+    journal = TrialJournal.create(root / "journal", RunHeader.from_binding(plan.binding), task)
     journal.append(
         RunStartedEvent(
             run_id=journal.header.run_id,
@@ -362,7 +362,7 @@ def _journal(
     return journal
 
 
-def _view(journal: RunJournal) -> ParticipantView:
+def _view(journal: TrialJournal) -> ParticipantView:
     return ParticipantView(
         run_id=journal.header.run_id,
         task_family=journal.header.binding.task.family,

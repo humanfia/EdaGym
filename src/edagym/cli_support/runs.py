@@ -41,13 +41,9 @@ from edagym.run.checkpoints import (
     restore_application_checkpoint,
     restore_workspace_checkpoint,
 )
-from edagym.run.journal import (
-    InvalidTransition,
-    JournalError,
-    RunJournal,
-    unresolved_tool_requests,
-)
-from edagym.run.model import (
+from edagym.run.journal_storage import InvalidTransition, JournalError
+from edagym.run.trial_journal import TrialJournal, unresolved_tool_requests
+from edagym.run.trial_model import (
     EvaluationCompletedEvent,
     EvaluationStartedEvent,
     HumanRunActor,
@@ -123,7 +119,7 @@ def start_run(
     session: SessionSpec,
     trial_key: str,
     state_root: Path,
-) -> tuple[RunJournal, RunState]:
+) -> tuple[TrialJournal, RunState]:
     """Resolve immutable inputs, create their journal, and start it once."""
 
     try:
@@ -135,7 +131,7 @@ def start_run(
             session=session,
             trial_key=trial_key,
         )
-        journal = RunJournal.create(state_root, RunHeader.from_binding(plan.binding), task)
+        journal = TrialJournal.create(state_root, RunHeader.from_binding(plan.binding), task)
         events = journal.read_events()
         if events:
             if not isinstance(events[0], RunStartedEvent):
@@ -159,15 +155,15 @@ def start_run(
     return journal, state
 
 
-def open_run(run_directory: Path, task_path: Path) -> RunJournal:
+def open_run(run_directory: Path, task_path: Path) -> TrialJournal:
     task = load_model(task_path, "task", TaskSpec)
     try:
-        return RunJournal.open(run_directory, task)
+        return TrialJournal.open(run_directory, task)
     except (OSError, ValueError, JournalError):
         raise CliFailure("invalid-run", status=_UNSATISFIED) from None
 
 
-def state_payload(journal: RunJournal) -> dict[str, object]:
+def state_payload(journal: TrialJournal) -> dict[str, object]:
     state = journal.state()
     return {
         "run_id": state.run_id,
@@ -186,7 +182,7 @@ def state_payload(journal: RunJournal) -> dict[str, object]:
 
 
 def submit_candidate(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
     *,
@@ -256,7 +252,7 @@ def submit_candidate(
 
 
 def human_turn(
-    journal: RunJournal,
+    journal: TrialJournal,
     session: SessionSpec,
     *,
     input_stream: TextIOBase,
@@ -350,7 +346,7 @@ def human_turn(
 
 
 def _candidate_snapshot(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     *,
     candidate_id: str,
@@ -394,7 +390,7 @@ def _candidate_snapshot(
     )
 
 
-def cancel_run(journal: RunJournal) -> RunState:
+def cancel_run(journal: TrialJournal) -> RunState:
     """End an idle run while fenced from participant dispatch."""
 
     with participant_dispatch_lock(journal.directory):
@@ -427,7 +423,7 @@ def cancel_run(journal: RunJournal) -> RunState:
 
 
 def checkpoint_run(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
     *,
@@ -500,7 +496,7 @@ def checkpoint_run(
 
 
 def resume_run(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
     *,
@@ -543,7 +539,7 @@ def resume_run(
 
 
 def _require_recovery_binding(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
 ) -> None:

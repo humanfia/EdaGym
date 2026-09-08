@@ -44,8 +44,8 @@ from edagym.run.artifact_model import (
     ArtifactRecord,
 )
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     HarnessRunActor,
@@ -211,7 +211,7 @@ def _validate_campaign_admission(
     admission: CampaignParticipantAdmission | None,
     actor_id: str,
     bound_actor: HarnessRunActor,
-    journal: RunJournal,
+    journal: TrialJournal,
     session: SessionSpec,
     sender: ResponsesParticipantSender,
     instruction_digest: Digest,
@@ -333,7 +333,7 @@ class ResponsesParticipantAdapter:
         self,
         *,
         actor_id: str,
-        journal: RunJournal,
+        journal: TrialJournal,
         environment: EnvironmentSpec,
         session: SessionSpec,
         artifact_store: ContentAddressedStore,
@@ -629,7 +629,7 @@ class _JournalExchangeRecorder:
         *,
         actor: HarnessRunActor,
         request_id: str,
-        journal: RunJournal,
+        journal: TrialJournal,
         store: ContentAddressedStore,
         disclosure: ArtifactDisclosure,
         token_claim: RequestTokenClaim,

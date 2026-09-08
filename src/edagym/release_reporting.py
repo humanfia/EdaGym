@@ -104,8 +104,9 @@ from edagym.release_sessions import (
     project_participant_mode_suite,
 )
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.journal import JournalError, replay
-from edagym.run.model import (
+from edagym.run.journal_storage import JournalError
+from edagym.run.trial_journal import replay
+from edagym.run.trial_model import (
     COMPARABLE_TRIAL_STOP_REASONS,
     RunRecord,
     StopReason,

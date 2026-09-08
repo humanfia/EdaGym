@@ -33,7 +33,7 @@ from edagym.providers.provider_budget import (
     ProviderBudget,
     StandaloneProviderBudget,
 )
-from edagym.run.model import ProviderSecurityBinding
+from edagym.run.trial_model import ProviderSecurityBinding
 from edagym.security.canary import CanaryAttestation, CanaryPolicy, CanaryReceipt
 from edagym.security.canary_artifact import (
     MAX_PROVIDER_TRANSCRIPT_REQUEST_BYTES,

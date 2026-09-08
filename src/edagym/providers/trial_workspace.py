@@ -10,7 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from edagym.run.journal import RunJournal, participant_incarnation_lifecycle
+from edagym.run.trial_journal import TrialJournal, participant_incarnation_lifecycle
 from edagym.runtime.participant_recovery import (
     current_participant_process_identity,
     participant_process_is_alive,
@@ -40,7 +40,7 @@ class PreparedTrialWorkspace:
 def prepare_trial_workspace(
     *,
     runtime_root: Path,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     session: SessionSpec,
     release: ReleaseManifest,

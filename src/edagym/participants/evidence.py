@@ -10,8 +10,8 @@ from pydantic import Field, model_validator
 
 from edagym.canonical import canonical_digest
 from edagym.projections.model import ParticipationKind
-from edagym.run.journal import RunJournal, replay
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal, replay
+from edagym.run.trial_model import (
     CandidateSubmittedEvent,
     ControlTransferredEvent,
     HarnessRunActor,
@@ -134,7 +134,7 @@ class ParticipantSessionEvidence(StrictModel):
 
 
 def project_participant_session(
-    journal: RunJournal,
+    journal: TrialJournal,
     *,
     instance: TaskInstance,
     release: ReleaseManifest,

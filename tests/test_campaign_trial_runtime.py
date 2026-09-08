@@ -119,8 +119,8 @@ from edagym.providers.trial_security import (
 from edagym.providers.trial_workspace import prepare_trial_workspace
 from edagym.resolution import resolve_run
 from edagym.run.artifacts import ContentAddressedStore, EncryptionKey
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ControlTransferredEvent,
     InteractionDirection,
@@ -1021,7 +1021,7 @@ def test_campaign_trial_reopens_after_terminal_run_and_replays_both_journals(
 
     run_binding = result.outcome.run_binding
     assert run_binding is not None
-    run_journal = RunJournal.create(root / "runs", RunHeader.from_binding(run_binding), task)
+    run_journal = TrialJournal.create(root / "runs", RunHeader.from_binding(run_binding), task)
     run_state = run_journal.state()
     assert run_state.checkpoint_ids == ("before_tool",)
     run_evidence = project_campaign_trial_run_evidence(run_journal.record(), task, store)
@@ -1185,7 +1185,7 @@ def test_campaign_trial_restart_charges_unsettled_tool_reservation(
 
     run_binding = result.outcome.run_binding
     assert run_binding is not None
-    journal = RunJournal.create(root / "runs", RunHeader.from_binding(run_binding), task)
+    journal = TrialJournal.create(root / "runs", RunHeader.from_binding(run_binding), task)
     events = journal.read_events()
     reservations = tuple(
         event for event in events if isinstance(event, ParticipantToolReservedEvent)
@@ -1273,7 +1273,7 @@ def test_campaign_trial_journals_participant_license_custody(
 
     run_binding = result.outcome.run_binding
     assert run_binding is not None
-    journal = RunJournal.create(root / "runs", RunHeader.from_binding(run_binding), task)
+    journal = TrialJournal.create(root / "runs", RunHeader.from_binding(run_binding), task)
     events = journal.read_events()
     reservation = next(
         event
@@ -1335,7 +1335,7 @@ def test_campaign_trial_continues_same_run_after_human_handoff(
         trial_key=trial.trial_id,
         campaign=campaign_binding,
     )
-    journal = RunJournal.create(root / "runs", RunHeader.from_binding(plan.binding), task)
+    journal = TrialJournal.create(root / "runs", RunHeader.from_binding(plan.binding), task)
     prepared = prepare_trial_workspace(
         runtime_root=root / "runtime",
         journal=journal,

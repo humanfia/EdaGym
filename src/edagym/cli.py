@@ -116,8 +116,9 @@ from edagym.release_reporting import (
 )
 from edagym.resolution import ResolutionError, resolve_run
 from edagym.run.artifacts import ArtifactStoreError, ContentAddressedStore
-from edagym.run.journal import JournalError, RunJournal
-from edagym.run.model import RunRecord
+from edagym.run.journal_storage import JournalError
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import RunRecord
 from edagym.serialization import DocumentKind
 from edagym.specs.common import Capability
 from edagym.specs.environment import EnvironmentSpec
@@ -137,6 +138,8 @@ _UNSATISFIED = 1
 _INVALID_INVOCATION = 2
 _INCOMPLETE = 3
 _RUN_KEYED_PATH = "RUN_ID=PATH"
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> Never:
         self.print_usage(sys.stderr)
@@ -538,10 +541,15 @@ def _add_task_commands(commands: argparse._SubParsersAction[_ArgumentParser]) ->
     _add_private_authoring_provider_arguments(generate, required=False)
     generate.set_defaults(handler=_task_generate)
 
-    qualify = task_commands.add_parser("qualify", help="qualify a Sail catalog or EDA flow pack")
+    qualify = task_commands.add_parser(
+        "qualify", help="qualify an instance, Sail catalog, or EDA flow pack"
+    )
     source = qualify.add_mutually_exclusive_group(required=True)
     source.add_argument("--catalog-root", type=Path)
     source.add_argument("--flow")
+    source.add_argument("--instance")
+    qualify.add_argument("--profile")
+    qualify.add_argument("--session", default="human")
     qualify.add_argument("--environment", type=Path)
     qualify.add_argument("--scratch-root", type=Path)
     qualify.add_argument("--store-root", type=Path)
@@ -819,13 +827,16 @@ def _tool_qualify(arguments: argparse.Namespace) -> int:
     available = bool(receipts) and all(
         item.disposition is QualificationDisposition.CONFORMANT for item in receipts
     )
-    reasons = tuple(sorted({
-        gap.value for item in receipts
-        for gap in (
-            item.failure, *(probe.failure for probe in item.tool_probes)
+    reasons = tuple(
+        sorted(
+            {
+                gap.value
+                for item in receipts
+                for gap in (item.failure, *(probe.failure for probe in item.tool_probes))
+                if gap is not None
+            }
         )
-        if gap is not None
-    }))
+    )
     _emit(
         {
             "profile_id": resolved.profile_id,
@@ -866,13 +877,15 @@ def _benchmark_lifecycle(arguments: argparse.Namespace) -> int:
     config = load_config(_config_path(arguments))
     if arguments.benchmark_command == "prepare":
         if not arguments.instance:
-            _emit({
-                "status": "incomplete",
-                "reason": "qualified_instance_ids_required",
-                "framework_ready": True,
-                "station_campaign_complete": False,
-                "benchmark_quality_qualified": False,
-            })
+            _emit(
+                {
+                    "status": "incomplete",
+                    "reason": "qualified_instance_ids_required",
+                    "framework_ready": True,
+                    "station_campaign_complete": False,
+                    "benchmark_quality_qualified": False,
+                }
+            )
             return _INCOMPLETE
         try:
             spec = BenchmarkSpec.model_validate_json(read_private(arguments.spec))
@@ -884,16 +897,18 @@ def _benchmark_lifecycle(arguments: argparse.Namespace) -> int:
             schedule = prepare_benchmark(spec, instances, resolved.site.state_root)
         except (OSError, ValueError, ValidationError):
             raise CliFailure("benchmark-preparation-failed", status=_INCOMPLETE) from None
-        _emit({
-            "status": "prepared",
-            "benchmark_digest": spec.digest,
-            "schedule_digest": schedule.digest,
-            "entries": schedule.size,
-            "phase": spec.phase.value,
-            "framework_ready": True,
-            "station_campaign_complete": False,
-            "benchmark_quality_qualified": False,
-        })
+        _emit(
+            {
+                "status": "prepared",
+                "benchmark_digest": spec.digest,
+                "schedule_digest": schedule.digest,
+                "entries": schedule.size,
+                "phase": spec.phase.value,
+                "framework_ready": True,
+                "station_campaign_complete": False,
+                "benchmark_quality_qualified": False,
+            }
+        )
         return _SUCCESS
     identifier = getattr(arguments, "campaign", None) or getattr(arguments, "spec", None)
     identifier = identifier or getattr(arguments, "from_revision", None)
@@ -1022,6 +1037,36 @@ def _task_generate(arguments: argparse.Namespace) -> int:
 
 
 def _task_qualify(arguments: argparse.Namespace) -> int:
+    if arguments.instance is not None:
+        from edagym.authoring.factory import TaskFactory
+        from edagym.config import load_config, resolve_profile
+        from edagym.run.model import Principal
+        from edagym.runtime.engine import RunEngine
+        from edagym.specs.release import QualificationStatus
+
+        if arguments.config is None or arguments.profile is None:
+            raise CliFailure("instance-qualification-config-required", status=_INVALID_INVOCATION)
+        config = load_config(arguments.config)
+        pair = resolve_profile(config, arguments.profile)
+        generated = TaskFactory().load(pair.site.state_root, arguments.instance)
+        qualified = RunEngine(pair.site.state_root).qualify_task(
+            generated,
+            pair.snapshot,
+            arguments.session,
+            Principal(principal_id=config.web.principal_id),
+        )
+        _emit(
+            {
+                "instance_id": qualified.instance_id,
+                "qualification": qualified.instance.qualification,
+            }
+        )
+        return (
+            _SUCCESS
+            if qualified.instance.qualification is not None
+            and qualified.instance.qualification.status is QualificationStatus.QUALIFIED
+            else _UNSATISFIED
+        )
     if arguments.catalog_root is not None:
         if (
             any(
@@ -1088,14 +1133,10 @@ def _task_release(arguments: argparse.Namespace) -> int:
     if arguments.family not in {entry.family for entry in receipt.attestation.families}:
         raise CliFailure("unknown-task-family", status=_INVALID_INVOCATION)
     family_attestation = next(
-        item
-        for item in receipt.attestation.families
-        if item.family == arguments.family
+        item for item in receipt.attestation.families if item.family == arguments.family
     )
     instance_matches = [
-        item
-        for item in family_attestation.instances
-        if item.instance_name == arguments.instance
+        item for item in family_attestation.instances if item.instance_name == arguments.instance
     ]
     if len(instance_matches) != 1:
         raise CliFailure("unknown-task-instance", status=_INVALID_INVOCATION)
@@ -1216,7 +1257,7 @@ def _export_humanize(arguments: argparse.Namespace) -> int:
 
 def _export(
     arguments: argparse.Namespace,
-    projector: Callable[[RunJournal], BaseModel],
+    projector: Callable[[TrialJournal], BaseModel],
 ) -> int:
     journal = open_run(arguments.directory, arguments.task)
     try:
@@ -1271,9 +1312,7 @@ def _release_report(arguments: argparse.Namespace) -> int:
     try:
         provider = _authoring_provider(arguments)
         authoring_provider_registration = provider.source_registration()
-        sail_export = provider.open_catalog(
-            PrivateAuthoringCapability.SAIL_RTL_CATALOG
-        ).consume()
+        sail_export = provider.open_catalog(PrivateAuthoringCapability.SAIL_RTL_CATALOG).consume()
         materialized_sail_catalog = verify_materialized_catalog(
             arguments.sail_catalog_root,
             PUBLIC_TASK_CATALOG,
@@ -1317,14 +1356,10 @@ def _release_report(arguments: argparse.Namespace) -> int:
         )
         for path in arguments.flow_qualification_response
     )
-    flow_document_by_reference = {
-        item.instance_reference.digest: item for item in flow_documents
-    }
+    flow_document_by_reference = {item.instance_reference.digest: item for item in flow_documents}
     if (
         len(flow_document_by_reference) != len(flow_documents)
-        or len(
-            {item.instance_reference_digest for item in flow_qualification_selectors}
-        )
+        or len({item.instance_reference_digest for item in flow_qualification_selectors})
         != len(flow_qualification_selectors)
         or {item.instance_reference_digest for item in flow_qualification_selectors}
         != set(flow_document_by_reference)
@@ -1338,18 +1373,13 @@ def _release_report(arguments: argparse.Namespace) -> int:
             provider.qualify(
                 PrivateAuthoringCapability.EDA_FLOW_CATALOG,
                 flow_document_by_reference[selector.instance_reference_digest].instance_reference,
-                environment=flow_environment_by_digest[
-                    selector.release.environment_digests[0]
-                ],
+                environment=flow_environment_by_digest[selector.release.environment_digests[0]],
             )
             for selector in flow_qualification_selectors
         )
-        live_by_reference = {
-            item.instance_reference_digest: item for item in flow_qualifications
-        }
+        live_by_reference = {item.instance_reference_digest: item for item in flow_qualifications}
         selected_by_reference = {
-            item.instance_reference_digest: item
-            for item in flow_qualification_selectors
+            item.instance_reference_digest: item for item in flow_qualification_selectors
         }
         if live_by_reference != selected_by_reference:
             raise ValueError("live flow qualifications differ from frozen selectors")
@@ -1472,9 +1502,7 @@ def _release_report(arguments: argparse.Namespace) -> int:
         if arguments.executor_deployment is not None:
             try:
                 executor_registry = resources.enter_context(
-                    load_executor_deployment_registry(
-                        arguments.executor_deployment.absolute()
-                    )
+                    load_executor_deployment_registry(arguments.executor_deployment.absolute())
                 )
             except (OSError, RuntimeError, ValueError):
                 raise CliFailure("invalid-executor-deployment", status=_UNSATISFIED) from None
@@ -1582,6 +1610,7 @@ def _release_command(arguments: argparse.Namespace) -> int:
         ReleaseEvidenceStatus.FAILED: _UNSATISFIED,
         ReleaseEvidenceStatus.UNAVAILABLE: _INCOMPLETE,
     }[verified.receipt.status]
+
 
 def _repository_audit(arguments: argparse.Namespace) -> int:
     report = audit_repository(

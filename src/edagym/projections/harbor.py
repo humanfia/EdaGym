@@ -7,13 +7,13 @@ from edagym.projections._snapshot import ProjectionSnapshot
 from edagym.projections.atif import _project_atif_snapshot
 from edagym.projections.errors import ProjectionUnavailable
 from edagym.projections.model import HarborReward, HarborTrialProjection
-from edagym.run.journal import RunJournal
-from edagym.run.model import RunRecord, StopReason
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import RunRecord, StopReason
 from edagym.specs.common import Visibility
 from edagym.specs.task import TaskSpec
 
 
-def project_harbor(journal: RunJournal) -> HarborTrialProjection:
+def project_harbor(journal: TrialJournal) -> HarborTrialProjection:
     return _project_harbor_snapshot(ProjectionSnapshot.from_journal(journal))
 
 

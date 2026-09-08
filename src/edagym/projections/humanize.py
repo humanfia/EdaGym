@@ -15,8 +15,8 @@ from edagym.humanize_contract import HumanizeSessionStrategy
 from edagym.participants.model import PARTICIPANT_EVENT_VISIBILITY
 from edagym.projections._snapshot import ProjectionSnapshot
 from edagym.projections.errors import ProjectionUnavailable
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     CandidateSubmittedEvent,
     CheckpointCommittedEvent,
     ControlTransferredEvent,
@@ -258,7 +258,7 @@ _TRACE_EVENT_KINDS = frozenset(
 
 
 def project_humanize(
-    journal: RunJournal,
+    journal: TrialJournal,
     session: SessionSpec,
     *,
     audience: HumanizeTraceAudience = HumanizeTraceAudience.PARTICIPANT,

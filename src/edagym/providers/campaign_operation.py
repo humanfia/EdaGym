@@ -79,7 +79,8 @@ from edagym.providers.trial_runtime import CampaignTrialDispatcher
 from edagym.providers.trial_security import campaign_trial_harness_actor
 from edagym.providers.trial_workspace import participant_release_paths
 from edagym.run.artifacts import ArtifactStoreError, ContentAddressedStore
-from edagym.run.journal import JournalError, RunJournal
+from edagym.run.journal_storage import JournalError
+from edagym.run.trial_journal import TrialJournal
 from edagym.runtime.errors import OrchestrationError
 from edagym.runtime.model import EvaluatorRuntime
 from edagym.security.canary import CanaryExposure, CanaryPolicy, CanaryProtocolError
@@ -859,7 +860,7 @@ def _trial_results(
                 continue
             item = by_trial[event.payload.trial_id]
             try:
-                journal = RunJournal.open(
+                journal = TrialJournal.open(
                     run_state_root / outcome.run_id.removeprefix("sha256:"),
                     item.task,
                 )

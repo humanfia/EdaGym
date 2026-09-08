@@ -42,6 +42,15 @@ an owner-only file. Task generation, run control, browser actions, and direct
 agent actions share `TaskInstance`, `RunManifest`, `RunJournal`, and typed
 intent contracts. A missing tool or qualification is reported as unavailable.
 
+For a configured user image, generate a queue repair instance with `task
+generate --family rtl_verification_repair --difficulty single_transaction
+--seed <32-hex-digits> --profile <profile>`. Qualify its returned instance ID with
+`task qualify --instance <instance-id> --profile <profile> --session <session>`.
+Use the qualified instance ID returned by that command in the browser's
+**Open instance** form or in `run start`. Each command takes the same global
+`--config` option. The browser can edit submission files, invoke granted tools,
+submit candidates, save checkpoints, and transfer control to a direct agent.
+
 Framework readiness, station campaign completion, and benchmark quality are
 separate evidence-derived states. No mock, smoke run, or capability inventory
 is presented as a real six-model Agent-only result.

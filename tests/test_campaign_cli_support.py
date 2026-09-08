@@ -63,7 +63,7 @@ from edagym.providers.model_discovery import (
     ModelRouteCandidate,
 )
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.run.model import StopReason
+from edagym.run.trial_model import StopReason
 from edagym.security.canary import CanaryPolicy
 from edagym.security.synthetic_preflight import SyntheticPreflightError
 from edagym.specs.common import Capability

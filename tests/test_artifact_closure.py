@@ -21,7 +21,7 @@ from edagym.run.artifacts import (
     artifact_policy_digest,
     candidate_snapshot_artifact_id,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CampaignTrialRunBinding,

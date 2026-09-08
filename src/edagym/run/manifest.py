@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Literal, Self
 
 from pydantic import field_validator, model_validator
@@ -14,10 +15,16 @@ from edagym.specs.environment import EnvironmentSpec
 from edagym.specs.release import TaskInstance
 
 
+class RunPurpose(StrEnum):
+    TASK = "task"
+    QUALIFICATION = "qualification"
+
+
 class RunManifest(StrictModel):
     """One immutable binding for task, views, session, harness, and budgets."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
+    purpose: RunPurpose = RunPurpose.TASK
     run_id: Identifier
     task_instance_digest: Digest
     task_spec_digest: Digest
@@ -62,7 +69,7 @@ class RunManifest(StrictModel):
     @property
     def digest(self) -> Digest:
         return canonical_digest(
-            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v2"
+            self.model_dump(mode="json", exclude_none=True), domain="run-manifest-v3"
         )
 
     @classmethod
@@ -80,6 +87,7 @@ class RunManifest(StrictModel):
         creation_intent_digest: Digest | None = None,
         participant: EnvironmentSpec | None = None,
         evaluator: EnvironmentSpec | None = None,
+        purpose: RunPurpose = RunPurpose.TASK,
     ) -> RunManifest:
         """Mechanically derive a manifest without copying private path values."""
 
@@ -93,6 +101,7 @@ class RunManifest(StrictModel):
         if session is None:
             raise ValueError("run session is absent from the frozen configuration")
         return cls(
+            purpose=purpose,
             run_id=run_id,
             task_instance_digest=task.digest,
             task_spec_digest=task_spec_digest,

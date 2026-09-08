@@ -27,8 +27,8 @@ from edagym.release_commands import ReleaseEvidenceStatus
 from edagym.release_e2e import ArtifactClassCount
 from edagym.resolution import ResolutionError, resolve_run
 from edagym.run.artifacts import ContentAddressedStore, artifact_policy_digest
-from edagym.run.journal import JournalError
-from edagym.run.model import HarnessRunActor, HumanRunActor, RunRecord
+from edagym.run.journal_storage import JournalError
+from edagym.run.trial_model import HarnessRunActor, HumanRunActor, RunRecord
 from edagym.security.artifact_closure import (
     ArtifactClosureError,
     RunArtifactClosureReceipt,

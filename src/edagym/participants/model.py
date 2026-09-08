@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from pydantic import Field, TypeAdapter, field_validator
 
 from edagym.evaluation.model import OutcomeKind, ScoringDecision
-from edagym.run.model import InteractionDirection
+from edagym.run.trial_model import InteractionDirection
 from edagym.specs.common import Digest, Identifier, StrictModel, Visibility
 from edagym.specs.task import MeasurementUnit
 

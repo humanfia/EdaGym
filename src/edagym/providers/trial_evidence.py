@@ -24,8 +24,8 @@ from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ContentAddressedStore,
 )
-from edagym.run.journal import participant_tool_dispatches, participant_tool_usage, replay
-from edagym.run.model import (
+from edagym.run.trial_journal import participant_tool_dispatches, participant_tool_usage, replay
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     CandidateSubmittedEvent,
     ControlTransferredEvent,

@@ -25,8 +25,8 @@ from edagym.projections.model import (
     AtifStep,
     AtifTrajectory,
 )
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     CandidateSubmittedEvent,
     CheckpointCommittedEvent,
@@ -45,7 +45,7 @@ from edagym.specs.session import ActorKind
 from edagym.specs.task import TaskSpec
 
 
-def project_atif(journal: RunJournal) -> AtifTrajectory:
+def project_atif(journal: TrialJournal) -> AtifTrajectory:
     """Derive a structurally valid ATIF trajectory without dereferencing content."""
 
     return _project_atif_snapshot(ProjectionSnapshot.from_journal(journal))

@@ -288,7 +288,7 @@ The current control-plane boundary is `RunEngine`: browser, CLI, and agent
 adapters submit the same typed intents and read cursor-based projections. A
 private TOML configuration resolves user-owned tools and libraries into one
 immutable snapshot referenced by each `RunManifest`; execution views are
-derived from that snapshot. A version-2 manifest freezes both observed
+derived from that snapshot. A version-3 manifest freezes both observed
 `EnvironmentSpec` projections, including tool deployment attestations, runtime,
 resources, library content identities, and artifact policy. The original
 configuration digest remains unchanged when the selected snapshot is resolved
@@ -300,8 +300,29 @@ source and the observed container runtime. The framework identity covers the
 complete Python package and controller Python version, so implementation
 changes require a new run. `RunEngine.resume` rechecks tool closures and bounded
 library sources against the frozen projections before admitting continuation.
-Private paths remain in the configuration snapshot. Version-1 control-plane
+Private paths remain in the configuration snapshot. Older control-plane
 manifests are not upgraded implicitly.
+
+The manifest also distinguishes task runs from qualification runs. Both use
+the same typed operation facts and the same `RunJournal`. A prepared operation
+binds its input manifest and filesystem view; its running fact binds the
+executor handle; its terminal fact binds collected results and any resulting
+participant workspace. Cancellation is a journaled command that the active
+controller observes without surrendering its controller lock.
+
+`journal_storage` owns atomic metadata publication, canonical grouped commits,
+hash chains, file locks, and recovery of a torn final record. The release-based
+campaign workflow currently retains its own replay semantics in `trial_model`
+and `trial_journal`, using that same physical storage owner. These trial
+consumers still need migration to RunEngine; the module separation does not
+claim that campaign integration is complete.
+
+Queue repair qualification executes every declared reference and mutant through
+RunEngine. Candidate-only synthesis produces a netlist for a separate private
+monitor operation. An indexed FIFO checker independently validates the
+generator's deque-derived expectations. Admission reopens the qualification
+run, both view receipts, and their CAS evidence. Editing, submission, and
+browser control transfer consume these same run contracts.
 
 These bindings do not confer tool-visibility or task qualification. Framework
 readiness, station campaign completion, and benchmark quality remain

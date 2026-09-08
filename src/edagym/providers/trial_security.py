@@ -6,7 +6,7 @@ from edagym.canonical import canonical_digest
 from edagym.providers.campaign_runner import CampaignRunner
 from edagym.providers.campaign_schedule import MeteredProviderHarnessBinding, ScheduledTrial
 from edagym.providers.provider_budget import CampaignProviderBudget
-from edagym.run.model import CampaignTrialRunBinding
+from edagym.run.trial_model import CampaignTrialRunBinding
 from edagym.runtime_surface_protocol import RuntimeSurfaceBinding
 from edagym.security.runtime_surface import runtime_surface_export_policy_digest
 from edagym.specs.common import Digest

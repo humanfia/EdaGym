@@ -19,7 +19,7 @@ from edagym.executors.model import (
 from edagym.executors.model import (
     JobStateKind as ExecutorJobStateKind,
 )
-from edagym.run.model import JobStateKind
+from edagym.run.trial_model import JobStateKind
 
 
 def evaluation_job_id(run_id: str, candidate_id: str, stage_id: str) -> str:

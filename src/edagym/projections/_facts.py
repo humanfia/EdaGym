@@ -7,7 +7,7 @@ from collections.abc import Set
 from edagym.participants.model import PARTICIPANT_EVENT_VISIBILITY
 from edagym.projections._snapshot import ProjectionSnapshot
 from edagym.projections.model import ParticipationKind
-from edagym.run.model import (
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     CandidateSubmittedEvent,
     CheckpointCommittedEvent,

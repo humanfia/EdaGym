@@ -26,15 +26,15 @@ from edagym.participants.execution import (
 )
 from edagym.participants.operation_runtime import participant_operation_input_digest
 from edagym.resolution import resolve_run
-from edagym.run.journal import (
-    InvalidTransition,
-    RunJournal,
+from edagym.run.journal_storage import InvalidTransition
+from edagym.run.trial_journal import (
+    TrialJournal,
     active_license_leases,
     participant_tool_dispatches,
     participant_tool_usage,
     unresolved_tool_requests,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     InteractionDirection,
     InteractionRecordedEvent,
     InteractionRecordedPayload,
@@ -92,7 +92,7 @@ def _journal(
     *,
     environment: EnvironmentSpec | None = None,
     session: SessionSpec | None = None,
-) -> RunJournal:
+) -> TrialJournal:
     task = task_spec()
     environment = environment_spec() if environment is None else environment
     if not environment.participant_operations:
@@ -120,7 +120,7 @@ def _journal(
         session=session,
         trial_key="participant_tool_recovery",
     )
-    journal = RunJournal.create(tmp_path, RunHeader.from_binding(plan.binding), task)
+    journal = TrialJournal.create(tmp_path, RunHeader.from_binding(plan.binding), task)
     journal.append(
         RunStartedEvent(
             run_id=journal.header.run_id,
@@ -136,7 +136,7 @@ def _journal(
 
 
 def _request(
-    journal: RunJournal,
+    journal: TrialJournal,
     *,
     interaction_id: str,
     tool_name: str,
@@ -159,7 +159,7 @@ def _request(
 
 
 def _reserve(
-    journal: RunJournal,
+    journal: TrialJournal,
     request: InteractionRecordedEvent,
     *,
     tool_id: str | None = None,
@@ -217,7 +217,7 @@ def _reserve(
 def _licensed_interrupted_dispatch(
     tmp_path: Path,
 ) -> tuple[
-    RunJournal,
+    TrialJournal,
     InteractionRecordedEvent,
     ParticipantToolReservedEvent,
     LicenseLeaseAcquiredEvent,

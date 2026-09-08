@@ -31,7 +31,7 @@ from edagym.providers.campaign_runner import (
     _TrialProjection,
 )
 from edagym.providers.campaign_schedule import CampaignHeader, ScheduledTrial
-from edagym.run.model import HarnessRunActor, RunBinding
+from edagym.run.trial_model import HarnessRunActor, RunBinding
 
 
 def replay_campaign_record(record: CampaignRecord) -> _CampaignProjection:

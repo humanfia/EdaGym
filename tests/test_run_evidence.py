@@ -53,14 +53,9 @@ from edagym.run.checkpoints import (
     require_filesystem_checkpoint,
     restore_workspace_checkpoint,
 )
-from edagym.run.journal import (
-    EventConflict,
-    InvalidTransition,
-    JournalCorruption,
-    RunJournal,
-    replay,
-)
-from edagym.run.model import (
+from edagym.run.journal_storage import EventConflict, InvalidTransition, JournalCorruption
+from edagym.run.trial_journal import TrialJournal, replay
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CandidateSubmittedEvent,
@@ -209,7 +204,7 @@ def _confidential_policy() -> ArtifactPolicy:
 def test_journal_recovers_truncated_tail_and_enforces_idempotency(tmp_path: Path) -> None:
     root = tmp_path
     header, task = _header()
-    journal = RunJournal.create(root, header, task)
+    journal = TrialJournal.create(root, header, task)
     started = _started(header)
     submitted = _candidate(header)
     assert journal.append(started).next_sequence == 1
@@ -258,7 +253,7 @@ def test_journal_recovers_truncated_tail_and_enforces_idempotency(tmp_path: Path
 
 def test_journal_transaction_owns_sequence_and_interaction_direction(tmp_path: Path) -> None:
     header, task = _header()
-    journal = RunJournal.create(tmp_path, header, task)
+    journal = TrialJournal.create(tmp_path, header, task)
     journal.append(_started(header))
 
     state = journal.transact(
@@ -287,7 +282,7 @@ def test_journal_transaction_owns_sequence_and_interaction_direction(tmp_path: P
 
 def test_journal_records_are_hash_chained_and_expose_an_anchor(tmp_path: Path) -> None:
     header, task = _header()
-    journal = RunJournal.create(tmp_path, header, task)
+    journal = TrialJournal.create(tmp_path, header, task)
     empty_digest = journal.integrity_digest()
     journal.append(_started(header))
     committed_digest = journal.integrity_digest()
@@ -315,7 +310,7 @@ def test_verifier_success_requires_a_completed_hard_gate(tmp_path: Path) -> None
     task_document["measurements"] = ()
     task = TaskSpec.model_validate(task_document)
     header, task = _header(task)
-    invalid = RunJournal.create(tmp_path / "invalid", header, task)
+    invalid = TrialJournal.create(tmp_path / "invalid", header, task)
     invalid.append(_started(header))
     invalid.append(_candidate(header))
     premature_scoring = ScoringRecordedEvent(
@@ -351,7 +346,7 @@ def test_verifier_success_requires_a_completed_hard_gate(tmp_path: Path) -> None
     with pytest.raises(InvalidTransition, match="hard gate"):
         invalid.append(false_success)
 
-    valid = RunJournal.create(tmp_path / "valid", header, task)
+    valid = TrialJournal.create(tmp_path / "valid", header, task)
     valid.append(_started(header))
     valid.append(_candidate(header))
     valid.append(
@@ -476,7 +471,7 @@ def test_replay_rejects_forged_task_measurement_scorer_and_evaluator_bindings() 
 
 def test_journal_rejects_measurements_without_replay_provenance(tmp_path: Path) -> None:
     header, task = _header()
-    journal = RunJournal.create(tmp_path, header, task)
+    journal = TrialJournal.create(tmp_path, header, task)
     journal.append(_started(header))
     journal.append(_candidate(header))
 
@@ -711,7 +706,7 @@ def test_private_cas_openers_share_a_durable_key_and_reject_key_loss(tmp_path: P
 
 def test_checkpoint_restore_requires_one_atomic_journal_commit(tmp_path: Path) -> None:
     header, task = _header()
-    journal = RunJournal.create(tmp_path / "journal", header, task)
+    journal = TrialJournal.create(tmp_path / "journal", header, task)
     journal.append(_started(header))
     environment = environment_spec()
     policy = environment.artifact_policy
@@ -766,7 +761,7 @@ def test_checkpoint_restore_requires_one_atomic_journal_commit(tmp_path: Path) -
     )
     assert (destination / "state.bin").read_bytes() == b"checkpoint-state"
 
-    split_journal = RunJournal.create(tmp_path / "split-journal", header, task)
+    split_journal = TrialJournal.create(tmp_path / "split-journal", header, task)
     split_journal.append(_started(header))
     committed_events = journal.read_events()
     split_journal.append(committed_events[1])

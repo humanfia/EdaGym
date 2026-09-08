@@ -15,7 +15,7 @@ from edagym.run.artifacts import (
     EncryptionKey,
     encryption_key_from_file_descriptor,
 )
-from edagym.run.model import RunRecord
+from edagym.run.trial_model import RunRecord
 from edagym.serialization import DocumentKind, load_yaml_document
 from edagym.specs.common import Digest
 from edagym.specs.environment import EnvironmentSpec, ManagedEncryption

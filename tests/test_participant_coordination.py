@@ -35,8 +35,8 @@ from edagym.run.artifact_model import (
     BlobRef,
 )
 from edagym.run.artifacts import ARTIFACT_MANIFEST_MEDIA_TYPE
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     CandidateSubmittedEvent,
     CandidateSubmittedPayload,
     EvaluationCompletedEvent,
@@ -132,7 +132,7 @@ def test_hybrid_handoff_preserves_actor_attribution_and_view_isolation(
         trial_key="hybrid-0001",
     )
     header = RunHeader.from_binding(plan.binding)
-    journal = RunJournal.create(tmp_path / "journal", header, task)
+    journal = TrialJournal.create(tmp_path / "journal", header, task)
     journal.append(
         RunStartedEvent(
             run_id=header.run_id,
@@ -625,7 +625,7 @@ class _CapturingCommandChannel:
         ).encode()
 
 
-def _agent_journal(directory: Path) -> tuple[RunJournal, SessionSpec]:
+def _agent_journal(directory: Path) -> tuple[TrialJournal, SessionSpec]:
     task = task_spec()
     environment = environment_spec()
     instance = task_instance(task)
@@ -640,7 +640,7 @@ def _agent_journal(directory: Path) -> tuple[RunJournal, SessionSpec]:
         trial_key="participant-0001",
     )
     header = RunHeader.from_binding(plan.binding)
-    journal = RunJournal.create(directory, header, task)
+    journal = TrialJournal.create(directory, header, task)
     journal.append(
         RunStartedEvent(
             run_id=header.run_id,

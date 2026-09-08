@@ -13,7 +13,7 @@ This branch is an implementation checkpoint, not a completed release.
   with durable private closure evidence.
 - Profile-derived execution environments with declared tool grants, scoped
   library mount declarations, resource limits, and artifact policy.
-- Run manifest v2 freezes the observed participant and evaluator environments,
+- Run manifest v3 freezes the observed participant and evaluator environments,
   including framework source identity. Resume verifies both against the original
   private snapshot and rejects tool, library, or implementation drift.
 - Benchmark specifications, schedule and reporting foundations, and external
@@ -34,16 +34,26 @@ This branch is an implementation checkpoint, not a completed release.
   with a retained file inventory, read-only library canaries, private framework
   boundaries, and empty automatic secret mounts. Exact views remain unavailable
   until filesystem exclusion evidence exists.
+- Manifest-bound run events and release-trial events use one atomic journal
+  storage implementation. RunEngine no longer has a separate JSONL codec.
+- Configured queue repair qualification executes its declared reference and
+  mutants, validates generated expectations with an independent FIFO checker,
+  and binds both view receipts and the resulting run/CAS evidence to admission.
+- RunEngine executes participant tools, freezes edits and candidates, evaluates
+  candidate-only synthesis followed by private netlist simulation, and replays
+  operation results and workspace checkpoints. The CLI can qualify generated
+  instances; the browser can open them and submit the same typed actions as a
+  direct agent, including control transfer and cancellation.
 
 ## Validation
 
-The full suite reports **321 passed** in 371.02 seconds (exit 0). Retained CLI
+The full suite reports **323 passed** in 580.25 seconds (exit 0). Retained CLI
 checks exercise configuration-based run creation, frozen snapshot recovery, and
 cursor replay. Retired help-inventory and `human-turn` tests were removed.
 Campaign tests verify complete frozen products without fixed task-role quotas;
 release evidence must cover the corresponding frozen trial and task bindings.
 
-Ruff, strict mypy (208 source files), generated schema consistency, and
+Ruff, strict mypy (213 source files), generated schema consistency, and
 `git diff --check` pass. Actual rootless synthesis uses configured tool identity
 and cgroup limits of 250 millicores, 128 MiB memory, and 32 processes. Icarus
 compilation and simulation use the same resolved installation and preserve
@@ -81,17 +91,40 @@ thirteen semantic mutants across three difficulty levels. All expected outcomes
 were observed through 32 collected and released rootless operations. Synthesis
 received only the candidate design; simulation received its netlist and the
 private oracle. This proves the tool and artifact handoff, not integrated
-RunEngine execution or TaskInstance qualification.
+RunEngine execution or TaskInstance qualification on its own.
+
+The integrated single-transaction repair audit qualified its reference and all
+four declared semantic mutants, rejected the initial broken design, accepted a
+repaired submission, executed a participant tool, and replayed the same terminal
+result after duplicate submission, resume, and scoped cleanup. Two real HTTP
+checks also exercised human/agent handoff, stale-writer rejection, hidden private
+files and evaluator events, SSE framing, and cancellation of a running tool.
+An actual headless browser opened a qualified instance, rendered its source and
+SSE events, saved an edit, invoked a participant tool, saved a checkpoint, and
+submitted a passing repair. The terminal editor was read-only and no page script
+errors occurred. The initial workspace screenshot was inspected. A fresh-venv
+wheel audit verified packaged modules and static assets, installed implementation
+identity, every exported schema, initialization, and the loopback web check.
+
+Three additional RunEngine SIGKILL audits interrupted an active tool before
+natural exit, before deadline expiry, and during a participant workspace CAS
+write. Fresh controllers recovered the same operation and produced completed,
+timed-out, and completed results respectively. Repeated resume added no execution
+or journal facts, and scoped cleanup completed. These audits do not cover every
+interruption point in task qualification or every missing-receipt case.
 
 ## Remaining integration
 
 - Complete exact-toolset filesystem exclusion qualification and integrate view
   receipts into run admission and recovery.
-- Bind generated reference/mutant qualification to the execution workflow.
-- Connect RunEngine tool, edit, and submit operations to execution and recovery;
-  consolidate the existing journal implementations into one semantic owner.
-- Validate crash recovery, concurrent runs, scoped cleanup, and browser handoff
-  through that integrated workflow.
+- Complete interrupted task-qualification recovery, including remaining canaries
+  and final evidence publication. Exercise the broader concurrent-run and
+  corruption matrix, and finish typed termination/fencing when operation receipts
+  or writable storage are missing.
+- Complete participant feedback and artifact presentation beyond the current
+  outcome/event view, and broaden the rendered browser interaction checks.
+- Migrate the remaining release-trial controllers and projections to RunEngine.
+  Shared physical journal storage does not complete that semantic migration.
 - Connect harnesses and campaigns to the same engine and collect real benchmark
   evidence. No completed six-model campaign or qualified benchmark is claimed.
 

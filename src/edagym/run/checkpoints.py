@@ -23,8 +23,9 @@ from edagym.run.artifacts import (
     manifest_tree,
     restore_manifest,
 )
-from edagym.run.journal import EventConflict, RunJournal, active_license_leases
-from edagym.run.model import (
+from edagym.run.journal_storage import EventConflict
+from edagym.run.trial_journal import TrialJournal, active_license_leases
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CheckpointCommittedEvent,
@@ -60,7 +61,7 @@ _TERMINAL_JOB_STATES = frozenset(
 
 def reconcile_interrupted_evaluations(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     timestamp: datetime,
     event_id_factory: Callable[[], UUID],
 ) -> RunState:
@@ -97,7 +98,7 @@ def reconcile_interrupted_evaluations(
 
 def _interrupted_evaluation_events(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     sequence: int,
     started: EvaluationStartedEvent,
     job_is_terminal: bool,
@@ -165,7 +166,7 @@ def require_filesystem_checkpoint(capability: CheckpointCapability) -> None:
 
 
 def _require_bound_filesystem_environment(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
 ) -> None:
     if environment.digest != journal.header.binding.environment.environment_spec_digest:
@@ -174,7 +175,7 @@ def _require_bound_filesystem_environment(
 
 
 def _require_bound_application_environment(
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
 ) -> None:
     if environment.digest != journal.header.binding.environment.environment_spec_digest:
@@ -191,7 +192,7 @@ def _require_bound_application_environment(
 def commit_workspace_checkpoint(
     *,
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     workspace: Path,
     checkpoint_id: Identifier,
@@ -236,7 +237,7 @@ def commit_workspace_checkpoint(
 def commit_application_checkpoint(
     *,
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     workspace: Path,
     checkpoint_id: Identifier,
@@ -295,7 +296,7 @@ def commit_application_checkpoint(
 def _commit_checkpoint_manifest(
     *,
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     manifest: ArtifactManifest,
     checkpoint_kind: Literal[
         CheckpointCapability.APPLICATION,
@@ -386,7 +387,7 @@ def _commit_checkpoint_manifest(
 
 def _checkpoint_events(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     sequence: int,
     record: ArtifactRecord,
     checkpoint_id: Identifier,
@@ -433,7 +434,7 @@ def _checkpoint_events(
 
 def _matching_checkpoint_commit(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     record: ArtifactRecord,
     checkpoint_id: Identifier,
     manifest_digest: str,
@@ -484,7 +485,7 @@ def _matching_checkpoint_commit(
 def restore_workspace_checkpoint(
     *,
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     checkpoint_id: Identifier,
     destination: Path,
@@ -505,7 +506,7 @@ def restore_workspace_checkpoint(
 def restore_application_checkpoint(
     *,
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     checkpoint_id: Identifier,
     destination: Path,
@@ -529,7 +530,7 @@ def restore_application_checkpoint(
 def _restore_checkpoint(
     *,
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     checkpoint_id: Identifier,
     destination: Path,
     checkpoint_kind: Literal[

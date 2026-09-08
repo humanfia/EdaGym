@@ -27,3 +27,9 @@ main { width: min(1180px, 100%); margin: 0 auto; padding: 1.25rem clamp(1rem, 4v
 .loading, .empty { border: 1px dashed #b8c7cb; border-radius: 6px; padding: 2rem; color: var(--muted); text-align: center; } .toast { position: fixed; right: 1rem; bottom: 1rem; max-width: min(380px, calc(100vw - 2rem)); border-left: 4px solid var(--accent); border-radius: 4px; padding: .75rem 1rem; background: #17313a; color: #fff; box-shadow: 0 8px 30px #13252a44; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 760px) { .view-heading { align-items: stretch; flex-direction: column; } .search input { width: 100%; } .run-layout { grid-template-columns: 1fr; } } @media (max-width: 480px) { .topbar { align-items: flex-start; flex-direction: column; } .detail-grid { grid-template-columns: 1fr; } .button { width: 100%; } .action-row { display: grid; grid-template-columns: 1fr; } }
+.workspace-form { display: grid; gap: .65rem; margin: 1rem 0; padding: 1rem; border: 1px solid var(--line); border-radius: 6px; background: #f5f8f9; }
+.workspace-form label { display: grid; gap: .35rem; font-size: .85rem; color: var(--muted); }
+.workspace-form input, .workspace-form select, .workspace-form textarea { width: 100%; border: 1px solid var(--line); border-radius: 4px; padding: .6rem; color: #18222d; background: white; }
+.workspace-form textarea { min-height: 240px; resize: vertical; font: .8rem/1.5 ui-monospace, monospace; tab-size: 4; }
+.workspace-form textarea.arguments { min-height: 70px; }
+.button:disabled { cursor: default; opacity: .55; }

@@ -45,7 +45,7 @@ from edagym.executors.podman import (
 from edagym.executors.rootless import RootlessContainerExecutor
 from edagym.executors.rootless_storage import RootlessStorageProvider
 from edagym.implementation import FRAMEWORK_PACKAGE_ROOT
-from edagym.policy.runtime_storage import private_directory, write_private
+from edagym.policy.runtime_storage import private_directory, read_private, write_private
 from edagym.run.artifacts import ContentAddressedStore
 from edagym.specs.common import ArtifactClass, Digest, Identifier, StrictModel
 from edagym.specs.environment import EnvironmentSpec, FilesystemScope
@@ -112,9 +112,12 @@ class ViewQualificationReceipt(StrictModel):
     @property
     def disposition(self) -> QualificationDisposition:
         if (
-            self.failure is not None or self.environment_digest is None
-            or self.observation_digest is None or self.execution is None
-            or self.evidence_id is None or self.plan is None
+            self.failure is not None
+            or self.environment_digest is None
+            or self.observation_digest is None
+            or self.execution is None
+            or self.evidence_id is None
+            or self.plan is None
             or self.execution.state.state is not JobStateKind.COMPLETED
         ):
             return QualificationDisposition.UNAVAILABLE
@@ -143,6 +146,69 @@ def qualify_profile(pair: ResolvedEnvironmentPair) -> tuple[ViewQualificationRec
     return tuple(qualify_view(pair, view, resolutions) for view in ConfigView)
 
 
+def verify_view_receipt(
+    pair: ResolvedEnvironmentPair,
+    environment: EnvironmentSpec,
+    receipt: ViewQualificationReceipt,
+) -> None:
+    """Reopen the actual private receipt and its CAS closure before task admission."""
+    selected = pair.participant if receipt.view is ConfigView.PARTICIPANT else pair.evaluator
+    if (
+        receipt.disposition is not QualificationDisposition.CONFORMANT
+        or receipt.snapshot_digest != pair.snapshot.digest
+        or receipt.environment_digest != environment.digest
+        or receipt.tool_visibility is not selected.tool_visibility
+    ):
+        raise ValueError("view qualification differs from the frozen environment")
+    assert (
+        receipt.evidence_id is not None
+        and receipt.execution is not None
+        and receipt.plan is not None
+    )
+    root = pair.site.state_root / "qualifications" / "views"
+    saved = ViewQualificationReceipt.model_validate_json(
+        read_private(root / f"{receipt.digest[7:]}.json")
+    )
+    evidence = root / receipt.evidence_id
+    if (
+        saved != receipt
+        or ViewQualificationReceipt.model_validate_json(
+            read_private(evidence / "qualification.json")
+        )
+        != receipt
+    ):
+        raise ValueError("view qualification differs from its durable receipt")
+    if (
+        EnvironmentSpec.model_validate_json(read_private(evidence / "environment.json"))
+        != environment
+    ):
+        raise ValueError("view qualification environment is corrupt")
+    if (
+        InvocationPlan.model_validate_json(read_private(evidence / "plan.json")) != receipt.plan
+        or ExecutionResult.model_validate_json(read_private(evidence / "result.json"))
+        != receipt.execution
+    ):
+        raise ValueError("view qualification operation is corrupt")
+    store = ContentAddressedStore.open_private(evidence / "cas", policy=environment.artifact_policy)
+    for blob in (
+        receipt.execution.stdout,
+        receipt.execution.stderr,
+        *(item.blob for item in receipt.execution.outputs),
+    ):
+        store.read_bytes(blob, maximum_bytes=environment.artifact_policy.quota_bytes)
+    output = next(
+        item for item in receipt.execution.outputs if item.logical_id == VIEW_OBSERVATION_ID
+    )
+    observation = ViewObservation.model_validate_json(
+        store.read_bytes(output.blob, maximum_bytes=_MAX_OBSERVATION_BYTES)
+    )
+    if (
+        canonical_digest(observation, domain="view-observation-v1") != receipt.observation_digest
+        or _observation_failure(observation, selected.tool_visibility, environment) is not None
+    ):
+        raise ValueError("view qualification observation is corrupt or no longer conforms")
+
+
 def qualify_view(
     pair: ResolvedEnvironmentPair,
     view: ConfigView,
@@ -155,16 +221,16 @@ def qualify_view(
         view=view,
         tool_visibility=selected.tool_visibility,
         observed_at=datetime.now(UTC),
-        tool_probes=tuple(
-            item.receipt for item in resolutions if item.receipt.view is view
-        ),
+        tool_probes=tuple(item.receipt for item in resolutions if item.receipt.view is view),
     )
     try:
         environment = project_environment(pair, view, resolutions)
     except ExecutionPolicyError as error:
-        receipt = receipt.model_copy(update={
-            "failure": error.gap,
-        })
+        receipt = receipt.model_copy(
+            update={
+                "failure": error.gap,
+            }
+        )
     else:
         receipt = receipt.model_copy(update={"environment_digest": environment.digest})
         evidence_root = private_directory(root / f"probe_{secrets.token_hex(16)}", create=True)
@@ -173,28 +239,50 @@ def qualify_view(
         write_private(evidence_root / "environment.json", canonical_bytes(environment))
         try:
             plan, result, observation = _observe_view(
-                pair, view, environment, resolutions, evidence_root,
+                pair,
+                view,
+                environment,
+                resolutions,
+                evidence_root,
             )
         except (
-            _ViewRecoveryRequired, ExecutorUnavailable, CollectionError, OSError, ValueError,
+            _ViewRecoveryRequired,
+            ExecutorUnavailable,
+            CollectionError,
+            OSError,
+            ValueError,
         ) as error:
-            write_private(evidence_root / "failure.json", canonical_bytes({
-                "error_type": type(error).__name__, "message": str(error)[:8192],
-            }))
-            receipt = receipt.model_copy(update={
-                "failure": (
-                    ViewQualificationGap.RECOVERY_REQUIRED
-                    if isinstance(error, _ViewRecoveryRequired)
-                    else ViewQualificationGap.PROBE_FAILED
+            write_private(
+                evidence_root / "failure.json",
+                canonical_bytes(
+                    {
+                        "error_type": type(error).__name__,
+                        "message": str(error)[:8192],
+                    }
                 ),
-            })
+            )
+            receipt = receipt.model_copy(
+                update={
+                    "failure": (
+                        ViewQualificationGap.RECOVERY_REQUIRED
+                        if isinstance(error, _ViewRecoveryRequired)
+                        else ViewQualificationGap.PROBE_FAILED
+                    ),
+                }
+            )
         else:
-            receipt = receipt.model_copy(update={
-                "execution": result,
-                "plan": plan,
-                "observation_digest": canonical_digest(observation, domain="view-observation-v1"),
-                "failure": _observation_failure(observation, selected.tool_visibility, environment),
-            })
+            receipt = receipt.model_copy(
+                update={
+                    "execution": result,
+                    "plan": plan,
+                    "observation_digest": canonical_digest(
+                        observation, domain="view-observation-v1"
+                    ),
+                    "failure": _observation_failure(
+                        observation, selected.tool_visibility, environment
+                    ),
+                }
+            )
         write_private(evidence_root / "qualification.json", canonical_bytes(receipt))
     write_private(root / f"{receipt.digest[7:]}.json", canonical_bytes(receipt))
     return receipt
@@ -239,7 +327,8 @@ def _observe_view(
     assert capability is not None
     installations = {
         item.receipt.tool_id: item.installation
-        for item in observed if item.installation is not None
+        for item in observed
+        if item.installation is not None
     }
     store = ContentAddressedStore.open_private(root / "cas", policy=environment.artifact_policy)
     executor = RootlessContainerExecutor(
@@ -247,7 +336,9 @@ def _observe_view(
         implementation_digest=environment.executor.implementation_digest,
         capability=capability,
         tool_installations=installations,
-        storage_provider=RootlessStorageProvider(maximum_quota_bytes=environment.resources.disk_bytes),
+        storage_provider=RootlessStorageProvider(
+            maximum_quota_bytes=environment.resources.disk_bytes
+        ),
         asset_source_policy=load_system_asset_source_policy(),
         artifact_store=store,
         job_state_root=root / "jobs",
@@ -284,16 +375,17 @@ def _observe_view(
         "temporary_targets": ROOTLESS_TEMP_TARGETS,
         "runtime_files": ROOTLESS_RUNTIME_FILE_TARGETS,
         "empty_secret_target": ROOTLESS_EMPTY_SECRET_TARGET,
-        "control_root": str(Path(
-            ROOTLESS_CONTROL_TARGETS[RootlessControlFile.COMPOSITE_SUPERVISOR]
-        ).parent),
+        "control_root": str(
+            Path(ROOTLESS_CONTROL_TARGETS[RootlessControlFile.COMPOSITE_SUPERVISOR]).parent
+        ),
         "control_files": (
             ROOTLESS_CONTROL_TARGETS[RootlessControlFile.COMPOSITE_SUPERVISOR],
             ROOTLESS_CONTROL_TARGETS[RootlessControlFile.COMPOSITE_RECIPE],
         ),
         "libraries": tuple(
             {"asset_id": item.asset_id, "target": item.target}
-            for item in environment.filesystem.readonly_assets if item.scope is scope
+            for item in environment.filesystem.readonly_assets
+            if item.scope is scope
         ),
     }
     source = f"#!{launcher}\n".encode() + Path(view_probe.__file__).read_bytes()
@@ -301,42 +393,56 @@ def _observe_view(
     write_private(root / "input.json", canonical_bytes(input_document))
     binding = environment.tool_bindings[0]
     plan = InvocationPlan(
-        invocation_id=operation_id, run_id=run_id,
-        capability=binding.capability, tool_id=binding.tool_id, driver_digest=binding.driver_digest,
+        invocation_id=operation_id,
+        run_id=run_id,
+        capability=binding.capability,
+        tool_id=binding.tool_id,
+        driver_digest=binding.driver_digest,
         view=(
             InvocationView.PARTICIPANT
-            if view is ConfigView.PARTICIPANT else InvocationView.EVALUATOR
+            if view is ConfigView.PARTICIPANT
+            else InvocationView.EVALUATOR
         ),
         executable=binding.locator.executable,
         input_manifest_digest=canonical_digest(
-            input_document, domain="view-probe-input-v1",
+            input_document,
+            domain="view-probe-input-v1",
         ),
         recipe=(
             ToolRecipeCommand(
-                tool_id=binding.tool_id, capability=binding.capability,
-                driver_digest=binding.driver_digest, executable=binding.locator.executable,
+                tool_id=binding.tool_id,
+                capability=binding.capability,
+                driver_digest=binding.driver_digest,
+                executable=binding.locator.executable,
                 arguments=installations[binding.tool_id].definition.version_arguments,
             ),
             WorkspaceRecipeCommand(
-                executable=_PROBE_PATH, arguments=(_REQUEST_PATH, _OBSERVATION_PATH),
+                executable=_PROBE_PATH,
+                arguments=(_REQUEST_PATH, _OBSERVATION_PATH),
             ),
         ),
         outputs=(
             OutputDeclaration(
-                logical_id=VIEW_OBSERVATION_ID, path=_OBSERVATION_PATH,
-                media_type="application/json", artifact_class=ArtifactClass.EVIDENCE,
+                logical_id=VIEW_OBSERVATION_ID,
+                path=_OBSERVATION_PATH,
+                media_type="application/json",
+                artifact_class=ArtifactClass.EVIDENCE,
                 required=False,
             ),
             OutputDeclaration(
-                logical_id=COMPOSITE_REPORT_LOGICAL_ID, path=COMPOSITE_REPORT_PATH,
-                media_type="application/json", artifact_class=ArtifactClass.EVIDENCE,
+                logical_id=COMPOSITE_REPORT_LOGICAL_ID,
+                path=COMPOSITE_REPORT_PATH,
+                media_type="application/json",
+                artifact_class=ArtifactClass.EVIDENCE,
             ),
         ),
     )
     write_private(root / "plan.json", canonical_bytes(plan))
     lease = executor.create_storage(
-        environment=environment, runtime_root=storage_root,
-        run_id=run_id, invocation_id=operation_id,
+        environment=environment,
+        runtime_root=storage_root,
+        run_id=run_id,
+        invocation_id=operation_id,
     )
     result_committed = False
     handle = None
@@ -345,9 +451,12 @@ def _observe_view(
         (lease.workspace / _PROBE_PATH).chmod(0o700)
         (lease.workspace / _REQUEST_PATH).write_bytes(canonical_bytes(request))
         handle = executor.launch(
-            plan, environment=environment, workspace=lease.workspace,
+            plan,
+            environment=environment,
+            workspace=lease.workspace,
             artifact_directory=lease.artifact_directory,
-            asset_paths=dict(selected.library_paths), scope=scope,
+            asset_paths=dict(selected.library_paths),
+            scope=scope,
         )
         while executor.inspect(handle).state in {JobStateKind.QUEUED, JobStateKind.RUNNING}:
             time.sleep(_POLL_SECONDS)
@@ -357,7 +466,8 @@ def _observe_view(
         if result.state.state is not JobStateKind.COMPLETED:
             raise ExecutorUnavailable("view probe did not complete")
         output = next(
-            (item for item in result.outputs if item.logical_id == VIEW_OBSERVATION_ID), None,
+            (item for item in result.outputs if item.logical_id == VIEW_OBSERVATION_ID),
+            None,
         )
         if output is None:
             raise ExecutorUnavailable("view probe produced no observation")

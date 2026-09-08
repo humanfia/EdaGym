@@ -39,8 +39,9 @@ from edagym.run.artifact_model import (
     ArtifactRecord,
 )
 from edagym.run.artifacts import ARTIFACT_MANIFEST_MEDIA_TYPE
-from edagym.run.journal import InvalidTransition, RunJournal, replay
-from edagym.run.model import (
+from edagym.run.journal_storage import InvalidTransition
+from edagym.run.trial_journal import TrialJournal, replay
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     ArtifactRecordedPayload,
     CandidateSubmittedEvent,
@@ -92,7 +93,7 @@ class ParticipantController:
 
     def __init__(
         self,
-        journal: RunJournal,
+        journal: TrialJournal,
         adapter: ParticipantAdapter,
         *,
         session: SessionSpec,
@@ -332,7 +333,7 @@ class ParticipantController:
 
 
 def _validate_active_actor_admission(
-    journal: RunJournal,
+    journal: TrialJournal,
     adapter: ParticipantAdapter,
     session: SessionSpec,
     state: RunState,
@@ -441,7 +442,7 @@ def _intent_preconditions_hold(
 
 
 def _commit_intent(
-    journal: RunJournal,
+    journal: TrialJournal,
     factory: Callable[[RunState], tuple[RunEvent, ...]],
 ) -> RunState | ParticipantFailureKind:
     try:

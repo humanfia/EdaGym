@@ -1,19 +1,16 @@
 """Top-level journal-driven execution orchestration."""
 
-from edagym.runtime.engine import (
+from edagym.run.model import (
     AcceptedEvent,
-    EngineError,
     EnginePhase,
     EventCursor,
     EventStream,
     IntentKind,
     InteractionIntent,
     Principal,
-    RunEngine,
     RunProjection,
-    stream_run,
-    submit_intent,
 )
+from edagym.runtime.engine import EngineError, RunEngine
 from edagym.runtime.errors import OrchestrationError
 from edagym.runtime.model import (
     EvaluationArtifact,
@@ -40,6 +37,4 @@ __all__ = [
     "RunEngine",
     "RunOrchestrator",
     "RunProjection",
-    "stream_run",
-    "submit_intent",
 ]

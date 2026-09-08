@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from edagym.canonical import canonical_digest
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CampaignTrialRunBinding,
     HarnessRunActor,
     RunBinding,

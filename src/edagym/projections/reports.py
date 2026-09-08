@@ -44,8 +44,8 @@ from edagym.run.artifact_model import (
     ArtifactRecord,
 )
 from edagym.run.artifacts import SANITIZED_MEASUREMENTS_MEDIA_TYPE
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     COMPARABLE_TRIAL_STOP_REASONS,
     ArtifactRecordedEvent,
     ControlTransferredEvent,
@@ -70,7 +70,7 @@ _COURSE_VISIBLE = PARTICIPANT_EVENT_VISIBILITY | {Visibility.REVIEWER}
 _PUBLIC_RESULT_VISIBILITY = Visibility.PUBLIC
 
 
-def project_course_report(journal: RunJournal, session: SessionSpec) -> CourseReport:
+def project_course_report(journal: TrialJournal, session: SessionSpec) -> CourseReport:
     return _project_course_report_snapshot(
         ProjectionSnapshot.from_journal(journal),
         session,
@@ -192,7 +192,7 @@ def _project_course_report_snapshot(
 
 
 def project_leaderboard_entry(
-    journal: RunJournal,
+    journal: TrialJournal,
     session: SessionSpec,
 ) -> LeaderboardEntry:
     return _project_leaderboard_entry_snapshot(
@@ -330,7 +330,7 @@ def _project_leaderboard_entry_snapshot(
 
 
 def aggregate_leaderboard(
-    runs: Sequence[tuple[RunJournal, SessionSpec]],
+    runs: Sequence[tuple[TrialJournal, SessionSpec]],
 ) -> tuple[LeaderboardAggregate, ...]:
     entries = tuple(project_leaderboard_entry(journal, session) for journal, session in runs)
     run_ids = [entry.run_id for entry in entries]

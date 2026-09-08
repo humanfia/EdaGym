@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import stat
 from collections.abc import Sequence
 from contextlib import suppress
 from pathlib import Path, PurePosixPath
-from typing import Literal, Self
 
-from pydantic import Field, model_validator
-
-from edagym.canonical import canonical_digest
 from edagym.evaluation.model import (
     ArtifactEvidence,
     CandidateFailureOutcome,
@@ -35,6 +30,7 @@ from edagym.executors.model import (
     ToolRecipeCommand,
     WorkspaceRecipeCommand,
 )
+from edagym.executors.report import CompositeCommandReport, ReportStatus
 from edagym.flow_tasks.canonical import (
     CanonicalFlowTask,
     flow_evaluator_id,
@@ -60,9 +56,6 @@ from edagym.run.artifacts import ContentAddressedStore
 from edagym.runtime.model import EvaluationArtifacts, EvaluationContext, EvaluatorRuntime
 from edagym.specs.common import (
     ArtifactClass,
-    Digest,
-    SchemaVersion,
-    StrictModel,
 )
 from edagym.specs.environment import (
     BrokeredHostToolExecutor,
@@ -71,36 +64,6 @@ from edagym.specs.environment import (
 )
 
 _MAXIMUM_RESULT_BYTES = 64 * 1024 * 1024
-
-
-class CommandReportEntry(StrictModel):
-    identity_digest: Digest
-    exit_code: int | None
-    failure: Literal["spawn_failed"] | None
-    stdout_digest: Digest
-    stdout_size_bytes: int = Field(ge=0)
-    stderr_digest: Digest
-    stderr_size_bytes: int = Field(ge=0)
-
-    @model_validator(mode="after")
-    def validate_failure(self) -> Self:
-        if (self.exit_code is None) != (self.failure is not None):
-            raise ValueError("command failure requires exactly one missing exit code")
-        return self
-
-
-class CompositeCommandReport(StrictModel):
-    schema_version: SchemaVersion = 1
-    status: Literal["completed", "driver_error"]
-    commands: tuple[CommandReportEntry, ...]
-
-    @model_validator(mode="after")
-    def validate_status(self) -> Self:
-        if self.status == "driver_error" and self.commands:
-            raise ValueError("driver errors cannot claim completed commands")
-        if self.status == "completed" and not self.commands:
-            raise ValueError("completed composite reports require command evidence")
-        return self
 
 
 class FlowEvaluatorRuntime(EvaluatorRuntime):
@@ -191,52 +154,16 @@ class FlowEvaluatorRuntime(EvaluatorRuntime):
                 COMPOSITE_REPORT_LOGICAL_ID,
             )
         )
-        expected_identities = tuple(
-            canonical_digest(command, domain="composite-recipe-command-v1")
-            for command in self._recipe
-        )
-        actual_identities = tuple(command.identity_digest for command in report.commands)
-        if actual_identities != expected_identities[: len(actual_identities)]:
-            raise ValueError("composite report command identity diverges from its recipe")
-        if report.status == "driver_error" or not report.commands:
-            return StageResult(
-                stage_id=self._stage.stage_id,
-                outcome=InfrastructureFailureOutcome(),
-            )
-        terminal = report.commands[-1]
-        if any(
-            command.failure is not None or command.exit_code != 0
-            for command in report.commands[:-1]
-        ):
-            raise ValueError("composite report continued after a terminal command")
-        if (
-            terminal.failure is None
-            and terminal.exit_code == 0
-            and len(report.commands) != len(self._recipe)
-        ):
-            raise ValueError("a successful composite report omitted recipe commands")
-        if any(command.failure is not None for command in report.commands):
-            return StageResult(
-                stage_id=self._stage.stage_id,
-                outcome=InfrastructureFailureOutcome(),
-            )
-
         stdout = _read_artifact(self._artifact_store, artifacts, "executor.stdout")
         stderr = _read_artifact(self._artifact_store, artifacts, "executor.stderr")
-        _validate_stream_report(
-            stdout,
-            tuple(
-                (command.stdout_size_bytes, command.stdout_digest) for command in report.commands
-            ),
-            "stdout",
-        )
-        _validate_stream_report(
-            stderr,
-            tuple(
-                (command.stderr_size_bytes, command.stderr_digest) for command in report.commands
-            ),
-            "stderr",
-        )
+        report.verify(self._recipe, stdout, stderr)
+        if report.status is ReportStatus.DRIVER_ERROR or any(
+            command.failure is not None for command in report.commands
+        ):
+            return StageResult(
+                stage_id=self._stage.stage_id, outcome=InfrastructureFailureOutcome()
+            )
+
         files = {
             path: _read_artifact(self._artifact_store, artifacts, local_id)
             for position, path in enumerate(self._stage.output_paths)
@@ -399,22 +326,6 @@ def _read_artifact(
         artifact.record.blob,
         maximum_bytes=artifact.record.blob.size_bytes,
     )
-
-
-def _validate_stream_report(
-    content: bytes,
-    entries: tuple[tuple[int, str], ...],
-    stream_name: str,
-) -> None:
-    offset = 0
-    for size, expected_digest in entries:
-        chunk = content[offset : offset + size]
-        actual_digest = f"sha256:{hashlib.sha256(chunk).hexdigest()}"
-        if len(chunk) != size or actual_digest != expected_digest:
-            raise ValueError(f"composite {stream_name} disagrees with its command report")
-        offset += size
-    if offset != len(content):
-        raise ValueError(f"composite {stream_name} has unreported bytes")
 
 
 def _declared_evidence(

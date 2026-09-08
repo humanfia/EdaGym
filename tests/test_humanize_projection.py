@@ -15,8 +15,8 @@ from edagym.projections import (
     project_humanize,
 )
 from edagym.resolution import resolve_run
-from edagym.run.journal import RunJournal
-from edagym.run.model import (
+from edagym.run.trial_journal import TrialJournal
+from edagym.run.trial_model import (
     InteractionDirection,
     InteractionRecordedEvent,
     InteractionRecordedPayload,
@@ -134,7 +134,7 @@ def _journal(
     session: SessionSpec,
     *,
     lineage: RunLineage | None = None,
-) -> RunJournal:
+) -> TrialJournal:
     task = task_spec()
     environment = environment_spec()
     instance = task_instance(task)
@@ -148,10 +148,10 @@ def _journal(
         trial_key="humanize_projection",
         lineage=lineage,
     )
-    return RunJournal.create(root, RunHeader.from_binding(plan.binding), task)
+    return TrialJournal.create(root, RunHeader.from_binding(plan.binding), task)
 
 
-def _append_trace_events(journal: RunJournal, *, include_hidden: bool) -> None:
+def _append_trace_events(journal: TrialJournal, *, include_hidden: bool) -> None:
     events: list[RunStartedEvent | InteractionRecordedEvent] = []
 
     def append(event: RunStartedEvent | InteractionRecordedEvent) -> None:
@@ -231,7 +231,7 @@ def _append_trace_events(journal: RunJournal, *, include_hidden: bool) -> None:
 
 
 def _interaction(
-    journal: RunJournal,
+    journal: TrialJournal,
     *,
     event_id: UUID,
     timestamp: datetime,

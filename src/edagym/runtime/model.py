@@ -14,7 +14,7 @@ from edagym.resolution import StageDriverAssignment
 from edagym.run.artifact_model import (
     ArtifactRecord,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CandidateState,
 )
 from edagym.specs.environment import EnvironmentSpec

@@ -28,12 +28,12 @@ from edagym.run.checkpoints import (
     restore_application_checkpoint,
     restore_workspace_checkpoint,
 )
-from edagym.run.journal import (
-    RunJournal,
+from edagym.run.trial_journal import (
+    TrialJournal,
     participant_incarnation_lifecycle,
     unresolved_tool_requests,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CheckpointCommittedEvent,
     EvaluationCompletedEvent,
     EvaluationStartedEvent,
@@ -60,7 +60,7 @@ class ParticipantRecoveryError(RuntimeError):
 
 def reconcile_interrupted_run_work(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     executor: Executor,
     environment: EnvironmentSpec,
     timestamp: datetime,
@@ -202,7 +202,7 @@ def private_directory_identity_digest(path: Path, *, role: str) -> Digest:
 
 
 def require_current_participant_incarnation(
-    journal: RunJournal,
+    journal: TrialJournal,
     *,
     workspace: Path,
     artifact_directory: Path,
@@ -227,7 +227,7 @@ def require_current_participant_incarnation(
 
 def restore_participant_incarnation(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     artifact_store: ContentAddressedStore,
     workspace: Path,
@@ -392,7 +392,7 @@ def restore_participant_incarnation(
     return marker, state
 
 
-def _checkpoint_event(journal: RunJournal, checkpoint_id: str) -> CheckpointCommittedEvent:
+def _checkpoint_event(journal: TrialJournal, checkpoint_id: str) -> CheckpointCommittedEvent:
     checkpoints = tuple(
         event
         for event in journal.read_events()
@@ -423,7 +423,7 @@ def _load_checkpoint(
 
 def _restore_checkpoint(
     store: ContentAddressedStore,
-    journal: RunJournal,
+    journal: TrialJournal,
     environment: EnvironmentSpec,
     checkpoint_id: str,
     workspace: Path,

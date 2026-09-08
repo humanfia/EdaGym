@@ -10,14 +10,15 @@ from pathlib import Path
 from edagym.authoring.factory import TaskFactory
 from edagym.canonical import canonical_bytes
 from edagym.config import load_config, resolve_profile, resolve_site
-from edagym.runtime.engine import (
+from edagym.run.model import (
+    CheckpointPayload,
     EnginePhase,
     EventCursor,
     IntentKind,
     InteractionIntent,
     Principal,
-    RunEngine,
 )
+from edagym.runtime.engine import RunEngine
 
 
 def add_run_commands[P: argparse.ArgumentParser](
@@ -87,7 +88,7 @@ def _operation(arguments: argparse.Namespace) -> int:
                 idempotency_key=key,
                 actor_id=principal.principal_id,
                 kind=IntentKind.CHECKPOINT,
-                payload={"checkpoint_id": key},
+                payload=CheckpointPayload(checkpoint_id=key),
             ),
             principal,
         )

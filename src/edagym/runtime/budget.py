@@ -14,13 +14,13 @@ from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
     ContentAddressedStore,
 )
-from edagym.run.journal import (
-    RunJournal,
+from edagym.run.trial_journal import (
+    TrialJournal,
     participant_tool_dispatches,
     participant_tool_usage,
     replay,
 )
-from edagym.run.model import (
+from edagym.run.trial_model import (
     ArtifactRecordedEvent,
     EvaluationStartedEvent,
     JobStateChangedEvent,
@@ -66,7 +66,7 @@ class RuntimeBudgetUsage:
 def budget_stop(
     action: RuntimeActionKind,
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     task: TaskSpec,
     environment: EnvironmentSpec,
     session: SessionSpec,
@@ -122,7 +122,7 @@ def budget_stop(
 
 def active_runtime_stop(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     task: TaskSpec,
     environment: EnvironmentSpec,
     session: SessionSpec,
@@ -149,7 +149,7 @@ def active_runtime_stop(
 
 def budget_usage(
     *,
-    journal: RunJournal,
+    journal: TrialJournal,
     task: TaskSpec,
     artifact_store: ContentAddressedStore,
     now: datetime,

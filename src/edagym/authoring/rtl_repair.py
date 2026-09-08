@@ -8,6 +8,8 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from edagym.canonical import canonical_bytes
+from edagym.evaluation import rtl_queue
 from edagym.specs.common import Capability, Redistribution, Sensitivity, Visibility
 from edagym.specs.release import ChoiceParameterValue, IntegerParameterValue, ParameterValue
 from edagym.specs.task import (
@@ -72,7 +74,10 @@ def generate_repair(seed: str, difficulty: str, revision: int) -> RepairDesign:
         "reference/dut.sv": reference.encode(),
         "verifier/monitor.sv": _MONITOR.encode(),
         "verifier/vectors.txt": _vectors(seed, width, depth, level == 2).encode(),
-        "verifier/verify.py": _VERIFY.encode(),
+        "verifier/verify.py": rtl_queue.implementation_source(),
+        "verifier/oracle.json": canonical_bytes(rtl_queue.QueueOracleContract(
+            capacity=depth, width=width, flush_enabled=level == 2,
+        )),
         "authoring/generator.py": Path(__file__).read_bytes(),
         **{f"mutants/{name}.sv": content.encode() for name, content in negatives.items()},
     }
@@ -83,6 +88,7 @@ def generate_repair(seed: str, difficulty: str, revision: int) -> RepairDesign:
         "monitor": "verifier/monitor.sv",
         "vectors": "verifier/vectors.txt",
         "verifier": "verifier/verify.py",
+        "oracle_contract": "verifier/oracle.json",
         "generator": "authoring/generator.py",
         **{name: f"mutants/{name}.sv" for name in negatives},
     }
@@ -164,7 +170,7 @@ def generate_repair(seed: str, difficulty: str, revision: int) -> RepairDesign:
         evaluation=EvaluationGraph(
             evaluators=(
                 EvaluatorSpec(
-                    evaluator_id="queue_monitor",
+                    evaluator_id=rtl_queue.EVALUATOR_ID,
                     capability=Capability.RTL_SIMULATION,
                     supporting_capabilities=(Capability.ASIC_SYNTHESIS,),
                     implementation_resource="verifier",
@@ -174,7 +180,7 @@ def generate_repair(seed: str, difficulty: str, revision: int) -> RepairDesign:
             stages=(
                 StageSpec(
                     stage_id="queue_contract",
-                    evaluator_id="queue_monitor",
+                    evaluator_id=rtl_queue.EVALUATOR_ID,
                     purpose=StagePurpose.HARD_GATE,
                     requirement_ids=tuple(item.requirement_id for item in requirements),
                 ),
@@ -349,33 +355,3 @@ _MONITOR = """module monitor;
     end
 endmodule
 """
-
-_VERIFY = '''"""Trusted evaluator; only a synthesized netlist reaches the monitor."""
-import json
-import subprocess
-from pathlib import Path
-
-def invoke(argv):
-    result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, timeout=30, check=False)
-    return result.returncode, result.stdout.decode("utf-8", "replace")
-
-code, output = invoke(["yosys", "-Q", "-T", "-p",
-    "read_verilog -sv dut.sv; hierarchy -check -top dut; proc; flatten; "
-    "opt; memory; opt; check -assert; write_verilog -noattr netlist.v"])
-stage = "synthesis"
-if code == 0:
-    code, output = invoke(["iverilog", "-g2012", "-s", "monitor", "-o", "monitor.vvp",
-                            "netlist.v", "monitor.sv"])
-    stage = "monitor_compile"
-if code == 0:
-    code, output = invoke(["vvp", "monitor.vvp"])
-    stage = "monitor_run"
-passed = code == 0 and "EDAGYM_QUEUE_MONITOR_PASS " in output
-Path("verification.json").write_text(json.dumps({
-    "passed": passed, "stage": stage, "exit_code": code,
-    "semantic_failure": stage == "monitor_run" and code != 0,
-}, sort_keys=True) + "\\n")
-Path("verification.log").write_text(output)
-raise SystemExit(0 if passed else 1)
-'''

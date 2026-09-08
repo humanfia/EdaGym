@@ -8,7 +8,7 @@ from typing import Self
 from pydantic import field_validator, model_validator
 
 from edagym.canonical import canonical_digest
-from edagym.run.model import (
+from edagym.run.trial_model import (
     CampaignTrialRunBinding,
     EnvironmentRunBinding,
     EvaluatorRunBinding,
