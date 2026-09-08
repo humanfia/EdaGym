@@ -8,12 +8,16 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from edagym.canonical import canonical_digest
 from edagym.config.model import ConfigView, UserImageToolSource, VerifierTrust
 from edagym.config.qualification import ConfiguredToolResolution
 from edagym.config.resolve import ResolvedEnvironmentPair
 from edagym.executors.capabilities import ProviderAvailability
+from edagym.run.artifacts import PRIVATE_ARTIFACT_KEY_PROVIDER_ID
 from edagym.specs.common import ArtifactClass, Redistribution, Sensitivity, Visibility
 from edagym.specs.environment import (
+    PROTECTED_RAW_DISCLOSURE,
+    RAW_EDA_ARTIFACT_CLASSES,
     ArtifactDisclosure,
     ArtifactPolicy,
     ArtifactRetentionRule,
@@ -24,6 +28,7 @@ from edagym.specs.environment import (
     FilesystemPolicy,
     FilesystemScope,
     ImageToolLocator,
+    ManagedEncryption,
     NetworkKind,
     ReadonlyAssetMount,
     ResourceLimits,
@@ -190,11 +195,22 @@ def project_environment(
         ),
         artifact_policy=ArtifactPolicy(
             quota_bytes=storage.output_max_bytes,
+            encryption=ManagedEncryption(
+                provider_id=PRIVATE_ARTIFACT_KEY_PROVIDER_ID,
+                policy_digest=canonical_digest(
+                    {"snapshot": pair.snapshot.digest, "view": view},
+                    domain="private-artifact-key-policy-v1",
+                ),
+            ),
             rules=tuple(
                 ArtifactRetentionRule(
                     artifact_class=kind,
                     retention_seconds=storage.retention_seconds,
-                    allowed_disclosures=(disclosure,),
+                    allowed_disclosures=(
+                        PROTECTED_RAW_DISCLOSURE
+                        if kind in RAW_EDA_ARTIFACT_CLASSES
+                        else disclosure,
+                    ),
                 )
                 for kind in ArtifactClass
             ),

@@ -70,6 +70,9 @@ class BackendDefinition(StrictModel):
     vendor: Vendor
     capabilities: tuple[Capability, ...]
     executable_candidates: tuple[Annotated[str, Field(max_length=128)], ...]
+    supporting_executables: tuple[Annotated[str, Field(max_length=128)], ...] = Field(
+        default=(), exclude_if=lambda value: not value,
+    )
     version_arguments: tuple[Annotated[str, Field(max_length=128)], ...]
     accepted_version_exit_codes: tuple[int, ...] = (0,)
     version_identity_pattern: str | None = Field(
@@ -101,6 +104,13 @@ class BackendDefinition(StrictModel):
         ):
             raise ValueError("backend executable candidates must be unique command names")
         return value
+
+    @field_validator("supporting_executables")
+    @classmethod
+    def validate_supporting_executables(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)) or any(not _EXECUTABLE.fullmatch(item) for item in value):
+            raise ValueError("supporting executables must be unique command names")
+        return tuple(sorted(value))
 
     @field_validator("version_arguments")
     @classmethod
@@ -153,6 +163,8 @@ class BackendDefinition(StrictModel):
 
     @model_validator(mode="after")
     def validate_fixture_capabilities(self) -> Self:
+        if set(self.supporting_executables) & set(self.executable_candidates):
+            raise ValueError("supporting executables must differ from primary candidates")
         if any(item.capability not in self.capabilities for item in self.fixtures):
             raise ValueError("backend fixture references an undeclared capability")
         if self.vendor is Vendor.OPEN_SOURCE and self.workload_use_requires_eula_acceptance:

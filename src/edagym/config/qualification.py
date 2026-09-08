@@ -18,7 +18,6 @@ from edagym.drivers.catalog import backend_by_id
 from edagym.drivers.closure import (
     ExecutionClosureRequirementRef,
     execution_closure_digest,
-    rootless_image_arguments,
     rootless_image_execution_closure,
 )
 from edagym.drivers.deployment import private_container_host_environment
@@ -30,7 +29,7 @@ from edagym.drivers.probe import (
     _version_probe_digest,
 )
 from edagym.drivers.qualification import QualificationDisposition
-from edagym.drivers.rootless_image import _run_bounded
+from edagym.drivers.rootless_image import probe_rootless_image_tool
 from edagym.executors.capabilities import (
     ProviderAvailability,
     RootlessContainerCapability,
@@ -88,15 +87,6 @@ class ConfiguredToolResolution:
     receipt: ToolQualificationReceipt
     installation: ResolvedInstallation | None
     capability: RootlessContainerCapability | None
-
-
-class _ImageToolObservation(StrictModel):
-    entrypoint: str | None
-    entrypoint_digest: Digest | None
-    exit_code: int | None
-    version_output_base64: str
-    launcher_version: str
-    launcher_entrypoint: str
 
 
 def qualify_profile(pair: ResolvedEnvironmentPair) -> tuple[ToolQualificationReceipt, ...]:
@@ -213,32 +203,20 @@ def _resolve_installation(
         )
         if inspection.returncode != 0 or inspection.stdout.strip().decode() != runtime.architecture:
             return None, None, ToolProbeGap.ARCHITECTURE_MISMATCH
-        from edagym.drivers import image_tool_probe
-
-        probe_source = Path(image_tool_probe.__file__).read_bytes()
         with tempfile.TemporaryDirectory(prefix="probe-", dir=root) as directory:
-            workspace = Path(directory)
-            observation_bytes = _run_bounded(
-                engine,
-                rootless_image_arguments(
-                    workspace,
-                    runtime.image_reference,
-                    "/usr/bin/env",
-                    (
-                        runtime.launcher_executable,
-                        "-I",
-                        "-c",
-                        probe_source.decode(),
-                        source.executable,
-                        *adapter.version_arguments,
-                    ),
-                ),
-                host_environment,
-                workspace,
+            probed = probe_rootless_image_tool(
+                engine=engine,
+                image_reference=runtime.image_reference,
+                host_environment=host_environment,
+                workspace=Path(directory),
+                launcher_executable=runtime.launcher_executable,
+                executable=source.executable,
+                version_arguments=adapter.version_arguments,
+                supporting_executables=adapter.supporting_executables,
             )
-        if observation_bytes is None:
+        if probed is None:
             return None, None, ToolProbeGap.LAUNCHER_UNAVAILABLE
-        observation = _ImageToolObservation.model_validate_json(observation_bytes)
+        observation, probe_source = probed
         output = base64.b64decode(observation.version_output_base64, validate=True)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None, None, ToolProbeGap.LAUNCHER_UNAVAILABLE
@@ -250,7 +228,12 @@ def _resolve_installation(
         root / "observations" / f"{observation_digest[7:]}.json",
         canonical_bytes(observation) + b"\n",
     )
-    if observation.entrypoint is None or observation.entrypoint_digest is None:
+    if (
+        observation.entrypoint is None
+        or observation.entrypoint_digest is None
+        or tuple(item.executable for item in observation.supporting_entrypoints)
+        != adapter.supporting_executables
+    ):
         return None, version_digest, ToolProbeGap.ENTRYPOINT_UNAVAILABLE
     identity = _version_identity(output, adapter.version_identity_pattern)
     if (
@@ -289,6 +272,7 @@ def _resolve_installation(
             tool_entrypoint=observation.entrypoint,
             tool_entrypoint_digest=observation.entrypoint_digest,
             supervisor_entrypoint=observation.launcher_entrypoint,
+            supporting_entrypoints=observation.supporting_entrypoints,
         )
     except (OSError, ValueError):
         return None, version_digest, ToolProbeGap.CLOSURE_UNAVAILABLE

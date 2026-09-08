@@ -15,19 +15,20 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, SupportsIndex
 
-from edagym.canonical import canonical_digest
+from edagym.canonical import canonical_bytes, canonical_digest
 from edagym.drivers.closure import (
     ROOTLESS_IMAGE_FILE_SIZE_LIMIT_BYTES,
     ROOTLESS_IMAGE_PROBE_LIMITS,
     ExecutionClosureKind,
     ExecutionClosureRequirementRef,
+    ImageToolEntrypoint,
     ResolvedExecutionClosure,
     rootless_image_arguments,
     rootless_image_execution_closure,
     trusted_immutable_executable,
 )
 from edagym.drivers.deployment import private_container_host_environment
-from edagym.specs.common import Digest
+from edagym.specs.common import Digest, StrictModel
 
 _MAX_PROBE_OUTPUT_BYTES = 1024 * 1024
 _PROBE_TIMEOUT_SECONDS = ROOTLESS_IMAGE_PROBE_LIMITS.wall_seconds
@@ -35,6 +36,53 @@ _SHA256SUM_ENTRYPOINT = "/usr/bin/sha256sum"
 _CAT_ENTRYPOINT = "/usr/bin/cat"
 _PROBE_OWNER_LABEL = "io.edagym.image-probe"
 _SHA256SUM_LINE = re.compile(rb"^([0-9a-f]{64})  (/[^\r\n]+)$")
+
+
+class ImageToolObservation(StrictModel):
+    """Private wire result from the packaged standalone image probe."""
+
+    entrypoint: str | None
+    entrypoint_digest: Digest | None
+    supporting_entrypoints: tuple[ImageToolEntrypoint, ...]
+    exit_code: int | None
+    version_output_base64: str
+    launcher_version: str
+    launcher_entrypoint: str
+
+
+def probe_rootless_image_tool(
+    *,
+    engine: Path,
+    image_reference: str,
+    host_environment: Mapping[str, str],
+    workspace: Path,
+    launcher_executable: str,
+    executable: str,
+    supporting_executables: tuple[str, ...],
+    version_arguments: tuple[str, ...] | None,
+) -> tuple[ImageToolObservation, bytes] | None:
+    """Probe the same entrypoint set for configured and explicit image recipes."""
+
+    from edagym.drivers import image_tool_probe
+
+    probe_source = Path(image_tool_probe.__file__).read_bytes()
+    request = canonical_bytes({
+        "executable": executable,
+        "supporting_executables": supporting_executables,
+        "version_arguments": version_arguments,
+    })
+    output = _run_bounded(
+        engine,
+        rootless_image_arguments(
+            workspace, image_reference, "/usr/bin/env",
+            (launcher_executable, "-I", "-c", probe_source.decode(), request.decode()),
+        ),
+        host_environment,
+        workspace,
+    )
+    if output is None:
+        return None
+    return ImageToolObservation.model_validate_json(output), probe_source
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -137,6 +185,7 @@ def resolve_rootless_image_execution_closure(
     configuration: RootlessImageConfiguration,
     *,
     scratch_root: Path,
+    supporting_executables: tuple[str, ...] = (),
 ) -> ResolvedExecutionClosure | None:
     """Resolve and attest one image-native executable without a mutable tag."""
 
@@ -175,6 +224,26 @@ def resolve_rootless_image_execution_closure(
             ):
                 return None
             tool_digest = identities[recipe.tool_entrypoint]
+            probed = probe_rootless_image_tool(
+                engine=configuration.engine_path,
+                image_reference=configuration.image_reference,
+                host_environment=configuration.host_environment,
+                workspace=workspace,
+                launcher_executable="python3",
+                executable=recipe.tool_entrypoint,
+                supporting_executables=supporting_executables,
+                version_arguments=None,
+            )
+            if probed is None:
+                return None
+            observation, _ = probed
+            if (
+                observation.entrypoint != recipe.tool_entrypoint
+                or observation.entrypoint_digest != tool_digest
+                or tuple(item.executable for item in observation.supporting_entrypoints)
+                != supporting_executables
+            ):
+                return None
             package_manifest = _run_bounded(
                 configuration.engine_path,
                 rootless_image_arguments(
@@ -217,6 +286,8 @@ def resolve_rootless_image_execution_closure(
                 tool_entrypoint_digest=tool_digest,
                 package_manifest=package_manifest,
                 package_manifest_digest=recipe.package_manifest_digest,
+                supervisor_entrypoint=observation.launcher_entrypoint,
+                supporting_entrypoints=observation.supporting_entrypoints,
             )
             if closure is None or not configuration.revalidate() or not closure.revalidate():
                 return None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -29,6 +30,7 @@ from edagym.evaluation.scoring import measurement_sample_seeds
 from edagym.resolution import resolve_run
 from edagym.run.artifacts import (
     ARTIFACT_MANIFEST_MEDIA_TYPE,
+    PRIVATE_ARTIFACT_KEY_PROVIDER_ID,
     ArtifactIntegrityError,
     ArtifactManifest,
     ArtifactPolicyViolation,
@@ -674,6 +676,35 @@ def test_encrypted_cas_commits_checkpoint_and_detects_corruption(tmp_path: Path)
         store.verify(reference)
     with pytest.raises(ArtifactIntegrityError):
         store.load_filesystem_checkpoint("checkpoint_a")
+
+
+def test_private_cas_openers_share_a_durable_key_and_reject_key_loss(tmp_path: Path) -> None:
+    policy = _confidential_policy().model_copy(update={
+        "encryption": ManagedEncryption(
+            provider_id=PRIVATE_ARTIFACT_KEY_PROVIDER_ID,
+            policy_digest=digest("private-artifact-policy"),
+        ),
+    })
+    root = tmp_path / "cas"
+    root.mkdir(mode=0o700)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        openings = [workers.submit(ContentAddressedStore.open_private, root, policy=policy)
+                    for _ in range(2)]
+        stores = [opening.result() for opening in openings]
+    diagnostic = b"FATAL: candidate.sv:7: expected counterexample\n"
+    blob = stores[0].put_bytes(
+        diagnostic, artifact_class=ArtifactClass.DIAGNOSTIC,
+        sensitivity=Sensitivity.CONFIDENTIAL, visibility=Visibility.AUTHOR,
+        redistribution=Redistribution.FORBIDDEN,
+    )
+    assert stores[1].read_bytes(blob, maximum_bytes=1024) == diagnostic
+    reopened = ContentAddressedStore.open_private(root, policy=policy)
+    assert reopened.read_bytes(blob, maximum_bytes=1024) == diagnostic
+    key_path = tmp_path / "cas.key"
+    key_path.unlink()
+    with pytest.raises(ArtifactPolicyViolation):
+        ContentAddressedStore.open_private(root, policy=policy)
+    assert not key_path.exists()
 
 
 def test_checkpoint_restore_requires_one_atomic_journal_commit(tmp_path: Path) -> None:

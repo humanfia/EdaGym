@@ -20,7 +20,12 @@ from pydantic import Field, field_validator, model_validator
 from edagym.canonical import canonical_digest
 from edagym.executors.podman import rootless_podman_command
 from edagym.specs.common import Digest, Identifier, StrictModel
-from edagym.specs.environment import FilesystemPolicy, FilesystemScope, ResourceLimits
+from edagym.specs.environment import (
+    ExecutableName,
+    FilesystemPolicy,
+    FilesystemScope,
+    ResourceLimits,
+)
 
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,95}$")
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
@@ -136,7 +141,29 @@ class RootlessImageExecutionClosure(StrictModel):
     launcher_symlink_chain_digest: Digest
     image_digest: Digest
     entrypoint_digest: Digest
+    entrypoints_digest: Digest
     package_manifest_digest: Digest | None = None
+
+
+class ImageToolEntrypoint(StrictModel):
+    """One private in-image program resolved and hashed by the trusted probe."""
+
+    executable: ExecutableName
+    path: Annotated[str, Field(min_length=2, max_length=4096, repr=False)]
+    content_digest: Digest
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if (
+            not path.is_absolute()
+            or path.as_posix() != value
+            or any(part in {".", ".."} for part in path.parts[1:])
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ValueError("an image program requires a normalized absolute entrypoint")
+        return value
 
 
 ExecutionClosure = Annotated[
@@ -454,10 +481,12 @@ class RootlessImageRuntime:
     package_manifest: bytes | None = None
     package_manifest_digest: str | None = None
     supervisor_entrypoint: str = _ROOTLESS_SUPERVISOR_ENTRYPOINT
+    supporting_entrypoints: tuple[ImageToolEntrypoint, ...] = ()
 
     def __post_init__(self) -> None:
         entrypoint = PurePosixPath(self.tool_entrypoint)
         supervisor = PurePosixPath(self.supervisor_entrypoint)
+        supporting_names = tuple(item.executable for item in self.supporting_entrypoints)
         if (
             not self.engine_path.is_absolute()
             or not self.image_reference.endswith(f"@{self.image_digest}")
@@ -479,6 +508,8 @@ class RootlessImageRuntime:
             or not supervisor.is_absolute()
             or any(part in {"", ".", ".."} for part in supervisor.parts[1:])
             or "\x00" in self.supervisor_entrypoint
+            or len(supporting_names) != len(set(supporting_names))
+            or entrypoint.name in supporting_names
             or any(
                 not name
                 or "\x00" in name
@@ -495,6 +526,31 @@ class RootlessImageRuntime:
             "host_environment",
             MappingProxyType(dict(self.host_environment)),
         )
+        object.__setattr__(
+            self, "supporting_entrypoints",
+            tuple(sorted(self.supporting_entrypoints, key=lambda item: item.executable)),
+        )
+
+    @property
+    def entrypoints_digest(self) -> Digest:
+        return canonical_digest(
+            {
+                "primary": {"path": self.tool_entrypoint, "digest": self.tool_entrypoint_digest},
+                "supporting": self.supporting_entrypoints,
+                "supervisor": self.supervisor_entrypoint,
+            },
+            domain="rootless-image-entrypoints-v1",
+        )
+
+    def executable_path(self, executable: str) -> str:
+        """Resolve only the exact programs already bound by this closure."""
+
+        if executable == PurePosixPath(self.tool_entrypoint).name:
+            return self.tool_entrypoint
+        for entrypoint in self.supporting_entrypoints:
+            if executable == entrypoint.executable:
+                return entrypoint.path
+        raise ValueError("executable is absent from the image tool closure")
 
     def __repr__(self) -> str:
         return "RootlessImageRuntime(paths=<restricted>, image=<restricted>)"
@@ -711,6 +767,7 @@ class ResolvedExecutionClosure:
                 or rootless_runtime.engine_path != self.entrypoint_path
                 or rootless_runtime.image_digest != self.evidence.image_digest
                 or rootless_runtime.tool_entrypoint_digest != self.evidence.entrypoint_digest
+                or rootless_runtime.entrypoints_digest != self.evidence.entrypoints_digest
                 or rootless_runtime.package_manifest_digest != self.evidence.package_manifest_digest
             ):
                 raise ValueError("rootless-image closure evidence does not match its runtime")
@@ -849,6 +906,7 @@ def rootless_image_execution_closure(
     package_manifest: bytes | None = None,
     package_manifest_digest: str | None = None,
     supervisor_entrypoint: str = _ROOTLESS_SUPERVISOR_ENTRYPOINT,
+    supporting_entrypoints: tuple[ImageToolEntrypoint, ...] = (),
 ) -> ResolvedExecutionClosure | None:
     """Bind one root-owned runtime and immutable image to a tool entrypoint.
 
@@ -870,6 +928,7 @@ def rootless_image_execution_closure(
         package_manifest=package_manifest,
         package_manifest_digest=package_manifest_digest,
         supervisor_entrypoint=supervisor_entrypoint,
+        supporting_entrypoints=supporting_entrypoints,
     )
     if not runtime.revalidate_image():
         return None
@@ -880,6 +939,7 @@ def rootless_image_execution_closure(
         launcher_symlink_chain_digest=launcher_chain_digest,
         image_digest=image_digest,
         entrypoint_digest=tool_entrypoint_digest,
+        entrypoints_digest=runtime.entrypoints_digest,
         package_manifest_digest=package_manifest_digest,
     )
     return ResolvedExecutionClosure(

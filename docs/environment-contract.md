@@ -153,8 +153,13 @@ Runnable profiles explicitly set positive `cpu_millicores`, `memory_bytes`,
 `cpu_seconds` cumulative budget and `storage.max_inodes` are currently unsupported
 by this projection and cause typed admission failures when nonzero. Zero resource
 values mean unconfigured, never unlimited. Artifact retention comes from
-`storage.retention_seconds` (30 days by default); evaluator artifacts retain
-verifier visibility. Unsupported networking, verifier trust, and tool environment
+`storage.retention_seconds` (30 days by default). Raw diagnostic and evidence
+artifacts use the existing confidential, author-only disclosure policy and local
+managed encryption. Other evaluator artifacts retain verifier visibility.
+`ContentAddressedStore.open_private` keeps a mode `0600` key beside each private
+CAS; the key is not an artifact and cannot be regenerated for an existing store.
+The raw artifact policy still rejects credentials. Unsupported networking,
+verifier trust, and tool environment
 references likewise fail explicitly. Relative paths are resolved in the snapshot
 before deriving either view.
 
@@ -162,6 +167,11 @@ Configured image probes resolve the selected executable inside the pinned image,
 check its bytes and version, and return that same installation to the rootless
 executor. The observed launcher entrypoint also selects the interpreter used by
 composite execution; tools in one view must agree on that image and interpreter.
+Backend definitions own supporting executable names, such as Icarus `vvp`.
+The shared image probe resolves and hashes those programs alongside the primary
+executable. One closure digest binds their entrypoint set; composite commands can
+select only a driver-declared program from that set and use its observed absolute
+path. A missing supporting program makes the installation unavailable.
 The configured tool ID and the adapter ID are distinct: a logical
 `synthesis` binding can use the `yosys` adapter without changing adapter identity.
 Image package inventories remain optional additional evidence; when a deployment

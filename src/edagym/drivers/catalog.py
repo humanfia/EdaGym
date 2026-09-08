@@ -28,6 +28,7 @@ def _definition(
     accepted_version_exit_codes: tuple[int, ...] = (0,),
     workload_use_requires_eula_acceptance: bool = False,
     implementation_family_overrides: Mapping[Capability, str] | None = None,
+    supporting_executables: tuple[str, ...] = (),
 ) -> BackendDefinition:
     implementation_families = (
         {} if implementation_family_overrides is None else implementation_family_overrides
@@ -37,6 +38,7 @@ def _definition(
         vendor=vendor,
         capabilities=capabilities,
         executable_candidates=executables,
+        supporting_executables=supporting_executables,
         version_arguments=version_arguments,
         accepted_version_exit_codes=accepted_version_exit_codes,
         version_identity_pattern=version_identity_pattern,
@@ -61,6 +63,7 @@ BACKENDS: tuple[BackendDefinition, ...] = (
         ("iverilog",),
         ("-V",),
         (Capability.RTL_SIMULATION,),
+        supporting_executables=("vvp",),
     ),
     _definition(
         "verilator",

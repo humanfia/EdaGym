@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -121,12 +122,13 @@ def _base_environment(
 
 
 def _rootless_runtime(
+    tool_id: str = "yosys",
 ) -> tuple[EnvironmentSpec, ResolvedInstallation, RootlessContainerCapability]:
-    definition = next(item for item in BACKENDS if item.tool_id == "yosys")
+    definition = next(item for item in BACKENDS if item.tool_id == tool_id)
     configuration = RootlessImageConfiguration(
         recipe=RootlessImageExecutionRecipe(
             image_digest=_OPEN_EDA_DIGEST,
-            tool_entrypoint="/usr/bin/yosys",
+            tool_entrypoint=f"/usr/bin/{definition.executable_candidates[0]}",
             package_manifest_path="/usr/share/edagym/dpkg-manifest.tsv",
             package_manifest_digest=_OPEN_EDA_MANIFEST_DIGEST,
             package_manifest_checksum_path="/usr/share/edagym/dpkg-manifest.sha256",
@@ -148,10 +150,10 @@ def _rootless_runtime(
     ):
         pytest.skip(f"the pinned open EDA image is unavailable: {probe.reason}")
     tool = ToolBinding(
-        capability=Capability.ASIC_SYNTHESIS,
+        capability=definition.capabilities[0],
         tool_id=definition.tool_id,
         tool_version=installation.version_label,
-        driver_id="yosys_rootless_driver",
+        driver_id=f"{tool_id}_rootless_driver",
         driver_digest=definition.driver_digest,
         locator=ImageToolLocator(
             image_digest=_OPEN_EDA_DIGEST,
@@ -173,9 +175,128 @@ def _rootless_runtime(
     return environment, installation, capability
 
 
+def _configured_rootless_runtime(
+    tmp_path: Path, tool_id: str, logical_tool_id: str, view: ConfigView,
+) -> tuple[EnvironmentSpec, ResolvedInstallation, RootlessContainerCapability]:
+    environment, installation, capability = _rootless_runtime(tool_id)
+    document = initialize_config(tmp_path / "config.toml", tmp_path / "state").model_dump(
+        mode="python"
+    )
+    document["runtimes"] = [{
+        "runtime_id": "tools",
+        "image_reference": _OPEN_EDA_REFERENCE,
+        "image_digest": _OPEN_EDA_DIGEST,
+        "architecture": "amd64",
+        "launcher_executable": "python3.12",
+    }]
+    document["tools"] = [{
+        "tool_id": logical_tool_id,
+        "adapter_id": tool_id,
+        "version_label": installation.version_label,
+        "capabilities": [environment.tool_bindings[0].capability],
+        "source": {
+            "kind": "user_image", "runtime_id": "tools",
+            "executable": installation.executable_name, "image_digest": _OPEN_EDA_DIGEST,
+        },
+    }]
+    document["profiles"][0][view.value] = {"runtime_id": "tools", "tool_ids": [logical_tool_id]}
+    document["profiles"][0]["resources"] = {
+        "cpu_millicores": 250, "memory_bytes": 128 * 1024**2,
+        "process_count": 32, "wall_seconds": 15,
+    }
+    document["profiles"][0]["storage"] = {
+        "max_bytes": 64 * 1024**2, "output_max_bytes": 1024**2,
+    }
+    pair = resolve_profile(EdaGymConfig.model_validate(document), "default")
+    selected, = resolve_profile_tools(pair)
+    assert selected.receipt.view is view
+    assert selected.receipt.failure is None
+    assert selected.installation is not None and selected.capability is not None
+    installation, capability = selected.installation, selected.capability
+    assert installation.execution_closure_digest == selected.receipt.execution_closure_digest
+    assert installation.package_manifest_digest is None
+    assert isinstance(environment.executor, RootlessLocalExecutor)
+    environment = project_environment(
+        pair, view, (selected,), environment.executor
+    )
+    return environment, installation, capability
+
+
 def _rootless_environment() -> tuple[EnvironmentSpec, str]:
     environment, installation, _ = _rootless_runtime()
     return environment, installation.definition.driver_digest
+
+
+@pytest.mark.skipif(not Path("/usr/bin/podman").exists(), reason="Podman is unavailable")
+def test_image_compiler_and_runtime_preserve_simulation_exit_status(tmp_path: Path) -> None:
+    environment, installation, capability = _configured_rootless_runtime(
+        tmp_path, "iverilog", "simulation", ConfigView.EVALUATOR,
+    )
+    store = ContentAddressedStore.open_private(tmp_path / "cas", policy=environment.artifact_policy)
+    executor = RootlessContainerExecutor(
+        executor_id=environment.executor.executor_id,
+        implementation_digest=environment.executor.implementation_digest,
+        capability=capability,
+        tool_installations={installation.tool_id: installation},
+        storage_provider=RootlessStorageProvider(maximum_quota_bytes=environment.resources.disk_bytes),
+        asset_source_policy=load_system_asset_source_policy(),
+        artifact_store=store,
+        job_state_root=tmp_path / "jobs",
+    )
+    storage = tmp_path / "storage"
+    storage.mkdir(mode=0o700)
+    binding = environment.tool_bindings[0]
+    for expected_exit in (0, 1):
+        invocation_id = "passing_simulation" if expected_exit == 0 else "failing_simulation"
+        lease = executor.create_storage(
+            environment=environment, runtime_root=storage,
+            run_id=digest("image-runtime-contract"), invocation_id=invocation_id,
+        )
+        body = (
+            '$display("simulation-ok");'
+            if expected_exit == 0 else '$fatal(1, "expected counterexample");'
+        )
+        source = f"module probe; initial begin {body} end endmodule\n"
+        (lease.workspace / "probe.sv").write_text(source)
+        commands = tuple(
+            ToolRecipeCommand(
+                tool_id=binding.tool_id, capability=binding.capability,
+                driver_digest=binding.driver_digest, executable=executable, arguments=arguments,
+            )
+            for executable, arguments in (
+                ("iverilog", ("-g2012", "-s", "probe", "-o", "probe.vvp", "probe.sv")),
+                ("vvp", ("probe.vvp",)),
+            )
+        )
+        plan = InvocationPlan(
+            invocation_id=invocation_id, capability=binding.capability,
+            tool_id=binding.tool_id, driver_digest=binding.driver_digest,
+            view=InvocationView.EVALUATOR, executable=binding.locator.executable,
+            input_manifest_digest=digest(source), recipe=commands,
+            outputs=(OutputDeclaration(
+                logical_id=COMPOSITE_REPORT_LOGICAL_ID, path=COMPOSITE_REPORT_PATH,
+                media_type="application/json", artifact_class=ArtifactClass.EVIDENCE,
+            ),),
+        )
+        try:
+            handle = executor.launch(
+                plan, environment=environment, workspace=lease.workspace,
+                artifact_directory=lease.artifact_directory, asset_paths={},
+                scope=FilesystemScope.EVALUATOR,
+            )
+            assert _wait(executor, handle) is JobStateKind.COMPLETED
+            result = executor.collect(handle)
+            report = next(
+                item for item in result.outputs if item.logical_id == COMPOSITE_REPORT_LOGICAL_ID
+            )
+            receipts = json.loads(store.read_bytes(report.blob, maximum_bytes=8192))["commands"]
+            assert [receipt["exit_code"] for receipt in receipts] == [0, expected_exit]
+            output = store.read_bytes(result.stdout, maximum_bytes=8192)
+            marker = b"simulation-ok" if expected_exit == 0 else b"expected counterexample"
+            assert marker in output
+        finally:
+            executor.abandon(invocation_id)
+            lease.close()
 
 
 def test_brokered_executor_scrubs_ambient_environment(
@@ -388,50 +509,11 @@ def test_rootless_container_hides_host_paths_and_parent_environment(
 ) -> None:
     monkeypatch.setenv("SYNTHETIC_SECRET", "must-not-reach-container")
     _, _, jobs, cas = _directories(tmp_path)
-    environment, installation, capability = _rootless_runtime()
-    document = initialize_config(tmp_path / "config.toml", tmp_path / "state").model_dump(
-        mode="python"
-    )
-    document["runtimes"] = [{
-        "runtime_id": "tools",
-        "image_reference": _OPEN_EDA_REFERENCE,
-        "image_digest": _OPEN_EDA_DIGEST,
-        "architecture": "amd64",
-        "launcher_executable": "python3.12",
-    }]
-    document["tools"] = [{
-        "tool_id": "synthesis",
-        "adapter_id": "yosys",
-        "version_label": installation.version_label,
-        "capabilities": [Capability.ASIC_SYNTHESIS],
-        "source": {
-            "kind": "user_image", "runtime_id": "tools",
-            "executable": "yosys", "image_digest": _OPEN_EDA_DIGEST,
-        },
-    }]
-    document["profiles"][0]["participant"] = {"runtime_id": "tools", "tool_ids": ["synthesis"]}
-    document["profiles"][0]["resources"] = {
-        "cpu_millicores": 250, "memory_bytes": 128 * 1024**2,
-        "process_count": 32, "wall_seconds": 15,
-    }
-    document["profiles"][0]["storage"] = {
-        "max_bytes": 64 * 1024**2, "output_max_bytes": 1024**2,
-    }
-    pair = resolve_profile(EdaGymConfig.model_validate(document), "default")
-    selected, = resolve_profile_tools(pair)
-    assert selected.receipt.view is ConfigView.PARTICIPANT
-    assert selected.receipt.failure is None
-    assert selected.installation is not None and selected.capability is not None
-    installation, capability = selected.installation, selected.capability
-    assert installation.tool_id == "synthesis" and installation.definition.tool_id == "yosys"
-    assert installation.execution_closure_digest == selected.receipt.execution_closure_digest
-    assert installation.package_manifest_digest is None
-    assert isinstance(environment.executor, RootlessLocalExecutor)
-    environment = project_environment(
-        pair, ConfigView.PARTICIPANT, (selected,), environment.executor
+    environment, installation, capability = _configured_rootless_runtime(
+        tmp_path, "yosys", "synthesis", ConfigView.PARTICIPANT,
     )
     binding = environment.tool_bindings[0]
-    store = ContentAddressedStore(cas, policy=environment.artifact_policy)
+    store = ContentAddressedStore.open_private(cas, policy=environment.artifact_policy)
     executor = RootlessContainerExecutor(
         executor_id="podman_rootless",
         implementation_digest=environment.executor.implementation_digest,

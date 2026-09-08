@@ -277,6 +277,7 @@ def _resolve_rootless_image(
         requirement,
         configuration,
         scratch_root=_probe_scratch_root(),
+        supporting_executables=definition.supporting_executables,
     )
     if closure is None:
         return None

@@ -20,6 +20,12 @@ from cryptography.hazmat.primitives.ciphers.base import AEADEncryptionContext
 from pydantic import ValidationError, field_validator, model_validator
 
 from edagym.canonical import canonical_bytes, canonical_digest
+from edagym.policy.runtime_storage import (
+    PrivateStorageError,
+    private_directory,
+    read_private,
+    write_private,
+)
 from edagym.policy.secrets import (
     CONTENT_RULES,
     RESTRICTED_CONTENT_RULES,
@@ -61,6 +67,7 @@ _NONCE_SIZE = 12
 _TAG_SIZE = 16
 _HEADER_SIZE = len(_ENVELOPE_MAGIC) + 1 + _NONCE_SIZE + _TAG_SIZE
 _ENCRYPTION_KEY_BYTES = 32
+PRIVATE_ARTIFACT_KEY_PROVIDER_ID: Identifier = "edagym_private_cas"
 ARTIFACT_MANIFEST_MEDIA_TYPE = "application/vnd.edagym.artifact-manifest+json"
 SANITIZED_MEASUREMENTS_MEDIA_TYPE = "application/vnd.edagym.measurements+json"
 RAW_MEASUREMENT_LINKS_MEDIA_TYPE = (
@@ -108,7 +115,7 @@ class EncryptionKey:
     __slots__ = ("_value", "key_id")
 
     def __init__(self, *, key_id: str, value: bytes) -> None:
-        if len(value) != 32:
+        if len(value) != _ENCRYPTION_KEY_BYTES:
             raise ValueError("artifact encryption requires a 32-byte key")
         if not key_id or not key_id[0].isalpha() or not key_id.replace("_", "").isalnum():
             raise ValueError("artifact key ID must be a normalized identifier")
@@ -334,6 +341,42 @@ class RawMeasurementLinks(StrictModel):
 
 class ContentAddressedStore:
     """Owner-only CAS whose format, encryption, quota, and disclosure are immutable."""
+
+    @classmethod
+    def open_private(cls, root: Path, *, policy: ArtifactPolicy) -> Self:
+        """Create or reopen a local encrypted store with a durable owner-only key.
+
+        The key is a sibling of the CAS, never an artifact. Reopening a store
+        requires its existing key; losing one must not silently rotate it.
+        """
+
+        encryption = policy.encryption
+        if (
+            not isinstance(encryption, ManagedEncryption)
+            or encryption.provider_id != PRIVATE_ARTIFACT_KEY_PROVIDER_ID
+        ):
+            raise ArtifactPolicyViolation("private CAS requires its local key provider")
+        parent = private_directory(root.parent, create=True)
+        root = parent / root.name
+        key_path = parent / f"{root.name}.key"
+        if not key_path.exists():
+            if (
+                root.exists()
+                and any(private_directory(root).iterdir())
+                and not key_path.exists()
+            ):
+                raise ArtifactPolicyViolation("an existing private CAS cannot replace its key")
+            try:
+                write_private(key_path, os.urandom(_ENCRYPTION_KEY_BYTES))
+            except PrivateStorageError:
+                # Another opener may have atomically published the key first.
+                if not key_path.exists():
+                    raise
+        key = EncryptionKey(
+            key_id=encryption.provider_id,
+            value=read_private(key_path, max_bytes=_ENCRYPTION_KEY_BYTES),
+        )
+        return cls(root, policy=policy, encryption_key=key)
 
     def __init__(
         self,

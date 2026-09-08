@@ -792,7 +792,6 @@ class RootlessContainerExecutor:
                 if (
                     binding is None
                     or binding.driver_digest != command.driver_digest
-                    or binding.locator.executable != command.executable
                     or not _installation_matches(
                         installation,
                         binding=binding,
@@ -805,7 +804,11 @@ class RootlessContainerExecutor:
                 assert installation is not None
                 runtime = installation.execution_closure.rootless_image_runtime
                 assert runtime is not None
-                executable = runtime.tool_entrypoint
+                if command.executable not in (
+                    installation.executable_name, *installation.definition.supporting_executables
+                ):
+                    raise ExecutorUnavailable("composite command is not declared by its driver")
+                executable = runtime.executable_path(command.executable)
             elif isinstance(command, WorkspaceRecipeCommand):
                 executable = command.executable
             else:
@@ -1028,6 +1031,8 @@ def _installation_matches(
         == binding.locator.deployment_attestation_digest
         and runtime.image_digest == image_digest
         and Path(runtime.tool_entrypoint).name == binding.locator.executable
+        and tuple(item.executable for item in runtime.supporting_entrypoints)
+        == installation.definition.supporting_executables
         and binding.license_binding_id is None
         and installation.execution_closure.revalidate()
     )
