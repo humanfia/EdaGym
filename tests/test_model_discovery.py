@@ -39,6 +39,7 @@ from edagym.providers.model_discovery import (
     freeze_model_set,
     qualify_model_route,
 )
+from tests.factories import SYNTHETIC_CREDENTIAL_SOURCE_DIGEST
 
 
 def _digest(label: str) -> str:
@@ -47,6 +48,7 @@ def _digest(label: str) -> str:
 
 def _configuration(*, models_path: str | None) -> ResolvedProviderConfig:
     return ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="DeclaredGateway",
         profile=ProviderProfile(
             logical_id="declared.gateway",

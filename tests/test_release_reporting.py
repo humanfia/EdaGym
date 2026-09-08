@@ -156,6 +156,7 @@ from edagym.task_families.catalog import (
     SAIL_RTL_FAMILIES,
 )
 from tests.factories import (
+    SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
     environment_spec,
     release_manifest,
     session_spec,
@@ -1082,6 +1083,7 @@ def test_command_failures_and_unavailability_remain_distinct(tmp_path: Path) -> 
 
 def test_route_canary_source_cannot_be_relabelled_by_a_model_set() -> None:
     provider = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="rust_cat",
         profile=RUST_CAT_PROFILE,
         defaults=ProviderDefaults(requested_model="gpt-route"),

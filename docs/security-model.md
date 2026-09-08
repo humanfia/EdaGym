@@ -38,6 +38,22 @@ command arguments, child environments, containers, crash output, or public
 artifacts. Authentication files must be owned by the invoking user and have no
 group or other permissions.
 
+`ConfiguredCredentialSource` consumes a fresh preflight grant bound to the full
+resolved provider identity before opening any authentication file. The private
+configuration owns the locator and decoder; `HOME`, `CODEX_HOME`, and ambient CLI
+settings cannot override that selection. Each directory component is opened
+without following symlinks. The containing directory must belong to the invoking
+user and must not be writable by another account. The file must be regular,
+owner-readable, privately permissioned, and have exactly one link; descriptor
+metadata is checked again after the bounded read. Mutable read buffers and leases
+are cleared after use.
+
+The supported decoders select exactly `OPENAI_API_KEY` at the top level of a
+Codex authentication JSON document, or `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN` inside the `env` object of a Claude settings document.
+Duplicate JSON keys and absent selected fields are refused. A decoder never
+falls back to another field, an OAuth token, or an environment variable.
+
 Before credentials are loaded, a synthetic marker remains installed in the
 controller-owned launch mapping throughout a dry run. A one-use collector then
 scans descriptor-bound sources for the participant workspace, tool process,

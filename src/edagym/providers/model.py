@@ -202,14 +202,15 @@ class ProviderDefaults(StrictModel):
 class ResolvedProviderConfig(StrictModel):
     """Secret-free interpretation of a trusted local provider configuration."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     selected_provider_label: ProviderConfigLabel
     profile: ProviderProfile
     defaults: ProviderDefaults
+    credential_source_digest: Digest
 
     @property
     def digest(self) -> Digest:
-        return canonical_digest(self, domain="provider-config-projection-v2")
+        return canonical_digest(self, domain="provider-config-projection-v3")
 
 
 class InputRole(StrEnum):

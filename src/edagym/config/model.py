@@ -9,6 +9,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from edagym.canonical import canonical_digest
+from edagym.providers.model import ProviderDefaults, ProviderProfile
 from edagym.specs.common import (
     Capability,
     Digest,
@@ -148,19 +149,29 @@ class LibraryConfig(StrictModel):
         return tuple(sorted(value, key=lambda item: item.value))
 
 
+class CredentialDecoder(StrEnum):
+    CODEX_API_KEY_JSON = "codex_api_key_json_v1"
+    CLAUDE_SETTINGS_API_KEY = "claude_settings_api_key_v1"
+    CLAUDE_SETTINGS_AUTH_TOKEN = "claude_settings_auth_token_v1"
+
+
+class CredentialConfig(StrictModel):
+    """A controller-only file locator and one supported credential decoder."""
+
+    credential_id: Identifier
+    decoder: CredentialDecoder
+    file_path: Path = Field(repr=False)
+
+    @property
+    def digest(self) -> Digest:
+        return canonical_digest(self, domain="credential-source-v1")
+
+
 class ProviderConfig(StrictModel):
     provider_id: Identifier
-    protocol: Annotated[str, Field(min_length=1, max_length=64)]
-    endpoint: Annotated[str, Field(min_length=1, max_length=512)]
-    model_id: Annotated[str, Field(min_length=1, max_length=160)]
+    profile: ProviderProfile
+    defaults: ProviderDefaults
     credential_reference: Identifier
-
-    @field_validator("protocol", "endpoint", "model_id")
-    @classmethod
-    def reject_controls(cls, value: str) -> str:
-        if value != value.strip() or any(ord(character) < 32 for character in value):
-            raise ValueError("provider values cannot contain whitespace boundaries or controls")
-        return value
 
 
 class _HarnessConfiguration(StrictModel):
@@ -313,12 +324,13 @@ class SnapshotView(StrictModel):
 class EdaGymConfig(StrictModel):
     """One private TOML document with no include, merge, or environment overlay layer."""
 
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     sites: tuple[SiteConfig, ...]
     runtimes: tuple[RuntimeBaseSpec, ...] = ()
     tools: tuple[ToolConfig, ...] = ()
     libraries: tuple[LibraryConfig, ...] = ()
     providers: tuple[ProviderConfig, ...] = ()
+    credentials: tuple[CredentialConfig, ...] = ()
     harnesses: tuple[HarnessConfig, ...] = ()
     profiles: tuple[ProfileConfig, ...] = ()
     sessions: tuple[SessionConfig, ...] = ()
@@ -332,6 +344,7 @@ class EdaGymConfig(StrictModel):
         "tools",
         "libraries",
         "providers",
+        "credentials",
         "harnesses",
         "profiles",
         "sessions",
@@ -347,6 +360,7 @@ class EdaGymConfig(StrictModel):
             "tools": "tool_id",
             "libraries": "library_id",
             "providers": "provider_id",
+            "credentials": "credential_id",
             "harnesses": "harness_id",
             "profiles": "profile_id",
             "sessions": "session_id",
@@ -366,7 +380,10 @@ class EdaGymConfig(StrictModel):
         tools = {item.tool_id: item for item in self.tools}
         libraries = {item.library_id: item for item in self.libraries}
         providers = {item.provider_id for item in self.providers}
+        credentials = {item.credential_id for item in self.credentials}
         harnesses = {item.harness_id for item in self.harnesses}
+        if any(provider.credential_reference not in credentials for provider in self.providers):
+            raise ValueError("provider references an unknown credential source")
 
         for tool in self.tools:
             if isinstance(tool.source, UserImageToolSource):
@@ -410,7 +427,7 @@ class EdaGymConfig(StrictModel):
     def digest(self) -> Digest:
         return canonical_digest(
             self.model_dump(mode="json", exclude={"source_path"}),
-            domain="edagym-private-config-v3",
+            domain="edagym-private-config-v4",
         )
 
     def redacted_view(self) -> dict[str, object]:
@@ -431,6 +448,7 @@ class EdaGymConfig(StrictModel):
             "tools": {"count": len(self.tools)},
             "libraries": {"count": len(self.libraries)},
             "providers": {"count": len(self.providers)},
+            "credentials": {"count": len(self.credentials)},
             "harnesses": tuple(
                 {
                     "harness_id": harness.harness_id,
@@ -493,6 +511,7 @@ class PrivateConfigSnapshot(StrictModel):
             raise ValueError("a snapshot binds exactly one site and profile")
         paths = [config.sites[0].state_root]
         paths.extend(library.source_path for library in config.libraries)
+        paths.extend(credential.file_path for credential in config.credentials)
         paths.extend(
             tool.source.root_path
             for tool in config.tools

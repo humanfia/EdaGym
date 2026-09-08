@@ -47,7 +47,10 @@ subset. The request identity and private observer evidence include that selectio
 Caller-supplied controller identity headers are refused. This follows the header contract in
 the [Messages API overview](https://platform.claude.com/docs/en/api/overview).
 
-The version-two profile and resolved-config digest domains replace version one.
+The profile uses version two and the resolved configuration uses version three.
+The latter binds the credential locator and decoder digest as well as the profile
+and defaults. `provider inspect` projects these fields from a private snapshot
+without opening the credential file. It does not inspect ambient CLI settings.
 Old profile documents must be regenerated with `request_path` and `wire`; there
 is no legacy-field decoder. Existing attestations and campaign bindings must be
 requalified against the new identity. WebSocket and storage restrictions remain

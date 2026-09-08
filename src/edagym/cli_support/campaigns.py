@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field, RootModel, ValidationError
 from edagym.benchmark.model import BenchmarkSpec
 from edagym.canonical import canonical_bytes
 from edagym.cli_support.documents import open_artifact_store
+from edagym.config.model import PrivateConfigSnapshot
+from edagym.config.resolve import ResolutionError, resolve_provider
+from edagym.policy.runtime_storage import read_private
 from edagym.providers.campaign import CampaignSpec, DateStamp, ModelSetManifest
 from edagym.providers.campaign_budget import (
     CampaignAccountingError,
@@ -37,7 +40,7 @@ from edagym.providers.campaign_schedule import (
     CampaignTask,
     build_campaign_schedule,
 )
-from edagym.providers.model import ProviderProfile, ResolvedProviderConfig
+from edagym.providers.model import ResolvedProviderConfig
 from edagym.providers.model_discovery import (
     ModelDiscoveryResult,
     ModelDiscoverySnapshot,
@@ -50,11 +53,6 @@ from edagym.providers.model_discovery import (
     freeze_model_set,
 )
 from edagym.run.artifacts import ContentAddressedStore
-from edagym.security.credentials import (
-    CodexCredentialSource,
-    CredentialFormatError,
-    CredentialSecurityError,
-)
 from edagym.specs.common import Digest, Identifier, SchemaVersion, StrictModel
 
 _UNSATISFIED = 1
@@ -89,9 +87,10 @@ class CampaignCliFailure(StrictModel):
 
 
 class ProviderInspectRequest(StrictModel):
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
     command: Literal[CampaignCliCommand.INSPECT] = CampaignCliCommand.INSPECT
-    trusted_profile: ProviderProfile
+    config_snapshot: PrivateConfigSnapshot
+    provider_id: Identifier
 
 
 class ProviderDiscoverRequest(StrictModel):
@@ -207,7 +206,7 @@ def execute_campaign_command(
 
 
 def _load_request[TRequest: BaseModel](path: Path, model: type[TRequest]) -> TRequest:
-    raw = path.read_bytes()
+    raw = read_private(path, max_bytes=_MAX_CAMPAIGN_REQUEST_BYTES)
     if not raw or len(raw) > _MAX_CAMPAIGN_REQUEST_BYTES:
         raise ValueError("campaign request size is invalid")
     content = raw[:-1] if raw.endswith(b"\n") else raw
@@ -219,8 +218,8 @@ def _load_request[TRequest: BaseModel](path: Path, model: type[TRequest]) -> TRe
 
 def _inspect(request: ProviderInspectRequest) -> tuple[CampaignCliResult, int]:
     try:
-        result = CodexCredentialSource(trusted_profile=request.trusted_profile).inspect_profile()
-    except (CredentialFormatError, CredentialSecurityError):
+        result, _ = resolve_provider(request.config_snapshot, request.provider_id)
+    except ResolutionError:
         return (
             _failure(
                 CampaignCliCommand.INSPECT,

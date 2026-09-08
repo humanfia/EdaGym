@@ -297,9 +297,7 @@ def provider_exchange_fixture(
         visibility=Visibility.AUTHOR,
         redistribution=Redistribution.FORBIDDEN,
     )
-    request_content = canonical_bytes(
-        {"input": [], "model": requested_model, "store": False}
-    )
+    request_content = canonical_bytes({"input": [], "model": requested_model, "store": False})
     response_content = canonical_bytes(
         {
             "id": "provider-fixture-response",
@@ -428,6 +426,9 @@ def _provider_fixture_record(
 
 def digest(label: str) -> str:
     return f"sha256:{hashlib.sha256(label.encode()).hexdigest()}"
+
+
+SYNTHETIC_CREDENTIAL_SOURCE_DIGEST = digest("synthetic-credential-source")
 
 
 def task_spec() -> TaskSpec:

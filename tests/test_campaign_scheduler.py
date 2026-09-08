@@ -77,6 +77,7 @@ from edagym.run.trial_model import (
 from edagym.specs.common import Capability, ProviderResponseStatus, Redistribution
 from edagym.specs.task import PublicCalibrationTaskOrigin
 from tests.campaign_fixtures import campaign_cells, campaign_header
+from tests.factories import SYNTHETIC_CREDENTIAL_SOURCE_DIGEST
 
 
 def _digest(label: str) -> str:
@@ -117,6 +118,7 @@ def _model_set(*routes: ModelRoute) -> ModelSetManifest:
 
 def _provider_config() -> ResolvedProviderConfig:
     return ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="test_gateway",
         profile=ProviderProfile(
             logical_id="test.gateway", origin="https://gateway.test", request_path="/v1/responses"

@@ -323,6 +323,22 @@ to RunEngine remain unfinished. Native campaign dispatch remains unavailable.
 
 ## Remaining integration
 
+Configuration schema version 4 now owns explicit provider profiles, defaults,
+credential locators, and decoder selection. Resolved provider identity version 3
+binds that source selection to the one-use preflight grant. Campaign host
+composition and provider inspection consume the frozen private snapshot;
+inspection does not read authentication files. The former ambient Codex settings
+discovery path has been removed. The full regression run passed 349 tests in
+767.62 seconds (exit 0), with source, tests, and schemas unchanged throughout.
+Ruff, strict mypy over 218 source files, generated schema consistency, and diff
+checks passed. No test-owned containers or mounts remained. An isolated synthetic
+probe also verified version-four TOML provider projection without an auth file,
+explicit version-one through version-three imports, and refusal to publish
+ambiguous legacy provider configurations.
+This completes configured credential-source selection described as outstanding
+in earlier checkpoints. Native run-event persistence, controlled Messages
+participants, and campaign linkage to RunEngine remain unfinished.
+
 - Complete exact-toolset filesystem exclusion qualification.
 - Integrate interruptions during view qualification before a task run manifest
   exists. Exercise the broader concurrent-run and corruption matrix, including

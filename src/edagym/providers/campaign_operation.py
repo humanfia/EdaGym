@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Protocol, Self
+from typing import Annotated, Literal, Protocol, Self
 from uuid import uuid4
 
 from pydantic import AfterValidator, Field, model_validator
@@ -29,6 +29,8 @@ from edagym.authoring.provider import (
     PrivateAuthoringCapability,
 )
 from edagym.canonical import canonical_digest
+from edagym.config.model import PrivateConfigSnapshot
+from edagym.config.resolve import resolve_provider
 from edagym.drivers.catalog import backend_by_id
 from edagym.drivers.deployment import load_backend_deployment_registry
 from edagym.drivers.probe import ResolvedInstallation, probe_backend
@@ -68,7 +70,7 @@ from edagym.providers.campaign_runner import (
     TrialOutcomeRecordedEvent,
 )
 from edagym.providers.campaign_schedule import CampaignHeader, ScheduledTrial
-from edagym.providers.model import ProviderProfile, ResolvedProviderConfig
+from edagym.providers.model import ResolvedProviderConfig
 from edagym.providers.provider_budget import CampaignProviderBudget
 from edagym.providers.responses import ProviderProtocolError, ResponsesBroker
 from edagym.providers.trial_evidence import (
@@ -85,9 +87,10 @@ from edagym.runtime.errors import OrchestrationError
 from edagym.runtime.model import EvaluatorRuntime
 from edagym.security.canary import CanaryExposure, CanaryPolicy, CanaryProtocolError
 from edagym.security.credentials import (
-    CodexCredentialSource,
+    ConfiguredCredentialSource,
     CredentialFormatError,
     CredentialSecurityError,
+    CredentialSource,
 )
 from edagym.security.synthetic_preflight import (
     SyntheticPreflightError,
@@ -178,7 +181,8 @@ class AssetPathBinding(StrictModel):
 class CampaignOperationRequest(StrictModel):
     """Everything a run or resume needs beyond the local credential files."""
 
-    schema_version: SchemaVersion = 1
+    schema_version: Literal[2] = 2
+    config_snapshot: PrivateConfigSnapshot
     proposal: FrozenCampaignProposal
     instruction: Annotated[str, Field(min_length=1)]
     authoring_provider: AuthoringProviderBinding
@@ -190,12 +194,16 @@ class CampaignOperationRequest(StrictModel):
     assets: tuple[AssetPathBinding, ...] = ()
     artifact_store_root: AbsolutePathText
     artifact_key_file: AbsolutePathText | None = None
-    state_root: AbsolutePathText
     environments: Annotated[tuple[EnvironmentSpec, ...], Field(min_length=1)]
     sessions: Annotated[tuple[SessionSpec, ...], Field(min_length=1)]
 
     @model_validator(mode="after")
     def validate_coverage(self) -> Self:
+        configured, _ = resolve_provider(
+            self.config_snapshot, self.proposal.header.provider_config.selected_provider_label
+        )
+        if configured != self.proposal.header.provider_config:
+            raise ValueError("campaign provider differs from its frozen configuration snapshot")
         campaign = self.proposal.header.campaign
         environment_digests = [item.digest for item in self.environments]
         session_digests = [item.digest for item in self.sessions]
@@ -221,10 +229,8 @@ class CampaignOperationRequest(StrictModel):
         return self.proposal.header
 
     @property
-    def credential_profile(self) -> ProviderProfile:
-        """The frozen provider profile is the only trusted credential profile."""
-
-        return self.proposal.header.provider_config.profile
+    def state_root(self) -> Path:
+        return self.config_snapshot.configuration.sites[0].state_root
 
 
 class CampaignOperationRefusalReason(StrEnum):
@@ -339,12 +345,12 @@ class CampaignTrialHost(Protocol):
 
 
 class RootlessCampaignTrialHost:
-    """Rootless-container executors, synthetic preflight, and Codex credentials."""
+    """Rootless-container executors, synthetic preflight, and a credential source."""
 
     def __init__(
         self,
         *,
-        credentials: CodexCredentialSource,
+        credentials: CredentialSource,
         provider_config: ResolvedProviderConfig,
         asset_source_policy: AssetSourcePolicy,
         executor_registry: ExecutorDeploymentRegistry,
@@ -423,13 +429,10 @@ class RootlessCampaignTrialHost:
 def open_rootless_campaign_host(request: CampaignOperationRequest) -> RootlessCampaignTrialHost:
     """Bind credentials, deployment registries, and image tools named by the request."""
 
-    credentials = CodexCredentialSource(trusted_profile=request.credential_profile)
-    try:
-        provider_config = credentials.inspect_profile()
-    except (CredentialFormatError, CredentialSecurityError):
-        raise CampaignOperationRefusal(
-            CampaignOperationRefusalReason.PROVIDER_ACCESS_REFUSED
-        ) from None
+    provider_config, credential = resolve_provider(
+        request.config_snapshot, request.header.provider_config.selected_provider_label
+    )
+    credentials = ConfiguredCredentialSource(configuration=provider_config, credential=credential)
     try:
         backend_registry = load_backend_deployment_registry(Path(request.backend_deployment))
         asset_source_policy = backend_registry.asset_source_policy()

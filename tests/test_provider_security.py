@@ -14,7 +14,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -24,7 +23,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 import edagym.security.collector as collector_module
-import edagym.security.credentials as credential_module
 from edagym.benchmark.model import EpisodeBudget
 from edagym.executors.isolation_launch import (
     SyntheticPreflightExecutorReceipt,
@@ -72,7 +70,6 @@ from edagym.providers.campaign_schedule import (
     ScheduledTrial,
 )
 from edagym.providers.model import (
-    RUST_CAT_PROFILE,
     FunctionCall,
     FunctionCallStatus,
     FunctionTool,
@@ -154,13 +151,9 @@ from edagym.security.canary_artifact import (
 )
 from edagym.security.collector import IsolationSurfaceCollector, RuntimeSurfaceIssuer
 from edagym.security.credentials import (
-    CodexCredentialSource,
-    CredentialFormatError,
     CredentialLease,
-    CredentialSecurityError,
     ProviderAccessGrant,
     ProviderAccessLease,
-    _consume_attestation_for_provider_access,
 )
 from edagym.security.runtime_surface import (
     RuntimeSurfaceBinding,
@@ -180,6 +173,7 @@ from edagym.specs.session import HarnessActor, SessionSpec
 from edagym.specs.task import TaskSpec
 from tests.campaign_fixtures import campaign_cells, campaign_header
 from tests.factories import (
+    SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
     environment_spec,
     release_manifest,
     session_spec,
@@ -194,236 +188,6 @@ def _digest(label: str) -> str:
 
 def _seed(value: int) -> str:
     return f"{value:032x}"
-
-
-def _codex_home(
-    root: Path,
-    *,
-    auth_document: object,
-    auth_mode: int = 0o600,
-    base_url: str | None = None,
-) -> tuple[Path, Path]:
-    home = root / "home"
-    codex = home / ".codex"
-    codex.mkdir(parents=True, mode=0o700)
-    home.chmod(0o700)
-    config = codex / "config.toml"
-    provider_base = "" if base_url is None else f'base_url = "{base_url}"\n'
-    config.write_text(
-        f"""
-model = "route.test"
-model_provider = "OpenAI"
-model_reasoning_effort = "high"
-service_tier = "fast"
-
-[model_providers.OpenAI]
-{provider_base}wire_api = "responses"
-requires_openai_auth = true
-supports_websockets = false
-""".lstrip(),
-        encoding="utf-8",
-    )
-    config.chmod(0o600)
-    auth = codex / "auth.json"
-    auth.write_text(json.dumps(auth_document), encoding="utf-8")
-    auth.chmod(auth_mode)
-    return home, auth
-
-
-def _use_passwd_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
-    monkeypatch.setattr(
-        credential_module.pwd,
-        "getpwuid",
-        lambda _uid: SimpleNamespace(pw_dir=os.fspath(home)),
-    )
-
-
-def _credential_access_grant(
-    configuration: ResolvedProviderConfig,
-    root: Path,
-) -> ProviderAccessGrant:
-    campaign_digest = _digest(f"credential-grant-{root.name}")
-    budget = StandaloneProviderBudget(
-        campaign_digest=campaign_digest,
-        ledger=_budget(),
-    )
-    policy, attestation = _clean_attestation(
-        configuration,
-        campaign_digest,
-        budget,
-        root,
-    )
-    grant, _ = _consume_attestation_for_provider_access(
-        policy=policy,
-        attestation=attestation,
-    )
-    return grant
-
-
-def test_codex_source_requires_a_fresh_consumed_preflight_before_auth_open(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home, _ = _codex_home(
-        tmp_path,
-        auth_document={"OPENAI_API_KEY": "stub"},
-    )
-    _use_passwd_home(monkeypatch, home)
-    source = CodexCredentialSource(trusted_profile=RUST_CAT_PROFILE)
-    resolved = source.inspect_profile()
-    opened_names: list[str] = []
-    original_reader = credential_module._read_owned_private_file
-
-    def record_open(directory_fd: int, name: str, *, uid: int) -> bytearray:
-        opened_names.append(name)
-        return original_reader(directory_fd, name, uid=uid)
-
-    monkeypatch.setattr(credential_module, "_read_owned_private_file", record_open)
-    with pytest.raises(TypeError):
-        source.acquire(expected_config_digest=resolved.digest)  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        source.acquire(grant=object())  # type: ignore[arg-type]
-    with pytest.raises(CredentialSecurityError, match="consumed canary attestation"):
-        ProviderAccessGrant(
-            provider_profile_digest=resolved.profile.digest,
-            provider_config_digest=resolved.digest,
-            campaign_digest=_digest("forged-access-campaign"),
-            budget_binding_digest=_digest("forged-access-budget"),
-            receipt_digest=_digest("forged-access-receipt"),
-            manifest_digest=_digest("forged-access-manifest"),
-            _issuer=object(),
-        )
-    assert not opened_names
-
-    grant = _credential_access_grant(resolved, tmp_path / "authorized-preflight")
-    with source.acquire(grant=grant):
-        pass
-    assert opened_names == ["config.toml", "auth.json"]
-    opened_names.clear()
-    with pytest.raises(CredentialSecurityError, match="already been consumed"):
-        source.acquire(grant=grant)
-    assert not opened_names
-
-
-def test_codex_source_rejects_unsafe_auth_and_decodes_only_the_top_level_field(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home, auth = _codex_home(
-        tmp_path,
-        auth_document={"OPENAI_API_KEY": "stub"},
-        auth_mode=0o644,
-    )
-    _use_passwd_home(monkeypatch, home)
-    source = CodexCredentialSource(trusted_profile=RUST_CAT_PROFILE)
-    resolved = source.inspect_profile()
-    assert resolved.selected_provider_label == "OpenAI"
-
-    with pytest.raises(CredentialSecurityError):
-        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "unsafe-mode-preflight"))
-
-    auth.unlink()
-    target = home / "private-auth"
-    target.write_text(json.dumps({"OPENAI_API_KEY": "stub"}), encoding="utf-8")
-    target.chmod(0o600)
-    auth.symlink_to(target)
-    with pytest.raises(CredentialSecurityError):
-        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "symlink-preflight"))
-
-    auth.unlink()
-    auth.write_text(json.dumps({"tokens": {"OPENAI_API_KEY": "stub"}}), encoding="utf-8")
-    auth.chmod(0o600)
-    with pytest.raises(CredentialFormatError):
-        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "nested-preflight"))
-
-    auth.write_text(
-        '{"OPENAI_API_KEY":"stub","OPENAI_API_KEY":"stub"}',
-        encoding="utf-8",
-    )
-    with pytest.raises(CredentialFormatError):
-        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "duplicate-preflight"))
-
-    auth.write_text(json.dumps({"OPENAI_API_KEY": "stub"}), encoding="utf-8")
-    with source.acquire(
-        grant=_credential_access_grant(resolved, tmp_path / "valid-preflight")
-    ) as access:
-        assert repr(access) == "ProviderAccessLease(<redacted>)"
-        assert repr(access.credential) == "CredentialLease(<redacted>)"
-        with pytest.raises(TypeError):
-            pickle.dumps(access)
-
-
-def test_codex_source_fails_closed_when_an_open_auth_path_is_replaced(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    home, auth = _codex_home(tmp_path, auth_document={"OPENAI_API_KEY": "original"})
-    _use_passwd_home(monkeypatch, home)
-    source = CodexCredentialSource(trusted_profile=RUST_CAT_PROFILE)
-    resolved = source.inspect_profile()
-    replacement = auth.with_name("replacement")
-    replacement.write_text(json.dumps({"OPENAI_API_KEY": "replacement"}), encoding="utf-8")
-    replacement.chmod(0o600)
-    original_reader = credential_module._read_stable_bytes
-    calls = 0
-
-    def replace_after_open(fd: int) -> bytearray:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            auth.unlink()
-            replacement.replace(auth)
-        return original_reader(fd)
-
-    monkeypatch.setattr(credential_module, "_read_stable_bytes", replace_after_open)
-    with pytest.raises(CredentialSecurityError):
-        source.acquire(grant=_credential_access_grant(resolved, tmp_path / "replacement-preflight"))
-
-
-def test_codex_source_binds_an_optional_base_to_the_explicit_trusted_profile(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    assert RUST_CAT_PROFILE.request_path == "/codex/v1/responses"
-    with pytest.raises(TypeError, match="trusted_profile"):
-        CodexCredentialSource()  # type: ignore[call-arg]
-    home, _ = _codex_home(
-        tmp_path / "matching",
-        auth_document={"OPENAI_API_KEY": "stub"},
-        base_url="https://rust.cat/codex/v1",
-    )
-    _use_passwd_home(monkeypatch, home)
-    source = CodexCredentialSource(trusted_profile=RUST_CAT_PROFILE)
-    assert source.inspect_profile().profile == RUST_CAT_PROFILE
-
-    mismatched_home, _ = _codex_home(
-        tmp_path / "mismatched",
-        auth_document={"OPENAI_API_KEY": "stub"},
-        base_url="https://rust.cat/another/v1",
-    )
-    _use_passwd_home(monkeypatch, mismatched_home)
-    with pytest.raises(CredentialFormatError, match="trusted identity"):
-        source.inspect_profile()
-
-    unauthorized_home, _ = _codex_home(
-        tmp_path / "unauthorized",
-        auth_document={"OPENAI_API_KEY": "stub"},
-        auth_mode=0o644,
-        base_url="https://rust.cat/codex/v1",
-    )
-    _use_passwd_home(monkeypatch, unauthorized_home)
-    untrusted = ProviderProfile(
-        logical_id="untrusted.gateway",
-        origin="https://gateway.invalid",
-        request_path="/api/v1/responses",
-    )
-    with pytest.raises(CredentialSecurityError, match="another provider"):
-        CodexCredentialSource(trusted_profile=untrusted).acquire(
-            grant=_credential_access_grant(
-                source.inspect_profile(),
-                tmp_path / "profile-mismatch-preflight",
-            )
-        )
 
 
 def _clean_attestation(
@@ -1127,6 +891,7 @@ def test_canary_receipt_binds_a_path_free_terminal_runtime_manifest(
     tmp_path: Path,
 ) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
@@ -1174,6 +939,7 @@ def test_canary_receipt_binds_a_path_free_terminal_runtime_manifest(
 
 def test_canary_rejects_a_grant_bound_to_another_marker(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
@@ -1212,6 +978,7 @@ def test_canary_rejects_and_zeroizes_a_changed_synthetic_credential(
     tmp_path: Path,
 ) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
@@ -1253,6 +1020,7 @@ def test_canary_binding_and_budget_gate_run_before_network_or_credential_reuse(
     tmp_path: Path,
 ) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
@@ -1346,6 +1114,7 @@ def test_canary_binding_and_budget_gate_run_before_network_or_credential_reuse(
 
 def test_observer_failure_cancels_atomic_reservation_before_dispatch(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
@@ -1394,6 +1163,7 @@ def test_observer_failure_cancels_atomic_reservation_before_dispatch(tmp_path: P
 
 def test_scheduled_transport_settles_the_campaign_runner_ledger(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
@@ -1451,6 +1221,7 @@ def test_forged_clean_canary_observations_cannot_issue_an_attestation(tmp_path: 
         logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
     )
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=profile,
         defaults=ProviderDefaults(requested_model="route.test"),
@@ -1516,6 +1287,7 @@ def test_canary_finds_a_real_surface_leak_split_across_read_chunks(tmp_path: Pat
         logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
     )
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=profile,
         defaults=ProviderDefaults(requested_model="route.test"),
@@ -1561,6 +1333,7 @@ def test_canary_scans_encrypted_artifact_plaintext(tmp_path: Path) -> None:
         logical_id="local.stub", origin="https://localhost:4443", request_path="/v1/responses"
     )
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=profile,
         defaults=ProviderDefaults(requested_model="route.test"),
@@ -1753,6 +1526,7 @@ def _open_local_campaign(
 ) -> tuple[ResponsesCampaign, _StaticCredentialSource, BudgetLedger]:
     wire = wire or ResponsesWire()
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="local_stub",
         profile=ProviderProfile(
             logical_id="local.stub",

@@ -174,6 +174,7 @@ from edagym.specs.session import (
 )
 from edagym.specs.task import TaskSpec
 from tests.campaign_fixtures import campaign_cells, campaign_header
+from tests.factories import SYNTHETIC_CREDENTIAL_SOURCE_DIGEST
 
 from .factories import (
     digest,
@@ -583,6 +584,7 @@ class _Evaluator:
         return StageResult(stage_id=context.stage.stage_id, outcome=PassedOutcome())
 
 
+
 def _encrypted_environment(*, licensed: bool = False) -> EnvironmentSpec:
     base = environment_spec()
     license_binding_id = "verilator_license"
@@ -705,6 +707,7 @@ def _campaign_inputs(
     instance = task_instance(task)
     release = release_manifest(task, instance, environment)
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="test_gateway",
         profile=ProviderProfile(
             logical_id="test.gateway", origin="https://gateway.test", request_path="/v1/responses"

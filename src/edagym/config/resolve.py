@@ -10,6 +10,7 @@ from pathlib import Path
 
 from edagym.config.model import (
     ConfigView,
+    CredentialConfig,
     EdaGymConfig,
     InstalledTreeToolSource,
     LibraryConfig,
@@ -23,6 +24,7 @@ from edagym.config.model import (
     ToolConfig,
     ToolVisibility,
 )
+from edagym.providers.model import ResolvedProviderConfig
 from edagym.specs.environment import ExecutorKind, NetworkKind
 
 
@@ -257,9 +259,34 @@ def freeze_profile(config: EdaGymConfig, profile: ProfileConfig) -> PrivateConfi
             for item in config.harnesses
         ),
         providers=config.providers,
+        credentials=tuple(
+            item.model_copy(update={"file_path": _resolve_private_path(config, item.file_path)})
+            for item in config.credentials
+        ),
         sessions=config.sessions,
     )
     return PrivateConfigSnapshot(config_digest=config.digest, configuration=selected)
+
+
+def resolve_provider(
+    snapshot: PrivateConfigSnapshot, provider_id: str
+) -> tuple[ResolvedProviderConfig, CredentialConfig]:
+    """Project provider identity and its frozen credential locator without opening secrets."""
+
+    config = snapshot.configuration
+    provider = _one(config.providers, "provider_id", provider_id, "provider")
+    credential = _one(
+        config.credentials, "credential_id", provider.credential_reference, "credential"
+    )
+    return (
+        ResolvedProviderConfig(
+            selected_provider_label=provider.provider_id,
+            profile=provider.profile,
+            defaults=provider.defaults,
+            credential_source_digest=credential.digest,
+        ),
+        credential,
+    )
 
 
 def _resolve_private_path(config: EdaGymConfig, path: Path) -> Path:

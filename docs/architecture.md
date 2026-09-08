@@ -226,17 +226,26 @@ Unknown outcomes require fencing before the terminal failure is journaled.
 
 ## Harness configuration
 
-Private configuration schema version 3 uses a discriminated harness union.
+Private configuration schema version 4 uses a discriminated harness union.
 Controlled harnesses reference a provider; native harnesses additionally name
 `codex_exec` or `claude_code` and an executable path. The snapshot resolver
-normalizes only native executable paths. Human sessions omit a harness and do
+normalizes native executable and credential file paths. Human sessions omit a harness and do
 not require a separate human harness record.
 
-The explicit config import command accepts version 2 documents that satisfy
-these typed fields. It does not infer a CLI from a filename or convert an
+The explicit config import command accepts version 1, 2, or 3 documents that satisfy
+the current typed fields after visibility migration where needed. It does not infer a CLI from a filename or convert an
 ambiguous native binding. Frozen run snapshots are never upgraded in place.
 These configuration bindings do not constitute native execution qualification;
 the native sandbox closure, relay, and RunEngine adapter remain integration work.
+
+Each provider owns an explicit `ProviderProfile`, `ProviderDefaults`, and a
+reference to one `CredentialConfig`. That credential record owns only a file
+locator and a closed decoder selection. `freeze_profile` resolves relative
+locators against the configuration document; `resolve_provider` derives the
+version-three `ResolvedProviderConfig`, including the credential-source digest,
+without reading authentication files. Legacy provider records without an explicit
+profile and decoder require manual migration. No ambient CLI configuration or
+home-directory discovery supplies missing fields.
 
 ## Paid campaign accounting
 
@@ -285,8 +294,10 @@ harness instruction, the restricted authoring provider with its three trusted
 digests, the materialized flow catalog root, the backend and executor
 deployment registries, the container engine and the rootless-image tool
 recipes, host asset paths, the artifact store root with an optional key file,
-the state root, and the exact environment and session documents. The frozen
-provider configuration is the only credential profile. Preparation resolves
+the private configuration snapshot, and the exact environment and session documents.
+The state root derives from the snapshot's selected site. The campaign provider
+configuration must equal the projection of its named provider in that snapshot;
+the same projection selects the controller-only credential source. Preparation resolves
 every campaign task to its provider-qualified release, participant files, and
 evaluator runtimes before any credential or journal is touched; a family
 without an in-process evaluator runtime is refused as unavailable.

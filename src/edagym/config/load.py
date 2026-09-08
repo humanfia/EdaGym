@@ -61,7 +61,7 @@ def import_legacy_config(source_path: Path, output_path: Path) -> EdaGymConfig:
     version = raw.get("schema_version")
     if version == 1:
         _migrate_visibility(raw)
-    if version in (1, 2):
+    if version in (1, 2, 3):
         raw["schema_version"] = EdaGymConfig.model_fields["schema_version"].default
     try:
         config = EdaGymConfig.model_validate(raw)

@@ -17,6 +17,16 @@ from edagym.cli_support.campaigns import (
     ProviderDiscoverRequest,
     execute_campaign_command,
 )
+from edagym.config.model import (
+    CredentialConfig,
+    CredentialDecoder,
+    EdaGymConfig,
+    ProfileConfig,
+    ProfileViewConfig,
+    ProviderConfig,
+    SiteConfig,
+)
+from edagym.config.resolve import freeze_profile, resolve_provider
 from edagym.executors.asset_policy import AssetSourcePolicy, load_system_asset_source_policy
 from edagym.participants.responses import responses_instruction_digest
 from edagym.providers.campaign import (
@@ -75,6 +85,7 @@ from edagym.specs.session import (
 )
 from tests.campaign_fixtures import campaign_cells, campaign_header
 from tests.factories import (
+    SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
     digest,
     environment_spec,
     release_manifest,
@@ -86,6 +97,7 @@ from tests.factories import (
 
 def test_campaign_discovery_command_requires_one_canonical_document(tmp_path: Path) -> None:
     configuration = ResolvedProviderConfig(
+        credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
         selected_provider_label="DeclaredGateway",
         profile=ProviderProfile(
             logical_id="declared.gateway",
@@ -107,6 +119,7 @@ def test_campaign_discovery_command_requires_one_canonical_document(tmp_path: Pa
     )
     request_path = tmp_path / "discover.json"
     request_path.write_bytes(canonical_bytes(request) + b"\n")
+    request_path.chmod(0o600)
 
     result, status = execute_campaign_command(
         CampaignCliCommand.DISCOVER,
@@ -177,17 +190,38 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
     environment = environment_spec()
     instance = task_instance(task)
     release = release_manifest(task, instance, environment)
-    configuration = ResolvedProviderConfig(
-        selected_provider_label="test_gateway",
-        profile=ProviderProfile(
-            logical_id="test.gateway", origin="https://gateway.test", request_path="/v1/responses"
-        ),
-        defaults=ProviderDefaults(
-            requested_model=_ROUTE,
-            reasoning_effort="high",
-            service_tier="fast",
+    credential = CredentialConfig(
+        credential_id="provider_auth",
+        decoder=CredentialDecoder.CODEX_API_KEY_JSON,
+        file_path=(root / "auth.json").absolute(),
+    )
+    profile = ProfileConfig(
+        profile_id="campaign",
+        site_id="local",
+        participant=ProfileViewConfig(),
+        evaluator=ProfileViewConfig(),
+    )
+    config = EdaGymConfig(
+        sites=(SiteConfig(site_id="local", state_root=root / "state"),),
+        profiles=(profile,),
+        credentials=(credential,),
+        providers=(
+            ProviderConfig(
+                provider_id="test_gateway",
+                credential_reference=credential.credential_id,
+                profile=ProviderProfile(
+                    logical_id="test.gateway",
+                    origin="https://gateway.test",
+                    request_path="/v1/responses",
+                ),
+                defaults=ProviderDefaults(
+                    requested_model=_ROUTE, reasoning_effort="high", service_tier="fast"
+                ),
+            ),
         ),
     )
+    snapshot = freeze_profile(config, profile)
+    configuration, _ = resolve_provider(snapshot, "test_gateway")
     harness = MeteredProviderHarnessBinding(
         harness_id="responses_harness",
         provider_profile_digest=configuration.profile.digest,
@@ -303,6 +337,7 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
         ),
     )
     return CampaignOperationRequest(
+        config_snapshot=snapshot,
         proposal=FrozenCampaignProposal(
             header=header,
             budget=CampaignBudgetProjection.from_header(header),
@@ -329,7 +364,6 @@ def _operation_request(root: Path, *, instruction: str) -> CampaignOperationRequ
             ),
         ),
         artifact_store_root=(root / "artifacts").as_posix(),
-        state_root=(root / "state").as_posix(),
         environments=(environment,),
         sessions=(session,),
     )

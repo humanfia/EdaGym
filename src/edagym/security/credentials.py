@@ -4,22 +4,18 @@ from __future__ import annotations
 
 import json
 import os
-import pwd as pwd
 import stat
-import tomllib
-from collections.abc import Mapping, MutableMapping
-from enum import StrEnum
+from collections.abc import MutableMapping
+from pathlib import Path
 from threading import Lock
 from typing import Any, Protocol, SupportsIndex
-from urllib.parse import urlsplit
 
+from edagym.config.model import CredentialConfig, CredentialDecoder
 from edagym.providers.model import (
     MessagesWire,
     ProviderAuthorization,
-    ProviderDefaults,
     ProviderProfile,
     ResolvedProviderConfig,
-    WireProtocol,
 )
 from edagym.security.canary import (
     CanaryAttestation,
@@ -29,7 +25,7 @@ from edagym.security.canary import (
 from edagym.specs.common import Digest
 
 _MAX_CONFIG_BYTES = 1 << 20
-_OPEN_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+_OPEN_FLAGS = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
 _DIRECTORY_FLAGS = _OPEN_FLAGS | os.O_DIRECTORY
 _MAX_CREDENTIAL_BYTES = 8192
 _PROVIDER_ACCESS_GRANT_ISSUER = object()
@@ -149,10 +145,6 @@ def _consume_attestation_for_provider_access(
     )
 
 
-class AuthDecoderVersion(StrEnum):
-    TOP_LEVEL_OPENAI_API_KEY_V1 = "top-level-openai-api-key-v1"
-
-
 class CredentialLease:
     """Opaque in-memory credential that zeroizes its mutable storage on close."""
 
@@ -266,90 +258,71 @@ class CredentialSource(Protocol):
         """Consume preflight authority and revalidate config before opening auth."""
 
 
-class CodexCredentialSource:
-    """Read the current account's local CLI files through directory descriptors."""
+class ConfiguredCredentialSource:
+    """Acquire only the file and decoder frozen in the provider's configuration."""
 
-    decoder_version = AuthDecoderVersion.TOP_LEVEL_OPENAI_API_KEY_V1
-
-    def __init__(self, *, trusted_profile: ProviderProfile) -> None:
-        if type(trusted_profile) is not ProviderProfile:
-            raise TypeError("credential sources require one explicit trusted provider profile")
-        if trusted_profile.wire_protocol is not WireProtocol.RESPONSES:
-            raise CredentialFormatError("Codex credentials require a Responses provider profile")
-        self._trusted_profile = trusted_profile
-
-    def inspect_profile(self) -> ResolvedProviderConfig:
-        """Read only the non-secret config projection; never open the auth file."""
-
-        uid, home_fd, codex_fd = _open_current_codex_directory()
-        try:
-            raw_config = _read_owned_private_file(codex_fd, "config.toml", uid=uid)
-            try:
-                return _decode_config_v1(
-                    raw_config,
-                    trusted_profile=self._trusted_profile,
-                )
-            finally:
-                _zeroize(raw_config)
-        finally:
-            os.close(codex_fd)
-            os.close(home_fd)
+    def __init__(
+        self, *, configuration: ResolvedProviderConfig, credential: CredentialConfig
+    ) -> None:
+        if (
+            not credential.file_path.is_absolute()
+            or credential.file_path != Path(os.path.abspath(credential.file_path))
+            or configuration.credential_source_digest != credential.digest
+        ):
+            raise CredentialSecurityError(
+                "credential locator differs from the frozen provider binding"
+            )
+        self._configuration = configuration
+        self._credential = credential
 
     def acquire(self, *, grant: ProviderAccessGrant) -> ProviderAccessLease:
-        """Revalidate the config before opening and decoding the credential file."""
-
         if type(grant) is not ProviderAccessGrant:
             raise TypeError("credential acquisition requires an exact provider access grant")
         expected_config_digest = grant._consume(
-            provider_profile_digest=self._trusted_profile.digest
+            provider_profile_digest=self._configuration.profile.digest
         )
-        uid, home_fd, codex_fd = _open_current_codex_directory()
+        if expected_config_digest != self._configuration.digest:
+            raise CredentialSecurityError("provider configuration differs from its preflight grant")
+        parent = _open_credential_directory(self._credential.file_path.parent)
         try:
-            raw_config = _read_owned_private_file(codex_fd, "config.toml", uid=uid)
+            raw = _read_owned_private_file(
+                parent, self._credential.file_path.name, uid=os.geteuid()
+            )
             try:
-                resolved = _decode_config_v1(
-                    raw_config,
-                    trusted_profile=self._trusted_profile,
+                credential = _decode_credential(
+                    raw,
+                    decoder=self._credential.decoder,
+                    profile_digest=self._configuration.profile.digest,
                 )
             finally:
-                _zeroize(raw_config)
-            if resolved.digest != expected_config_digest:
-                raise CredentialSecurityError("provider config changed after preflight")
-            raw_auth = _read_owned_private_file(codex_fd, "auth.json", uid=uid)
-            try:
-                credential = _decode_auth_v1(raw_auth, profile_digest=resolved.profile.digest)
-            finally:
-                _zeroize(raw_auth)
-            return ProviderAccessLease(resolved, credential)
+                _zeroize(raw)
         finally:
-            os.close(codex_fd)
-            os.close(home_fd)
+            os.close(parent)
+        return ProviderAccessLease(self._configuration, credential)
+
+    def __repr__(self) -> str:
+        return "ConfiguredCredentialSource(<controller-only>)"
+
+    __str__ = __repr__
+
+    def __reduce_ex__(self, _protocol: SupportsIndex) -> Any:
+        raise TypeError("credential sources cannot be serialized")
 
 
-def _open_current_codex_directory() -> tuple[int, int, int]:
-    uid = os.geteuid()
-    account = pwd.getpwuid(uid)
-    if not os.path.isabs(account.pw_dir):
-        raise CredentialSecurityError("passwd home must be absolute")
+def _open_credential_directory(path: Path) -> int:
+    descriptor = os.open(path.anchor, _DIRECTORY_FLAGS)
     try:
-        home_fd = os.open(account.pw_dir, _DIRECTORY_FLAGS)
-    except OSError:
-        raise CredentialSecurityError("passwd home is not a trusted directory") from None
-    try:
-        _validate_directory(home_fd, uid=uid, name="passwd home")
-        try:
-            codex_fd = os.open(".codex", _DIRECTORY_FLAGS, dir_fd=home_fd)
-        except OSError:
+        for component in path.parts[1:]:
+            child = os.open(component, _DIRECTORY_FLAGS, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        _validate_directory(descriptor, uid=os.geteuid(), name="credential directory")
+        return descriptor
+    except BaseException as error:
+        os.close(descriptor)
+        if isinstance(error, OSError):
             raise CredentialSecurityError("credential directory is not trusted") from None
-        try:
-            _validate_directory(codex_fd, uid=uid, name="credential directory")
-        except BaseException:
-            os.close(codex_fd)
-            raise
-    except BaseException:
-        os.close(home_fd)
         raise
-    return uid, home_fd, codex_fd
 
 
 def _validate_directory(fd: int, *, uid: int, name: str) -> None:
@@ -391,6 +364,7 @@ def _read_owned_private_file(directory_fd: int, name: str, *, uid: int) -> bytea
             "st_ctime_ns",
         )
         if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            _zeroize(content)
             raise CredentialSecurityError("credential file changed while it was read")
         return content
     finally:
@@ -410,99 +384,23 @@ def _read_stable_bytes(fd: int) -> bytearray:
             raise CredentialSecurityError("credential file exceeds the size bound")
 
 
-def _decode_config_v1(
-    raw: bytes | bytearray,
-    *,
-    trusted_profile: ProviderProfile,
-) -> ResolvedProviderConfig:
-    if type(trusted_profile) is not ProviderProfile:
-        raise TypeError("config projection requires one explicit trusted provider profile")
-    try:
-        decoded = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
-        raise CredentialFormatError("provider config is not valid UTF-8 TOML") from None
-    selected = decoded.get("model_provider")
-    providers = decoded.get("model_providers")
-    if not isinstance(selected, str) or not isinstance(providers, Mapping):
-        raise CredentialFormatError("provider config has no selected provider table")
-    provider = providers.get(selected)
-    if not isinstance(provider, Mapping):
-        raise CredentialFormatError("selected provider table is missing")
-    base_url = provider.get("base_url")
-    wire_api = provider.get("wire_api")
-    requires_auth = provider.get("requires_openai_auth")
-    supports_websockets = provider.get("supports_websockets")
-    if (
-        (base_url is not None and not isinstance(base_url, str))
-        or wire_api != "responses"
-        or requires_auth is not True
-        or supports_websockets is not False
-    ):
-        raise CredentialFormatError("selected provider does not match the supported wire contract")
-    if base_url is not None and _responses_api_base(base_url) != _trusted_api_base(trusted_profile):
-        raise CredentialFormatError("selected provider base does not match its trusted identity")
-    model = decoded.get("model")
-    reasoning = decoded.get("model_reasoning_effort")
-    service_tier = decoded.get("service_tier")
-    if not isinstance(model, str):
-        raise CredentialFormatError("provider config has no default model")
-    if reasoning is not None and not isinstance(reasoning, str):
-        raise CredentialFormatError("reasoning effort must be a string")
-    if service_tier is not None and not isinstance(service_tier, str):
-        raise CredentialFormatError("service tier must be a string")
-    try:
-        defaults = ProviderDefaults(
-            requested_model=model,
-            reasoning_effort=reasoning,
-            service_tier=service_tier,
-        )
-    except ValueError:
-        raise CredentialFormatError("provider request defaults are invalid") from None
-    return ResolvedProviderConfig(
-        selected_provider_label=selected,
-        profile=trusted_profile,
-        defaults=defaults,
-    )
-
-
-def _responses_api_base(value: str) -> str:
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise CredentialFormatError("selected provider base is invalid")
-    path = parsed.path.rstrip("/")
-    try:
-        profile = ProviderProfile(
-            logical_id="config_probe",
-            origin=f"{parsed.scheme}://{parsed.netloc}",
-            request_path=f"{path}/responses",
-        )
-    except ValueError:
-        raise CredentialFormatError("selected provider base is invalid") from None
-    return f"{profile.origin}{path}"
-
-
-def _trusted_api_base(profile: ProviderProfile) -> str:
-    suffix = "/responses"
-    if not profile.request_path.endswith(suffix):
-        raise CredentialFormatError("trusted provider does not expose a Responses API base")
-    return f"{profile.origin}{profile.request_path.removesuffix(suffix)}"
-
-
-def _decode_auth_v1(raw: bytes | bytearray, *, profile_digest: Digest) -> CredentialLease:
+def _decode_credential(
+    raw: bytes | bytearray, *, decoder: CredentialDecoder, profile_digest: Digest
+) -> CredentialLease:
     try:
         decoded = json.loads(raw, object_pairs_hook=_unique_json_object)
     except (UnicodeDecodeError, json.JSONDecodeError, CredentialFormatError):
         raise CredentialFormatError("auth file is not valid UTF-8 JSON") from None
     if not isinstance(decoded, dict):
         raise CredentialFormatError("auth file must be a top-level object")
-    value = decoded.get("OPENAI_API_KEY")
+    fields = {
+        CredentialDecoder.CODEX_API_KEY_JSON: ("OPENAI_API_KEY",),
+        CredentialDecoder.CLAUDE_SETTINGS_API_KEY: ("env", "ANTHROPIC_API_KEY"),
+        CredentialDecoder.CLAUDE_SETTINGS_AUTH_TOKEN: ("env", "ANTHROPIC_AUTH_TOKEN"),
+    }
+    value: object = decoded
+    for name in fields[decoder]:
+        value = value.get(name) if isinstance(value, dict) else None
     if (
         not isinstance(value, str)
         or not value
@@ -510,7 +408,7 @@ def _decode_auth_v1(raw: bytes | bytearray, *, profile_digest: Digest) -> Creden
         or len(value) > _MAX_CREDENTIAL_BYTES
         or any(ord(character) < 0x21 or ord(character) > 0x7E for character in value)
     ):
-        raise CredentialFormatError("auth file lacks the supported top-level credential field")
+        raise CredentialFormatError("auth file lacks the configured credential field")
     try:
         encoded = bytearray(value, "utf-8")
     except UnicodeEncodeError:

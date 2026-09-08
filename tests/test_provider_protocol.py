@@ -16,6 +16,7 @@ from edagym.providers.model import (
 from edagym.providers.provider_budget import StandaloneProviderBudget
 from edagym.providers.responses import DirectHttpsTransport, ProviderProtocolError, ResponsesBroker
 from edagym.security.credentials import CredentialLease, CredentialSecurityError
+from tests.factories import SYNTHETIC_CREDENTIAL_SOURCE_DIGEST
 from tests.test_provider_security import (
     _budget,
     _clean_attestation,
@@ -82,10 +83,12 @@ def test_bound_profile_owns_protocol_and_credential_headers_on_the_wire(
     assert identity == expected
 
 
+
 def test_responses_request_cannot_dispatch_to_a_messages_profile(tmp_path: Path) -> None:
     server_context, client_context = _tls_contexts(tmp_path)
     with _HttpsStub(server_context, status=200, response_body=b"{}") as stub:
         configuration = ResolvedProviderConfig(
+            credential_source_digest=SYNTHETIC_CREDENTIAL_SOURCE_DIGEST,
             selected_provider_label="local_stub",
             profile=ProviderProfile(
                 logical_id="local.stub",
